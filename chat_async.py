@@ -1,7 +1,9 @@
-"""KittyAgent 异步演示（展示事件总线用法）"""
+"""KittyAgent 异步演示（展示会话持久化 + 事件总线用法）"""
 
 import asyncio
 from dotenv import load_dotenv
+
+from baseagent.session.manager import SessionManager
 
 load_dotenv()
 
@@ -11,11 +13,34 @@ from baseagent.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
 
 
+def pick_session(mgr: SessionManager) -> str:
+    """启动时展示历史会话，让用户选择继续或新建，返回 session_id。"""
+    sessions = mgr.list_sessions()
+    if sessions:
+        print("=== 历史会话 ===")
+        for i, s in enumerate(sessions[:5], 1):
+            print(f"  {i}. {s['title']:<20}  {s['created_at'][:10]}  [{s['id'][:8]}]")
+        print("  0. 新建会话")
+        choice = input("选择 (直接回车=新建): ").strip()
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(sessions[:5]):
+                sid = sessions[idx - 1]["id"]
+                history = mgr.load_history(sid)
+                print(f"已加载会话 [{sid[:8]}]，共 {len(history)} 条历史消息\n")
+                return sid
+    sid = mgr.create_session()
+    print(f"已创建新会话 [{sid[:8]}]\n")
+    return sid
+
+
 async def main():
+    mgr = SessionManager()
+    session_id = pick_session(mgr)
+
     llm = BaseAgentLLM()
     bus = EventBus()
 
-    # 注册事件处理器（演示桌宠情绪驱动点）
     @bus.on(AGENT_THINKING)
     async def on_thinking(et, data):
         print("\n[🤔 thinking...]", flush=True)
@@ -30,7 +55,7 @@ async def main():
 
     @bus.on(AGENT_DONE)
     async def on_done(et, data):
-        print("\n[done]", flush=True)
+        print("\n[✨ done]", flush=True)
 
     agent = KittyAgent(
         name="kitty",
@@ -38,10 +63,10 @@ async def main():
         tools=[GetCurrentTimeTool()],
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=bus,
+        session_manager=mgr,
     )
 
-    print("=== KittyAgent 异步对话 ===")
-    print("输入 'quit' 退出\n")
+    print(f"=== KittyAgent  session={session_id[:8]}...  输入 quit 退出 ===\n")
 
     while True:
         try:
@@ -55,7 +80,7 @@ async def main():
             break
 
         print("KittyMind: ", end="", flush=True)
-        async for chunk in agent.async_stream_run("session_1", user_input):
+        async for chunk in agent.async_stream_run(session_id, user_input):
             print(chunk, end="", flush=True)
         print()
 

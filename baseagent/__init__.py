@@ -48,6 +48,10 @@ from .events.types import (
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
 )
 
+# Session
+from .session.store import SessionStore
+from .session.manager import SessionManager
+
 # Exceptions
 from .core.exceptions import (
     BaseAgentException,
@@ -97,6 +101,9 @@ __all__ = [
     "AgentEvent",
     "AGENT_START", "AGENT_THINKING", "AGENT_CHUNK",
     "AGENT_TOOL_CALL", "AGENT_TOOL_RESULT", "AGENT_DONE", "AGENT_ERROR",
+    # Session
+    "SessionStore",
+    "SessionManager",
     # Exceptions
     "BaseAgentException",
     "LLMException",

@@ -5,12 +5,14 @@ from typing import AsyncIterator, Optional
 from baseagent.agent.tool_agent import ToolAgent
 from baseagent.core.llm import BaseAgentLLM
 from baseagent.core.exceptions import AgentException, LLMException
+from baseagent.core.message import Message
 from baseagent.events.bus import EventBus
 from baseagent.events.types import (
     AGENT_START, AGENT_THINKING, AGENT_CHUNK,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
 )
 from baseagent.memory.base import BaseMemory
+from baseagent.session.manager import SessionManager
 from baseagent.tools.base import BaseTool
 
 
@@ -22,7 +24,9 @@ class KittyAgent(ToolAgent):
       - agent.tool_call / agent.tool_result
       - agent.done / agent.error
 
-    事件供 WebSocket server 转发给前端（文字更新、桌宠情绪驱动）。
+    可选注入 SessionManager 实现跨重启的会话持久化：
+      - 首次访问某 session_id 时自动从 JSONL 加载历史
+      - 每轮结束后将本轮消息追加写入 JSONL
     """
 
     def __init__(
@@ -34,6 +38,7 @@ class KittyAgent(ToolAgent):
         memory: Optional[BaseMemory] = None,
         description: Optional[str] = None,
         event_bus: Optional[EventBus] = None,
+        session_manager: Optional[SessionManager] = None,
         max_iterations: int = 10,
     ):
         super().__init__(
@@ -46,6 +51,9 @@ class KittyAgent(ToolAgent):
             max_iterations=max_iterations,
         )
         self.event_bus: EventBus = event_bus or EventBus()
+        self.session_manager: Optional[SessionManager] = session_manager
+        # 已从 JSONL 加载过历史的 session，避免重复加载
+        self._loaded_sessions: set[str] = set()
 
     # ──────────────────────────────────────────────────────────────
     # 带事件广播的异步流式 ReAct 循环
@@ -58,13 +66,28 @@ class KittyAgent(ToolAgent):
 
         文字 delta 实时 yield 同时 emit agent.chunk；
         工具调用前后 emit agent.tool_call / agent.tool_result。
+        若注入了 SessionManager，自动加载历史并在每轮结束后持久化。
         """
         bus = self.event_bus
+
+        # 首次访问该 session：从 JSONL 恢复历史到内存
+        if self.session_manager and session_id and session_id not in self._loaded_sessions:
+            self._loaded_sessions.add(session_id)
+            if self.session_manager.session_exists(session_id):
+                for msg in self.session_manager.load_history(session_id):
+                    self.add_message(session_id, Message(
+                        msg.get("content"), msg["role"],
+                        tool_calls=msg.get("tool_calls"),
+                        tool_call_id=msg.get("tool_call_id"),
+                    ))
+
         await bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
         messages = self._build_messages(session_id, input_text)
         tools_schema = self.tool_registry.get_schemas()
         final_text: str | None = None
+        # 本轮新增消息（user → 中间工具步 → final assistant），用于持久化和更新内存
+        turn_messages: list[dict] = [{"role": "user", "content": input_text}]
 
         try:
             for _ in range(self.max_iterations):
@@ -94,31 +117,48 @@ class KittyAgent(ToolAgent):
                     final_text = step_text
                     break
 
-                messages.append({
+                assistant_msg = {
                     "role": "assistant",
                     "content": step_text or None,
                     "tool_calls": tool_calls,
-                })
+                }
+                messages.append(assistant_msg)
+                turn_messages.append(assistant_msg)
+
                 for tool_call in tool_calls:
                     name = tool_call["function"]["name"]
                     await bus.emit(AGENT_TOOL_CALL, {
-                        "name": name, "args": tool_call["function"].get("arguments"),
+                        "name": name,
+                        "args": tool_call["function"].get("arguments"),
                         "session_id": session_id,
                     })
                     result = await asyncio.to_thread(
                         self.tool_executor.execute, tool_call=tool_call
                     )
                     await bus.emit(AGENT_TOOL_RESULT, {
-                        "name": name, "result": result.get("content"),
+                        "name": name,
+                        "result": result.get("content"),
                         "session_id": session_id,
                     })
                     messages.append(result)
+                    turn_messages.append(result)
 
             if final_text is None:
                 raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
 
+            turn_messages.append({"role": "assistant", "content": final_text})
+
             if session_id is not None:
-                self._save_turn(session_id, input_text, messages, final_text)
+                # 更新内存（供同进程内后续轮次使用）
+                for msg in turn_messages:
+                    self.add_message(session_id, Message(
+                        msg.get("content"), msg["role"],
+                        tool_calls=msg.get("tool_calls"),
+                        tool_call_id=msg.get("tool_call_id"),
+                    ))
+                # 持久化到 JSONL
+                if self.session_manager:
+                    self.session_manager.append_turn(session_id, turn_messages, input_text)
 
             await bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
 
