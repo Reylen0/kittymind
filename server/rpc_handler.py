@@ -8,7 +8,7 @@ import asyncio
 import json
 from typing import Any
 
-from baseagent.events.types import (
+from kittymind.events.types import (
     AGENT_CHUNK, AGENT_THINKING,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT,
     AGENT_DONE, AGENT_ERROR,

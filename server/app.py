@@ -17,10 +17,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from baseagent.core.llm import BaseAgentLLM
-from baseagent.events.bus import EventBus
-from baseagent.session.manager import SessionManager
-from baseagent.tools.builtin import GetCurrentTimeTool
+from kittymind.core.llm import BaseAgentLLM
+from kittymind.events.bus import EventBus
+from kittymind.session.manager import SessionManager
+from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
 from server.ws_server import start_server
 
@@ -39,12 +39,8 @@ def build_agent() -> KittyAgent:
 async def main() -> None:
     host = os.getenv("WS_HOST", "127.0.0.1")
     port = int(os.getenv("WS_PORT", "8765"))
-
     agent = build_agent()
-
-    # Electron 监听这行确认 server 就绪后再创建窗口
     print(f"[ready] ws://{host}:{port}", flush=True)
-
     await start_server(agent, host, port)
 
 

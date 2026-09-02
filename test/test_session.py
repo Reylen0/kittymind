@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from baseagent.session.store import SessionStore
-from baseagent.session.manager import SessionManager
+from kittymind.session.store import SessionStore
+from kittymind.session.manager import SessionManager
 
 
 # ──────────────────────────────────────────────────────────────

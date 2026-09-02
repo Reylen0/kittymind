@@ -3,8 +3,8 @@
 import asyncio
 import pytest
 
-from baseagent.events.bus import EventBus
-from baseagent.events.types import AGENT_CHUNK, AGENT_DONE, AGENT_START
+from kittymind.events.bus import EventBus
+from kittymind.events.types import AGENT_CHUNK, AGENT_DONE, AGENT_START
 
 
 @pytest.mark.asyncio

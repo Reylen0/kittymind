@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from baseagent.tools.executor import ToolExecutor
-from baseagent.tools.registry import ToolRegistry
+from .executor import ToolExecutor
+from .registry import ToolRegistry
 
 # ── 闸门 1：硬拒绝（bash 专用） ────────────────────────────────
 _BASH_HARD_DENY: list[tuple[str, str]] = [

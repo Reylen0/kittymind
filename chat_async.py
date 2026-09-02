@@ -2,19 +2,16 @@
 
 import asyncio
 from dotenv import load_dotenv
-
-from baseagent.session.manager import SessionManager
-
 load_dotenv()
 
-from baseagent.core import BaseAgentLLM
-from baseagent.events import EventBus, AGENT_THINKING, AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE
-from baseagent.tools import GetCurrentTimeTool
+from kittymind.session import SessionManager
+from kittymind.core import BaseAgentLLM
+from kittymind.events import EventBus, AGENT_THINKING, AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE
+from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
 
 
 def pick_session(mgr: SessionManager) -> str:
-    """启动时展示历史会话，让用户选择继续或新建，返回 session_id。"""
     sessions = mgr.list_sessions()
     if sessions:
         print("=== 历史会话 ===")

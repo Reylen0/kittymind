@@ -10,8 +10,8 @@ from server.rpc_handler import RpcHandler
 
 def make_mock_agent(tmp_path):
     """创建带 SessionManager 的 mock KittyAgent。"""
-    from baseagent.events.bus import EventBus
-    from baseagent.session.manager import SessionManager
+    from kittymind.events.bus import EventBus
+    from kittymind.session.manager import SessionManager
     from kittymind.agent import KittyAgent
 
     agent = MagicMock(spec=KittyAgent)

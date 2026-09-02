@@ -107,57 +107,42 @@ KittyMind 是一个**通用桌面 Agent**，具备：
 
 ### 4.1 Python 侧
 
-#### `baseagent/` — 基础框架（已有，需改造）
+#### `kittymind/` — 统一 Python 包
 
 ```
-baseagent/
+kittymind/
 ├── core/
 │   ├── llm.py              # BaseAgentLLM：统一 LLM 客户端
 │   ├── llm_adapters.py     # OpenAIAdapter（支持所有兼容接口）
-│   ├── llm_response.py     # LLMResponse 封装
-│   ├── agent.py            # Agent 抽象基类
-│   └── message.py          # Message（需补 tool_calls / tool_call_id 字段）
+│   ├── llm_response.py     # LLMResponse / StreamEvent
+│   ├── message.py          # Message（兼容 OpenAI tool_calls 格式）
+│   └── exceptions.py       # 异常体系
 ├── agent/
-│   ├── tool_agent.py       # ReAct 循环（stream_run 有 bug，待修复）
-│   ├── simple_agent.py     # 无工具的简单 Agent
-│   └── supervisor.py       # 多 Agent 路由
+│   ├── base.py             # Agent 抽象基类
+│   ├── tool_agent.py       # 全程流式 ReAct 循环（sync + async）
+│   └── kitty_agent.py      # KittyAgent：EventBus + SessionManager 集成
 ├── tools/
 │   ├── base.py             # BaseTool（Pydantic 参数 + 自动 schema）
 │   ├── registry.py         # ToolRegistry
 │   ├── executor.py         # ToolExecutor
-│   └── builtin/            # calculator / file_reader / http / get_time
+│   ├── permission.py       # PermissionToolExecutor（三道权限闸门）
+│   ├── get_current_time_tool.py
+│   ├── bash_tool.py        # Shell 命令执行（危险命令拦截）
+│   ├── file_read/write/edit_tool.py
+│   ├── glob_tool.py / grep_tool.py / ls_tool.py / git_tool.py
+│   ├── screenshot_tool.py  # 截图 → base64（mss）
+│   └── clipboard_tool.py   # 读写剪贴板（pyperclip）
 ├── memory/
-│   ├── buffer_memory.py    # 滑动窗口内存历史
-│   └── summary_memory.py   # LLM 摘要压缩历史
-├── events/                 # 【新增 Step 2】
-│   └── bus.py              # asyncio Pub/Sub 事件总线
-├── session/                # 【新增 Step 3】
-│   ├── manager.py          # SessionManager：CRUD + 绑定 memory
-│   └── store.py            # JSONL 文件持久化
-├── rag/                    # 向量检索（embedder/splitter/loader/store/retriever）
-├── prompts/                # PromptTemplate + hub
-└── callbacks/              # BaseCallBack 钩子接口
-```
-
-#### `kittymind/` — 桌面 Agent 实现（新增）
-
-```
-kittymind/
-├── agent.py                # KittyAgent：继承并重写 stream_run（全程流式）
-├── config.py               # KittyConfig：从 .env / settings.json 读取
-└── tools/
-    ├── shell_tool.py       # PowerShell/cmd 执行（含危险命令拦截）
-    ├── screenshot_tool.py  # 截图 → base64
-    ├── clipboard_tool.py   # 读写剪贴板
-    ├── open_tool.py        # 打开文件 / URL
-    └── (移植自 codeagent)
-        ├── glob_tool.py
-        ├── grep_tool.py
-        ├── file_read_tool.py
-        ├── file_write_tool.py
-        ├── file_edit_tool.py
-        ├── ls_tool.py
-        └── git_tool.py
+│   ├── base.py             # BaseMemory 接口
+│   └── buffer.py           # 滑动窗口内存历史
+├── events/
+│   ├── bus.py              # asyncio Pub/Sub 事件总线
+│   └── types.py            # 事件类型常量
+├── session/
+│   ├── store.py            # JSONL 文件 I/O（torn-tail 崩溃恢复）
+│   └── manager.py          # SessionManager：CRUD + 持久化
+└── callbacks/
+    └── base.py             # BaseCallBack 钩子接口
 ```
 
 #### `server/` — WebSocket JSON-RPC 服务端（新增）
@@ -606,52 +591,59 @@ agent/status   → 当前 Agent 状态
 ## 11. 目录结构规划
 
 ```
-kittymind/
-├── baseagent/              # Agent 基础框架（现有 + 改造）
-│   ├── core/
-│   ├── agent/
-│   ├── tools/
-│   ├── memory/
-│   ├── events/             # 【Phase 2 新增】
-│   ├── session/            # 【Phase 3 新增】
-│   ├── rag/
-│   ├── prompts/
-│   └── callbacks/
+kittymind/                      # 项目根目录
 │
-├── kittymind/              # 桌面 Agent 实现【Phase 1/5 新增】
-│   ├── agent.py            # KittyAgent（全程流式 ReAct）
-│   ├── config.py
-│   └── tools/              # 桌面工具集
+├── kittymind/                  # Python 统一包
+│   ├── core/                   # LLM 层（llm / adapters / message / exceptions）
+│   ├── agent/                  # Agent 实现（base / tool_agent / kitty_agent）
+│   ├── tools/                  # 工具集（base + registry + executor + 11 个工具 + permission）
+│   ├── memory/                 # 内存历史（base / buffer）
+│   ├── events/                 # 事件总线（bus / types）
+│   ├── session/                # 会话持久化（store / manager）
+│   └── callbacks/              # 回调钩子
 │
-├── server/                 # WebSocket JSON-RPC 服务端【Phase 4 新增】
-│   ├── app.py
-│   ├── ws_server.py
-│   └── rpc_handler.py
+├── server/                     # WebSocket JSON-RPC 服务端【Phase 4】
+│   ├── app.py                  # 启动入口（打印 [ready] 供 Electron 监听）
+│   ├── ws_server.py            # websockets 服务器封装
+│   └── rpc_handler.py          # 方法路由（turn/* / session/* / agent/status）
 │
-├── electron/               # Electron 桌面应用【Phase 6-8 新增】
+├── electron/                   # Electron 桌面应用【Phase 6-8】
 │   ├── package.json
-│   ├── main.js
-│   ├── preload.js
+│   ├── main.js                 # 主进程：启动 Python 子进程，创建三个窗口
+│   ├── preload.js              # contextBridge：安全暴露 ipcRenderer API
 │   └── src/
-│       ├── renderer/       # 聊天窗口
-│       ├── pet/            # 桌宠窗口
-│       └── overlay/        # 快速输入悬浮框
+│       ├── renderer/           # 聊天窗口（React）
+│       │   ├── ChatView.tsx
+│       │   ├── MessageItem.tsx
+│       │   ├── SessionList.tsx
+│       │   └── Settings.tsx
+│       ├── pet/                # 桌宠窗口（React）
+│       │   ├── PetApp.tsx
+│       │   ├── SpriteRenderer.tsx
+│       │   ├── EmotionMachine.ts
+│       │   └── SpeechBubble.tsx
+│       └── overlay/            # 快速输入悬浮框
+│           └── OverlayApp.tsx
 │
-├── assets/                 # 静态资源
-│   └── pet/
-│       └── sprites/        # 精灵图（各情绪动画帧）
+├── assets/                     # 静态资源
+│   └── pet/sprites/            # 精灵图（各情绪动画帧）
 │
-├── .kittymind/             # 运行时数据目录（用户级）
-│   ├── sessions/           # JSONL 会话文件
-│   ├── memory/             # 长期记忆（Markdown）
-│   ├── tasks/              # 任务图
-│   ├── mcp.json            # MCP 服务器配置
-│   └── settings.json       # 用户设置 + Shell Hooks
+├── test/                       # 单元测试
 │
+├── chat.py                     # CLI 同步对话演示
+├── chat_async.py               # CLI 异步对话演示（含会话选择）
 ├── pyproject.toml
 ├── .env
-├── CLAUDE.md
-└── ARCHITECTURE.md         # 本文件
+└── ARCHITECTURE.md
+```
+
+运行时数据目录（用户级，~/.kittymind/）：
+```
+~/.kittymind/
+├── sessions/           # JSONL 会话文件（每会话一个子目录）
+├── memory/             # 长期记忆（Markdown）
+├── mcp.json            # MCP 服务器配置
+└── settings.json       # 用户设置
 ```
 
 ---
