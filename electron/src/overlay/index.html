@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'">
+  <title>KittyMind Quick Input</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width:      500px;
+      height:     80px;
+      background: transparent;
+      overflow:   hidden;
+    }
+
+    .overlay {
+      width:         500px;
+      height:        80px;
+      background:    rgba(30, 30, 46, 0.92);
+      border-radius: 14px;
+      border:        1px solid rgba(205, 214, 244, 0.12);
+      backdrop-filter: blur(12px);
+      display:       flex;
+      align-items:   center;
+      padding:       0 16px;
+      gap:           10px;
+      box-shadow:    0 8px 32px rgba(0, 0, 0, 0.5);
+    }
+
+    .icon { font-size: 1.4rem; flex-shrink: 0; }
+
+    #inp {
+      flex:        1;
+      background:  transparent;
+      border:      none;
+      color:       #cdd6f4;
+      font-size:   1rem;
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      outline:     none;
+      caret-color: #89b4fa;
+    }
+
+    #inp::placeholder { color: rgba(205, 214, 244, 0.35); }
+
+    kbd {
+      background:    rgba(255, 255, 255, 0.08);
+      color:         rgba(205, 214, 244, 0.5);
+      border-radius: 4px;
+      padding:       2px 7px;
+      font-size:     0.68rem;
+      font-family:   monospace;
+      flex-shrink:   0;
+    }
+
+    .sending { opacity: 0.5; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div class="overlay" id="wrap">
+    <span class="icon">🐱</span>
+    <input id="inp" type="text" placeholder="问 KittyMind 任何问题…（Phase 7 连接对话）" autocomplete="off" spellcheck="false">
+    <kbd>Esc</kbd>
+  </div>
+
+  <script>
+    const inp  = document.getElementById('inp')
+    const wrap = document.getElementById('wrap')
+
+    inp.focus()
+
+    // Esc — hide overlay
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        if (window.overlay) window.overlay.hide()
+      }
+    })
+
+    // Enter — send message (Phase 7 will wire this to ChatView)
+    inp.addEventListener('keydown', async e => {
+      if (e.key !== 'Enter' || e.shiftKey) return
+      const text = inp.value.trim()
+      if (!text || !window.overlay) return
+
+      wrap.classList.add('sending')
+      inp.placeholder = '发送中…'
+      inp.value = ''
+
+      try {
+        // Create a session if needed (simplified — Phase 7 handles properly)
+        const sess = await window.overlay.createSession('Quick Input')
+        await window.overlay.sendMessage(text, sess?.id || 'default')
+      } catch (err) {
+        console.error('send failed:', err)
+      } finally {
+        wrap.classList.remove('sending')
+        inp.placeholder = '问 KittyMind 任何问题…（Phase 7 连接对话）'
+        // Hide after sending
+        if (window.overlay) window.overlay.hide()
+      }
+    })
+  </script>
+</body>
+</html>

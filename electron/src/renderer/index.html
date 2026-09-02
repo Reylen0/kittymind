@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'">
+  <title>KittyMind</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      user-select: none;
+    }
+    h1 { font-size: 2rem; }
+    p  { opacity: 0.5; font-size: 0.85rem; }
+    .badge {
+      background: #313244;
+      border-radius: 8px;
+      padding: 8px 18px;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #a6e3a1; }
+    .dot.error { background: #f38ba8; }
+    .log {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: #181825;
+      padding: 6px 12px;
+      font-size: 0.72rem;
+      color: #6c7086;
+      font-family: monospace;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>🐱 KittyMind</h1>
+  <p>聊天窗口 — Phase 7 将加入 React UI</p>
+
+  <div class="badge">
+    <div class="dot" id="dot"></div>
+    <span id="status">正在连接 Python 后端…</span>
+  </div>
+
+  <p style="font-size:0.75rem;opacity:0.3">Ctrl+Shift+Space 唤起快捷输入框 &nbsp;·&nbsp; Ctrl+Shift+K 显示/隐藏此窗口</p>
+
+  <div class="log" id="log"></div>
+
+  <script>
+    const statusEl = document.getElementById('status')
+    const dotEl    = document.getElementById('dot')
+    const logEl    = document.getElementById('log')
+
+    function log(msg) {
+      const line = document.createElement('div')
+      line.textContent = new Date().toLocaleTimeString() + '  ' + msg
+      logEl.appendChild(line)
+      logEl.scrollTop = logEl.scrollHeight
+    }
+
+    if (!window.kitty) {
+      statusEl.textContent = 'kitty API 未加载（contextBridge 异常）'
+      dotEl.classList.add('error')
+    } else {
+      window.kitty.agentStatus()
+        .then(r => {
+          statusEl.textContent = 'Python 已连接  —  ' + JSON.stringify(r)
+          log('agent/status: ' + JSON.stringify(r))
+        })
+        .catch(e => {
+          statusEl.textContent = '连接失败: ' + e.message
+          dotEl.classList.add('error')
+          log('error: ' + e.message)
+        })
+
+      // Show streaming events in log
+      for (const evt of ['agent.thinking','agent.chunk','agent.tool_call','agent.tool_result','agent.done','agent.error']) {
+        window.kitty.on(evt, data => log(`[${evt}] ` + JSON.stringify(data)))
+      }
+    }
+  </script>
+</body>
+</html>

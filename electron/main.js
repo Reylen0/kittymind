@@ -1,0 +1,377 @@
+'use strict'
+/**
+ * Electron 主进程
+ *
+ * 启动流程:
+ *   1. spawnPython() — 启动 `uv run python -m server.app`
+ *   2. waitForReady() — 等待 stdout 出现 "[ready] ws://..." 行
+ *   3. PythonBridge.connect() — 建立 WebSocket 连接
+ *   4. 创建三个窗口（Chat / Pet / Overlay）
+ *   5. 注册全局热键、系统托盘
+ */
+
+const {
+  app, BrowserWindow, ipcMain, globalShortcut,
+  Tray, Menu, nativeImage, screen,
+} = require('electron')
+const { spawn } = require('child_process')
+const path      = require('path')
+const fs        = require('fs')
+const WebSocket = require('ws')
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const PROJECT_ROOT = path.join(__dirname, '..')
+const IS_DEV       = !app.isPackaged
+
+const WIN_SPEC = {
+  CHAT:    { w: 900, h: 650, html: path.join(__dirname, 'src', 'renderer', 'index.html') },
+  PET:     { w: 180, h: 180, html: path.join(__dirname, 'src', 'pet',      'index.html') },
+  OVERLAY: { w: 500, h: 80,  html: path.join(__dirname, 'src', 'overlay',  'index.html') },
+}
+
+// Agent events that get relayed from Python → all renderer windows
+const PUSH_EVENTS = [
+  'agent.start', 'agent.thinking', 'agent.chunk',
+  'agent.tool_call', 'agent.tool_result', 'agent.done', 'agent.error',
+]
+
+// ─── Global State ─────────────────────────────────────────────────────────────
+
+let chatWin    = null
+let petWin     = null
+let overlayWin = null
+let tray       = null
+let pythonProc = null
+let bridge     = null
+
+// ─── PythonBridge ─────────────────────────────────────────────────────────────
+
+class PythonBridge {
+  constructor() {
+    this._ws            = null
+    this._pending       = new Map()   // id → { resolve, reject, timer }
+    this._eventHandlers = new Map()   // method → Set<fn>
+    this._nextId        = 1
+  }
+
+  connect(url) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(url)
+      ws.once('open',  () => { this._ws = ws; resolve() })
+      ws.once('error', reject)
+      ws.on('message', (raw) => this._onMessage(raw))
+      ws.on('close',   () => { this._ws = null })
+    })
+  }
+
+  _onMessage(raw) {
+    let msg
+    try { msg = JSON.parse(raw) } catch { return }
+
+    if (msg.id != null) {
+      // RPC response
+      const p = this._pending.get(msg.id)
+      if (!p) return
+      clearTimeout(p.timer)
+      this._pending.delete(msg.id)
+      msg.error ? p.reject(new Error(String(msg.error?.message ?? msg.error)))
+                : p.resolve(msg.result)
+    } else if (msg.method) {
+      // Server-push event (no id field)
+      const handlers = this._eventHandlers.get(msg.method)
+      if (handlers) handlers.forEach(fn => { try { fn(msg.params) } catch {} })
+    }
+  }
+
+  call(method, params = {}, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      if (!this.isConnected) { reject(new Error('not connected')); return }
+      const id    = this._nextId++
+      const timer = setTimeout(() => {
+        this._pending.delete(id)
+        reject(new Error(`RPC timeout: ${method}`))
+      }, timeoutMs)
+      this._pending.set(id, { resolve, reject, timer })
+      this._ws.send(JSON.stringify({ id, method, params }))
+    })
+  }
+
+  onEvent(method, fn) {
+    if (!this._eventHandlers.has(method)) this._eventHandlers.set(method, new Set())
+    this._eventHandlers.get(method).add(fn)
+  }
+
+  get isConnected() {
+    return this._ws != null && this._ws.readyState === WebSocket.OPEN
+  }
+
+  close() { this._ws?.close() }
+}
+
+// ─── Python Process ───────────────────────────────────────────────────────────
+
+function spawnPython() {
+  const proc = spawn('uv', ['run', 'python', '-m', 'server.app'], {
+    cwd:   PROJECT_ROOT,
+    env:   { ...process.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  proc.stderr.on('data', d => process.stderr.write(`[py] ${d}`))
+  proc.on('error', e  => console.error('[py] spawn error:', e.message))
+  proc.on('exit',  (code, sig) => {
+    console.log(`[py] exited code=${code} sig=${sig}`)
+    pythonProc = null
+  })
+
+  return proc
+}
+
+function waitForReady(proc, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error('Python server did not start within 30s')),
+      timeoutMs,
+    )
+
+    let buf = ''
+    proc.stdout.on('data', chunk => {
+      buf += chunk.toString()
+      const lines = buf.split('\n')
+      buf = lines.pop()
+      for (const line of lines) {
+        process.stdout.write(`[py] ${line}\n`)
+        const m = line.match(/\[ready\]\s+(ws:\/\/\S+)/)
+        if (m) { clearTimeout(t); resolve(m[1]) }
+      }
+    })
+
+    proc.on('exit', code => {
+      clearTimeout(t)
+      reject(new Error(`Python exited early with code ${code}`))
+    })
+  })
+}
+
+// ─── Event Relay ─────────────────────────────────────────────────────────────
+
+function broadcastToWindows(channel, data) {
+  for (const win of [chatWin, petWin, overlayWin]) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(channel, data)
+    }
+  }
+}
+
+function setupEventRelay(b) {
+  for (const evt of PUSH_EVENTS) {
+    b.onEvent(evt, params => broadcastToWindows(`ws:event:${evt}`, params))
+  }
+}
+
+// ─── IPC ──────────────────────────────────────────────────────────────────────
+
+function setupIpc(b) {
+  // Relay RPC calls from any renderer → Python WS
+  ipcMain.handle('ws:call', async (_e, { method, params }) => {
+    if (!b?.isConnected) return { error: 'Python backend not connected' }
+    try   { return await b.call(method, params) }
+    catch (e) { return { error: e.message } }
+  })
+
+  // Overlay: hide on request or after sending a message
+  ipcMain.on('overlay:hide', () => overlayWin?.hide())
+
+  // Pet: toggle click-through mode
+  ipcMain.on('pet:set-ignore-mouse', (_e, ignore) => {
+    petWin?.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+  })
+}
+
+// ─── Window Factories ─────────────────────────────────────────────────────────
+
+function createChatWindow() {
+  chatWin = new BrowserWindow({
+    width:           WIN_SPEC.CHAT.w,
+    height:          WIN_SPEC.CHAT.h,
+    title:           'KittyMind',
+    backgroundColor: '#1e1e2e',
+    webPreferences: {
+      preload:          path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration:  false,
+    },
+  })
+  chatWin.loadFile(WIN_SPEC.CHAT.html)
+  if (IS_DEV) chatWin.webContents.openDevTools({ mode: 'detach' })
+  chatWin.on('closed', () => { chatWin = null })
+  return chatWin
+}
+
+function createPetWindow() {
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+  petWin = new BrowserWindow({
+    width:       WIN_SPEC.PET.w,
+    height:      WIN_SPEC.PET.h,
+    x:           sw - WIN_SPEC.PET.w - 20,
+    y:           sh - WIN_SPEC.PET.h - 40,
+    transparent: true,
+    frame:       false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable:   false,
+    webPreferences: {
+      preload:          path.join(__dirname, 'preload-pet.js'),
+      contextIsolation: true,
+      nodeIntegration:  false,
+    },
+  })
+  petWin.loadFile(WIN_SPEC.PET.html)
+  petWin.on('closed', () => { petWin = null })
+  return petWin
+}
+
+function createOverlayWindow() {
+  const { width: sw } = screen.getPrimaryDisplay().workAreaSize
+  overlayWin = new BrowserWindow({
+    width:       WIN_SPEC.OVERLAY.w,
+    height:      WIN_SPEC.OVERLAY.h,
+    x:           Math.floor((sw - WIN_SPEC.OVERLAY.w) / 2),
+    y:           120,
+    transparent: true,
+    frame:       false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable:   false,
+    show:        false,   // starts hidden, Ctrl+Shift+Space to show
+    webPreferences: {
+      preload:          path.join(__dirname, 'preload-overlay.js'),
+      contextIsolation: true,
+      nodeIntegration:  false,
+    },
+  })
+  overlayWin.loadFile(WIN_SPEC.OVERLAY.html)
+  // Auto-hide when focus leaves overlay
+  overlayWin.on('blur',   () => overlayWin?.hide())
+  overlayWin.on('closed', () => { overlayWin = null })
+  return overlayWin
+}
+
+// ─── Tray ─────────────────────────────────────────────────────────────────────
+
+function setupTray() {
+  const iconPath = path.join(PROJECT_ROOT, 'assets', 'tray-icon.png')
+  const icon = fs.existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    : nativeImage.createEmpty()
+
+  tray = new Tray(icon)
+  tray.setToolTip('KittyMind')
+
+  const buildMenu = () => Menu.buildFromTemplate([
+    {
+      label: chatWin?.isVisible() ? '隐藏主窗口' : '显示主窗口',
+      click: () => chatWin?.isVisible() ? chatWin.hide() : chatWin?.show(),
+    },
+    {
+      label: petWin?.isVisible() ? '隐藏桌宠' : '显示桌宠',
+      click: () => petWin?.isVisible() ? petWin.hide() : petWin?.show(),
+    },
+    { type: 'separator' },
+    { label: '退出 KittyMind', click: () => app.quit() },
+  ])
+
+  // Left-click: show/focus chat
+  tray.on('click', () => {
+    if (!chatWin) return
+    chatWin.isVisible() ? chatWin.focus() : chatWin.show()
+  })
+  // Right-click: context menu (rebuilt each time for fresh visibility state)
+  tray.on('right-click', () => tray.setContextMenu(buildMenu()))
+  tray.setContextMenu(buildMenu())
+}
+
+// ─── Hotkeys ──────────────────────────────────────────────────────────────────
+
+function setupHotkeys() {
+  // Ctrl+Shift+Space — toggle quick-input overlay
+  globalShortcut.register('Ctrl+Shift+Space', () => {
+    if (!overlayWin) return
+    if (overlayWin.isVisible()) {
+      overlayWin.hide()
+    } else {
+      overlayWin.center()
+      overlayWin.show()
+      overlayWin.focus()
+    }
+  })
+
+  // Ctrl+Shift+K — show/hide main chat window
+  globalShortcut.register('Ctrl+Shift+K', () => {
+    if (!chatWin) return
+    chatWin.isVisible() ? chatWin.hide() : (chatWin.show(), chatWin.focus())
+  })
+}
+
+// ─── App Lifecycle ────────────────────────────────────────────────────────────
+
+app.whenReady().then(async () => {
+  try {
+    console.log('[main] Starting Python server...')
+    pythonProc = spawnPython()
+    const wsUrl = await waitForReady(pythonProc)
+    console.log(`[main] Python ready at ${wsUrl}`)
+
+    bridge = new PythonBridge()
+    await bridge.connect(wsUrl)
+    console.log('[main] WebSocket connected')
+
+    setupIpc(bridge)
+    setupEventRelay(bridge)
+  } catch (err) {
+    console.error('[main] Python/WS init failed:', err.message)
+    // Continue without backend — windows still open, calls will return error
+    setupIpc(null)
+  }
+
+  createChatWindow()
+  createPetWindow()
+  createOverlayWindow()
+  setupTray()
+  setupHotkeys()
+  console.log('[main] Ready')
+})
+
+// On Windows/Linux, closing all windows doesn't quit by default (tray stays)
+app.on('window-all-closed', () => {
+  if (process.platform === 'darwin') app.quit()
+  // On Windows: keep running in tray
+})
+
+app.on('activate', () => {
+  if (!chatWin) createChatWindow()
+})
+
+function killPython() {
+  if (!pythonProc) return
+  const proc = pythonProc
+  pythonProc = null
+  if (process.platform === 'win32') {
+    // /T kills the entire process tree (uv → python → any children)
+    spawn('taskkill', ['/F', '/T', '/PID', String(proc.pid)], { stdio: 'ignore' })
+  } else {
+    proc.kill('SIGTERM')
+  }
+}
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll()
+  bridge?.close()
+  killPython()
+})
+
+// Ctrl+C in terminal sends SIGINT to the process group; handle it explicitly
+// so will-quit fires and Python is cleaned up
+process.on('SIGINT',  () => app.quit())
+process.on('SIGTERM', () => app.quit())

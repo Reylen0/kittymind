@@ -1,0 +1,37 @@
+{
+  "name": "kittymind",
+  "version": "0.1.0",
+  "description": "KittyMind — General Purpose Desktop Agent",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^36.0.0"
+  },
+  "build": {
+    "appId": "com.kittymind.desktop",
+    "productName": "KittyMind",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload*.js",
+      "src/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "../assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

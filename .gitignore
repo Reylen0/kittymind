@@ -47,3 +47,7 @@ uv.lock
 
 # 测试临时文件
 test_doc.txt
+
+# Electron
+electron/node_modules/
+electron/dist/
