@@ -40,6 +40,14 @@ from .rag.splitter import Splitter
 from .rag.vector_store import VectorStore
 from .rag.retriever import Retriever
 
+# Events
+from .events.bus import EventBus
+from .events.types import (
+    AgentEvent,
+    AGENT_START, AGENT_THINKING, AGENT_CHUNK,
+    AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
+)
+
 # Exceptions
 from .core.exceptions import (
     BaseAgentException,
@@ -84,6 +92,11 @@ __all__ = [
     "Splitter",
     "VectorStore",
     "Retriever",
+    # Events
+    "EventBus",
+    "AgentEvent",
+    "AGENT_START", "AGENT_THINKING", "AGENT_CHUNK",
+    "AGENT_TOOL_CALL", "AGENT_TOOL_RESULT", "AGENT_DONE", "AGENT_ERROR",
     # Exceptions
     "BaseAgentException",
     "LLMException",

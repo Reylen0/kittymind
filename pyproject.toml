@@ -11,3 +11,12 @@ dependencies = [
     "numpy>=1.26.0",
     "tzdata>=2026.3",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
