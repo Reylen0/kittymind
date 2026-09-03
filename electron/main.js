@@ -28,7 +28,7 @@ const IS_DEV       = !app.isPackaged
 const WIN_SPEC = {
   // CHAT html is only used in prod; dev uses VITE_DEV_URL
   CHAT:    { w: 900, h: 650, html: path.join(__dirname, 'renderer-dist', 'index.html') },
-  PET:     { w: 180, h: 180, html: path.join(__dirname, 'src', 'pet',      'index.html') },
+  PET:     { w: 180, h: 200, html: path.join(__dirname, 'src', 'pet',      'index.html') },
   OVERLAY: { w: 500, h: 80,  html: path.join(__dirname, 'src', 'overlay',  'index.html') },
 }
 
@@ -190,6 +190,36 @@ function setupIpc(b) {
   // Pet: toggle click-through mode
   ipcMain.on('pet:set-ignore-mouse', (_e, ignore) => {
     petWin?.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+  })
+
+  // Pet: drag & edge snapping
+  ipcMain.handle('pet:get-bounds', () => petWin?.getBounds() ?? { x: 0, y: 0, width: 180, height: 200 })
+  ipcMain.on('pet:move', (_e, { x, y }) => petWin?.setPosition(Math.round(x), Math.round(y)))
+  ipcMain.handle('pet:snap-edge', () => {
+    if (!petWin) return
+    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+    const [wx, wy] = petWin.getPosition()
+    const { width: ww, height: wh } = petWin.getBounds()
+    const snap = 30
+    let nx = wx, ny = wy
+    if (wx < snap)          nx = 0
+    if (wx + ww > sw - snap) nx = sw - ww
+    if (wy < snap)          ny = 0
+    if (wy + wh > sh - snap) ny = sh - wh
+    petWin.setPosition(nx, ny)
+  })
+
+  // Pet: native context menu
+  ipcMain.on('pet:context-menu', () => {
+    if (!petWin) return
+    const menu = Menu.buildFromTemplate([
+      { label: '打开主窗口',  click: () => { chatWin?.show(); chatWin?.focus() } },
+      { label: petWin.isVisible() ? '隐藏桌宠' : '显示桌宠',
+        click: () => petWin?.isVisible() ? petWin.hide() : petWin?.show() },
+      { type: 'separator' },
+      { label: '退出 KittyMind', click: () => app.quit() },
+    ])
+    menu.popup({ window: petWin })
   })
 }
 
