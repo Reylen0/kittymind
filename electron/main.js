@@ -18,12 +18,12 @@ const { spawn } = require('child_process')
 const path      = require('path')
 const fs        = require('fs')
 const WebSocket = require('ws')
-const { ensureTrayIcon } = require('./icon-gen')
+const { ensureTrayIcon, ensureAppIcon } = require('./icon-gen')
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const PROJECT_ROOT = path.join(__dirname, '..')
-const IS_DEV       = !app.isPackaged
+const IS_DEV       = process.argv.includes('--dev')
 
 const WIN_SPEC = {
   // CHAT html is only used in prod; dev uses VITE_DEV_URL
@@ -116,8 +116,22 @@ class PythonBridge {
 // ─── Python Process ───────────────────────────────────────────────────────────
 
 function spawnPython() {
-  const proc = spawn('uv', ['run', 'python', '-m', 'server.app'], {
-    cwd:   PROJECT_ROOT,
+  let cmd, args, cwd
+
+  if (app.isPackaged) {
+    // Production: use PyInstaller-bundled server.exe
+    cmd  = path.join(process.resourcesPath, 'server', 'server.exe')
+    args = []
+    cwd  = path.join(process.resourcesPath, 'server')
+  } else {
+    // Dev / pnpm start: delegate to uv
+    cmd  = 'uv'
+    args = ['run', 'python', '-m', 'server.app']
+    cwd  = PROJECT_ROOT
+  }
+
+  const proc = spawn(cmd, args, {
+    cwd,
     env:   { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -319,7 +333,7 @@ function createOverlayWindow() {
 // ─── Tray ─────────────────────────────────────────────────────────────────────
 
 function setupTray() {
-  const iconPath = path.join(PROJECT_ROOT, 'assets', 'tray-icon.png')
+  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
   ensureTrayIcon(iconPath)
   const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
 
@@ -374,6 +388,9 @@ function setupHotkeys() {
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // Ensure app icons exist (no-op if already present)
+  ensureAppIcon(path.join(__dirname, 'assets', 'icon.ico'))
+
   try {
     console.log('[main] Starting Python server...')
     pythonProc = spawnPython()

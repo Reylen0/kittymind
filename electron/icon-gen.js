@@ -64,4 +64,34 @@ function ensureTrayIcon(destPath) {
   fs.writeFileSync(destPath, solidPng(32, 32, 251, 146, 60))  // #FB923C orange
 }
 
-module.exports = { ensureTrayIcon }
+/**
+ * 如果 destPath 不存在，生成一个 256×256 PNG-in-ICO 写入该路径。
+ * Windows 应用图标格式：ICO header + ICONDIRENTRY + PNG data。
+ */
+function ensureAppIcon(destPath) {
+  if (fs.existsSync(destPath)) return
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+
+  const png = solidPng(256, 256, 251, 146, 60)  // #FB923C orange
+
+  // ICONDIR header (6 bytes)
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0)  // reserved
+  header.writeUInt16LE(1, 2)  // type = 1 (ICO)
+  header.writeUInt16LE(1, 4)  // count = 1 image
+
+  // ICONDIRENTRY (16 bytes)
+  const entry = Buffer.alloc(16)
+  entry[0] = 0   // width:  0 = 256
+  entry[1] = 0   // height: 0 = 256
+  entry[2] = 0   // color count (0 for 32-bit)
+  entry[3] = 0   // reserved
+  entry.writeUInt16LE(1,  4)              // planes
+  entry.writeUInt16LE(32, 6)              // bit count
+  entry.writeUInt32LE(png.length, 8)      // image data size
+  entry.writeUInt32LE(6 + 16, 12)         // image data offset
+
+  fs.writeFileSync(destPath, Buffer.concat([header, entry, png]))
+}
+
+module.exports = { ensureTrayIcon, ensureAppIcon }

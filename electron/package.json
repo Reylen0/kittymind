@@ -5,15 +5,12 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron . --dev\"",
     "dev:vite": "vite",
     "build:renderer": "vite build",
     "build:win": "pnpm run build:renderer && electron-builder --win"
   },
   "dependencies": {
-    "ag-psd": "^31.0.2",
-    "canvas": "^3.2.3",
-    "pngjs": "^7.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ws": "^8.18.0"
@@ -24,6 +21,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.0.0",
     "electron": "^44.1.0",
+    "electron-builder": "^25.1.8",
     "playwright-core": "^1.62.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
@@ -32,20 +30,33 @@
   "build": {
     "appId": "com.kittymind.desktop",
     "productName": "KittyMind",
+    "asar": false,
     "directories": {
-      "output": "dist"
+      "output": "dist-build"
     },
     "files": [
       "main.js",
+      "icon-gen.js",
       "preload*.js",
+      "assets/**/*",
       "renderer-dist/**/*",
       "src/pet/**/*",
       "src/overlay/**/*",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "../dist-python/server/",
+        "to": "server",
+        "filter": ["**/*"]
+      }
+    ],
     "win": {
-      "target": "nsis",
-      "icon": "../assets/icon.ico"
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "dir",  "arch": ["x64"] }
+      ],
+      "icon": "assets/icon.ico"
     },
     "nsis": {
       "oneClick": false,

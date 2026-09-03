@@ -60,7 +60,7 @@
 <body>
   <div class="overlay" id="wrap">
     <span class="icon">🐱</span>
-    <input id="inp" type="text" placeholder="问 KittyMind 任何问题…（Phase 7 连接对话）" autocomplete="off" spellcheck="false">
+    <input id="inp" type="text" placeholder="问 KittyMind 任何问题…" autocomplete="off" spellcheck="false">
     <kbd>Esc</kbd>
   </div>
 
@@ -95,7 +95,7 @@
         console.error('send failed:', err)
       } finally {
         wrap.classList.remove('sending')
-        inp.placeholder = '问 KittyMind 任何问题…（Phase 7 连接对话）'
+        inp.placeholder = '问 KittyMind 任何问题…'
         // Hide after sending
         if (window.overlay) window.overlay.hide()
       }

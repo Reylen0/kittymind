@@ -51,4 +51,10 @@ test_doc.txt
 # Electron
 electron/node_modules/
 electron/dist/
+electron/dist-build/
 electron/renderer-dist/
+
+# PyInstaller 打包输出
+dist-python/
+build-python/
+*.spec.bak

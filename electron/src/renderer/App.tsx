@@ -13,7 +13,7 @@ export default function App() {
 
   async function loadSessions() {
     const list = await window.kitty?.listSessions()
-    if (!list) return
+    if (!Array.isArray(list)) return
     setSessions(list)
     // 只在没有当前会话时才自动选中第一个（不覆盖正在输入中的新会话）
     setCurrentId(prev => {

@@ -12,10 +12,22 @@ Electron 通过监听 stdout 中的 "[ready] ws://..." 行确认 server 就绪�
 
 import asyncio
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# .env 加载优先级：
+#   1. ~/.kittymind/.env  （用户级配置，打包和开发都适用）
+#   2. exe/脚本所在目录/.env
+#   3. 当前工作目录/.env（兜底）
+_user_env = Path.home() / ".kittymind" / ".env"
+if _user_env.exists():
+    load_dotenv(_user_env)
+else:
+    _exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent.parent
+    load_dotenv(_exe_dir / ".env")
+    load_dotenv()  # fallback: cwd
 
 from kittymind.core.llm import BaseAgentLLM
 from kittymind.events.bus import EventBus
