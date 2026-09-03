@@ -53,19 +53,20 @@ async def main() -> None:
     base_port = int(os.getenv("WS_PORT", "8765"))
     agent = build_agent()
 
-    # 如果首选端口被占用，自动往后找一个可用端口
     port = base_port
-    for _ in range(10):
+    for _ in range(20):
         try:
-            print(f"[ready] ws://{host}:{port}", flush=True)
             await start_server(agent, host, port)
             return
         except OSError as e:
-            if e.errno == 10048 or e.errno == 98:  # Windows / Linux address in use
+            if e.errno in (10048, 98):
                 print(f"[warn] port {port} in use, trying {port + 1}", flush=True)
                 port += 1
             else:
                 raise
+
+    print(f"[error] no available port in range {base_port}-{port - 1}", flush=True)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

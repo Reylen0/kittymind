@@ -14,16 +14,13 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
-  // Keep a stable ref to onSessionUpdate so the event effect never needs it as a dep
   const onSessionUpdateRef = useRef(onSessionUpdate)
   useEffect(() => { onSessionUpdateRef.current = onSessionUpdate })
 
-  // Auto-scroll
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Load history when session changes
   useEffect(() => {
     setMessages([])
     setIsLoading(false)
@@ -51,8 +48,6 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
     loadHistory()
   }, [sessionId])
 
-  // Subscribe to agent events — effect only re-runs when sessionId changes.
-  // on() returns the unsubscribe fn; call them all in cleanup.
   useEffect(() => {
     const onChunk = (d: { delta: string; session_id: string }) => {
       if (d.session_id !== sessionId) return
@@ -110,7 +105,7 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
       window.kitty?.on('agent.error',       onError),
     ]
     return () => unsubs.forEach(u => u?.())
-  }, [sessionId])  // stable — only re-subscribe when session changes
+  }, [sessionId])
 
   const sendMessage = useCallback(async () => {
     const text = input.trim()
@@ -128,31 +123,49 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
     }
   }
 
+  const inputBox = (
+    <div className="input-wrapper">
+      <textarea
+        ref={inputRef}
+        className="input-box"
+        value={input}
+        onChange={e => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder="发送消息… (Enter 发送，Shift+Enter 换行)"
+        disabled={isLoading}
+        autoFocus
+      />
+      <div className="input-footer">
+        <button className="btn-add" type="button">＋</button>
+        {isLoading
+          ? <button className="btn-cancel-round" onClick={() => window.kitty?.cancelTurn(sessionId)}>■</button>
+          : <button className="btn-send-round" onClick={sendMessage} disabled={!input.trim()}>↑</button>
+        }
+      </div>
+    </div>
+  )
+
+  if (messages.length === 0) {
+    return (
+      <div className="chat-view">
+        <div className="landing-view">
+          <div className="landing-content">
+            <div className="landing-title">🐱 KittyMind</div>
+            {inputBox}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="chat-view">
       <div className="messages">
         {messages.map(m => <MessageItem key={m.id} message={m} />)}
         <div ref={bottomRef} />
       </div>
-
       <div className="input-area">
-        <textarea
-          ref={inputRef}
-          className="input-box"
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="发送消息… (Enter 发送，Shift+Enter 换行)"
-          disabled={isLoading}
-          autoFocus
-        />
-        <div className="input-actions">
-          <span className="input-hint">Shift+Enter 换行</span>
-          {isLoading
-            ? <button className="btn-cancel" onClick={() => window.kitty?.cancelTurn(sessionId)}>⏹ 停止</button>
-            : <button className="btn-send" onClick={sendMessage} disabled={!input.trim()}>发送 ↵</button>
-          }
-        </div>
+        {inputBox}
       </div>
     </div>
   )

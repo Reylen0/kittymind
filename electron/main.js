@@ -198,6 +198,21 @@ function setupIpc(b) {
     catch (e) { return { error: e.message } }
   })
 
+  // Window controls & edit actions from custom TopBar
+  ipcMain.handle('window:control', (_e, action) => {
+    switch (action) {
+      case 'minimize':   chatWin?.minimize(); break
+      case 'maximize':   chatWin?.isMaximized() ? chatWin.unmaximize() : chatWin?.maximize(); break
+      case 'close':      chatWin?.close(); break
+      case 'undo':       chatWin?.webContents.undo(); break
+      case 'redo':       chatWin?.webContents.redo(); break
+      case 'cut':        chatWin?.webContents.cut(); break
+      case 'copy':       chatWin?.webContents.copy(); break
+      case 'paste':      chatWin?.webContents.paste(); break
+      case 'selectAll':  chatWin?.webContents.selectAll(); break
+    }
+  })
+
   // Overlay: hide on request or after sending a message
   ipcMain.on('overlay:hide', () => overlayWin?.hide())
 
@@ -257,6 +272,62 @@ function setupIpc(b) {
   })
 }
 
+// ─── Application Menu ─────────────────────────────────────────────────────────
+
+function setupAppMenu() {
+  const aboutClick = () => dialog.showMessageBox(chatWin, {
+    type: 'info', title: 'KittyMind', message: 'KittyMind',
+    detail: '版本 v0.1.0\n通用桌面 AI Agent', buttons: ['确定'],
+  })
+
+  const template = [
+    {
+      label: 'KittyMind',
+      submenu: [
+        { label: '关于 KittyMind', click: aboutClick },
+        { type: 'separator' },
+        { label: '退出', role: 'quit' },
+      ],
+    },
+    {
+      label: '编辑(E)',
+      submenu: [
+        { label: '撤销(U)',  role: 'undo',      accelerator: 'CmdOrCtrl+Z' },
+        { label: '重做(R)',  role: 'redo',      accelerator: 'CmdOrCtrl+Y' },
+        { type: 'separator' },
+        { label: '剪切(T)',  role: 'cut',       accelerator: 'CmdOrCtrl+X' },
+        { label: '复制(C)',  role: 'copy',      accelerator: 'CmdOrCtrl+C' },
+        { label: '粘贴(P)',  role: 'paste',     accelerator: 'CmdOrCtrl+V' },
+        { type: 'separator' },
+        { label: '全选(A)',  role: 'selectAll', accelerator: 'CmdOrCtrl+A' },
+      ],
+    },
+    {
+      label: '窗口(W)',
+      submenu: [
+        { label: '最小化', role: 'minimize' },
+        {
+          label: '最大化 / 还原',
+          click: () => {
+            if (!chatWin) return
+            chatWin.isMaximized() ? chatWin.unmaximize() : chatWin.maximize()
+          },
+        },
+        { type: 'separator' },
+        { label: '关闭窗口', role: 'close' },
+      ],
+    },
+    {
+      label: '帮助(H)',
+      submenu: [
+        { label: '关于 KittyMind', click: aboutClick },
+      ],
+    },
+  ]
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 // ─── Window Factories ─────────────────────────────────────────────────────────
 
 function createChatWindow() {
@@ -264,7 +335,13 @@ function createChatWindow() {
     width:           WIN_SPEC.CHAT.w,
     height:          WIN_SPEC.CHAT.h,
     title:           'KittyMind',
-    backgroundColor: '#1e1e2e',
+    backgroundColor: '#f5f5f7',
+    titleBarStyle:   'hidden',
+    titleBarOverlay: {
+      color:       '#f5f5f7',
+      symbolColor: '#1c1c1e',
+      height:      40,
+    },
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -389,6 +466,8 @@ function setupHotkeys() {
 app.whenReady().then(async () => {
   // Ensure app icons exist (no-op if already present)
   ensureAppIcon(path.join(__dirname, 'assets', 'icon.ico'))
+
+  Menu.setApplicationMenu(null)   // 菜单移入自定义顶栏，去掉原生第二行
 
   try {
     console.log('[main] Starting Python server...')

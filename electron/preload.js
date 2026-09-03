@@ -3,17 +3,17 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('kitty', {
-  // ── Generic RPC ──────────────────────────────────────────────────────────
+  // Generic RPC
   call: (method, params = {}) =>
     ipcRenderer.invoke('ws:call', { method, params }),
 
-  // ── Conversation ─────────────────────────────────────────────────────────
+  // Conversation
   sendMessage: (text, sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'turn/run',    params: { text, session_id: sessionId } }),
   cancelTurn: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'turn/cancel', params: { session_id: sessionId } }),
 
-  // ── Session management ───────────────────────────────────────────────────
+  // Session management
   createSession: (title) =>
     ipcRenderer.invoke('ws:call', { method: 'session/create', params: { title } }),
   listSessions: () =>
@@ -23,13 +23,17 @@ contextBridge.exposeInMainWorld('kitty', {
   deleteSession: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'session/delete', params: { session_id: sessionId } }),
 
-  // ── Agent state ──────────────────────────────────────────────────────────
+  // Agent state
   agentStatus: () =>
     ipcRenderer.invoke('ws:call', { method: 'agent/status', params: {} }),
 
-  // ── Event subscriptions ──────────────────────────────────────────────────
-  // on() registers a wrapper and returns an unsubscribe function.
-  // Do NOT use off() — pass the returned cleanup to useEffect's return instead.
+  // Window / edit controls (custom TopBar)
+  windowControl: (action) => ipcRenderer.invoke('window:control', action),
+
+  // Workspace: open native directory picker
+  selectWorkspace: () => ipcRenderer.invoke('workspace:select'),
+
+  // Event subscriptions — on() returns an unsubscribe function
   on: (event, cb) => {
     const wrapper = (_e, data) => cb(data)
     ipcRenderer.on(`ws:event:${event}`, wrapper)

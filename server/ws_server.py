@@ -30,5 +30,9 @@ async def _handle(websocket, agent: KittyAgent) -> None:
 
 
 async def start_server(agent: KittyAgent, host: str, port: int) -> None:
-    async with websockets.serve(lambda ws: _handle(ws, agent), host, port):
+    server = await websockets.serve(
+        lambda ws: _handle(ws, agent), host, port
+    )
+    print(f"[ready] ws://{host}:{port}", flush=True)
+    async with server:
         await asyncio.Future()  # 永久运行

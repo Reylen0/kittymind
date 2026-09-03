@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
+import TopBar from './TopBar'
 import SessionList from './SessionList'
 import ChatView from './ChatView'
 import type { Session } from './types'
 import './style.css'
 
 export default function App() {
-  const [sessions, setSessions]     = useState<Session[]>([])
-  const [currentId, setCurrentId]   = useState<string | null>(null)
-  const [sidebarOpen, setSidebar]   = useState(true)
+  const [sessions, setSessions]       = useState<Session[]>([])
+  const [currentId, setCurrentId]     = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
 
   useEffect(() => { loadSessions() }, [])
 
@@ -15,7 +16,6 @@ export default function App() {
     const list = await window.kitty?.listSessions()
     if (!Array.isArray(list)) return
     setSessions(list)
-    // 只在没有当前会话时才自动选中第一个（不覆盖正在输入中的新会话）
     setCurrentId(prev => {
       if (prev !== null) return prev
       return list[0]?.id ?? null
@@ -23,8 +23,6 @@ export default function App() {
   }
 
   function createSession() {
-    // 只在前端生成 UUID，不预先调后端
-    // Python 会在第一条消息的 append_turn 里用消息内容自动生成标题并建 session
     setCurrentId(crypto.randomUUID())
   }
 
@@ -37,35 +35,33 @@ export default function App() {
     })
   }
 
-  const currentTitle = sessions.find(s => s.id === currentId)?.title ?? '新会话'
-
   return (
     <div className="app">
-      {sidebarOpen && (
+      <TopBar />
+      <div className="app-body">
         <SessionList
           sessions={sessions}
           currentId={currentId}
+          sidebarOpen={sidebarOpen}
           onSelect={setCurrentId}
           onCreate={createSession}
           onDelete={deleteSession}
+          onToggle={() => setSidebarOpen(v => !v)}
         />
-      )}
 
-      <div className="main">
-        <div className="topbar">
-          <button className="icon-btn" onClick={() => setSidebar(v => !v)}>☰</button>
-          <span className="topbar-title">{currentTitle}</span>
+        <div className="main">
+          {currentId
+            ? <ChatView key={currentId} sessionId={currentId} onSessionUpdate={loadSessions} />
+            : (
+              <div className="empty-state">
+                <span>🐱 选择或新建一个会话</span>
+                <button className="btn-new-text" onClick={createSession}>
+                  <span>＋ 新建会话</span>
+                </button>
+              </div>
+            )
+          }
         </div>
-
-        {currentId
-          ? <ChatView key={currentId} sessionId={currentId} onSessionUpdate={loadSessions} />
-          : (
-            <div className="empty-state">
-              <span>🐱 选择或新建一个会话开始对话</span>
-              <button className="btn-primary" onClick={createSession}>＋ 新建会话</button>
-            </div>
-          )
-        }
       </div>
     </div>
   )
