@@ -341,7 +341,10 @@ async function setupTray() {
   const buildMenu = () => Menu.buildFromTemplate([
     {
       label: chatWin?.isVisible() ? '隐藏主窗口' : '显示主窗口',
-      click: () => chatWin?.isVisible() ? chatWin.hide() : chatWin?.show(),
+      click: () => {
+        if (!chatWin) { createChatWindow(); return }
+        chatWin.isVisible() ? chatWin.hide() : chatWin.show()
+      },
     },
     {
       label: petWin?.isVisible() ? '隐藏桌宠' : '显示桌宠',
