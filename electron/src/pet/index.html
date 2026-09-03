@@ -76,7 +76,7 @@ const Emotion = Object.freeze({
   HAPPY: 'happy', SAD: 'sad', SLEEPY: 'sleepy', ALERT: 'alert',
 })
 
-let emotion     = Emotion.IDLE
+let emotion      = Emotion.IDLE
 let emotionTimer = null
 let lastActivity = Date.now()
 
@@ -92,51 +92,72 @@ setInterval(() => {
     setEmotion(Emotion.SLEEPY)
 }, 30000)
 
-// ─── Layer groups for animation ───────────────────────────────────────────────
+// ─── Layer groups ──────────────────────────────────────────────────────────────
 const HEAD_LAYERS = new Set(['headwear', 'face', 'mouth', 'eyewhite', 'irides',
-                              'eyebrow', 'eyelash', 'front hair', 'earwear', 'ears'])
+                              'eyebrow', 'eyelash', 'front hair', 'earwear', 'ears', 'nose'])
 const EYE_LAYERS  = new Set(['eyewhite', 'irides', 'eyelash'])
 
-// ─── Main renderer ────────────────────────────────────────────────────────────
-async function init() {
-  const MODEL = 'deepseek'
-  const BASE  = `./layers/${MODEL}/`
+const DST_W = 200, DST_H = 323
 
-  // Load manifest
-  const manifest = await fetch(BASE + 'manifest.json').then(r => r.json())
-  const { width: SRC_SIZE } = manifest   // source canvas is SRC_SIZE × SRC_SIZE
+// ─── Renderer state ────────────────────────────────────────────────────────────
+let layers   = []
+let cropRect = { x: 0, y: 0, w: DST_W, h: DST_H }
+let rafId    = null
+let loading  = false
 
-  // 角色实际范围: back_hair x=292-838, y=81-900; topwear x=373-713, y=541-817
-  // 留少量边距后居中裁切
-  const CROP = { x: 220, y: 20, w: 620, h: 1000 }
-  // 维持 620:1000 比例 → 200×323
-  const DST_W = 200, DST_H = 323
+const canvas    = document.getElementById('canvas')
+const ctx       = canvas.getContext('2d')
+const loadingEl = document.getElementById('loading')
 
-  // Pre-load all layer images
-  const layers = []
-  for (const { name, file } of manifest.layers) {
-    if (!file) continue
-    const img = await new Promise((res, rej) => {
-      const i = new Image()
-      i.onload  = () => res({ name, img: i })
-      i.onerror = () => { console.warn('layer load failed:', name); res(null) }
-      i.src = BASE + file
-    })
-    if (img) layers.push(img)
+// ─── Blink state ──────────────────────────────────────────────────────────────
+let blinkCooldown = 3 + Math.random() * 3
+let blinkElapsed  = 0
+let blinking      = false
+let eyeAlpha      = 1
+
+// ─── Load character ───────────────────────────────────────────────────────────
+async function loadCharacter(model) {
+  if (loading) return
+  loading = true
+
+  if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null }
+  ctx.clearRect(0, 0, DST_W, DST_H)
+  loadingEl.style.display = 'flex'
+
+  try {
+    const BASE     = `./layers/${model}/`
+    const manifest = await fetch(BASE + 'manifest.json').then(r => r.json())
+
+    // Crop from manifest; fallback to full source canvas
+    cropRect = manifest.crop ?? { x: 0, y: 0, w: manifest.width, h: manifest.height }
+
+    // Parallel image loading
+    layers = (await Promise.all(
+      manifest.layers
+        .filter(l => l.file && !l.hidden)
+        .map(({ name, file }) => new Promise(res => {
+          const img = new Image()
+          img.onload  = () => res({ name, img })
+          img.onerror = () => { console.warn('layer load failed:', name); res(null) }
+          img.src = BASE + file
+        }))
+    )).filter(Boolean)
+  } catch (e) {
+    loadingEl.textContent = '加载失败: ' + e.message
+    loading = false
+    return
   }
 
-  document.getElementById('loading').style.display = 'none'
+  loadingEl.style.display = 'none'
+  loading = false
 
-  const canvas = document.getElementById('canvas')
-  const ctx    = canvas.getContext('2d')
+  // Reset blink state
+  blinkCooldown = 3 + Math.random() * 3
+  blinkElapsed = 0
+  blinking = false
+  eyeAlpha = 1
 
-  // ── Blink state ──────────────────────────────────────────────────────────────
-  let blinkCooldown = 3 + Math.random() * 3  // seconds until next blink
-  let blinkElapsed  = 0
-  let blinking      = false
-  let eyeAlpha      = 1
-
-  // ── Render loop ───────────────────────────────────────────────────────────────
+  // ─── Render loop ─────────────────────────────────────────────────────────────
   let prevTs = 0
   function render(ts) {
     const dt = Math.min((ts - prevTs) / 1000, 0.05)
@@ -145,10 +166,7 @@ async function init() {
 
     ctx.clearRect(0, 0, DST_W, DST_H)
 
-    // Compute body animation
-    let bodyOffX = 0, bodyOffY = 0
-    let headRot  = 0, headOffY = 0
-    let bodyScale = 1
+    let bodyOffX = 0, bodyOffY = 0, headRot = 0, headOffY = 0, bodyScale = 1
 
     switch (emotion) {
       case Emotion.IDLE:
@@ -183,38 +201,35 @@ async function init() {
     // Blink update
     blinkElapsed += dt
     if (!blinking && blinkElapsed >= blinkCooldown) {
-      blinking = true
-      blinkElapsed = 0
+      blinking = true; blinkElapsed = 0
     }
     if (blinking) {
-      // total blink duration 180ms: close 60ms, open 120ms
       const BLINK_DUR = 0.18, CLOSE_END = 0.06
       if (blinkElapsed < CLOSE_END) {
         eyeAlpha = 1 - blinkElapsed / CLOSE_END
       } else if (blinkElapsed < BLINK_DUR) {
         eyeAlpha = (blinkElapsed - CLOSE_END) / (BLINK_DUR - CLOSE_END)
       } else {
-        eyeAlpha = 1
-        blinking = false
-        blinkElapsed = 0
+        eyeAlpha = 1; blinking = false; blinkElapsed = 0
         blinkCooldown = 3 + Math.random() * 4
       }
       eyeAlpha = Math.max(0, Math.min(1, eyeAlpha))
     }
 
-    // Head pivot in destination space
-    // earwear at source y=376 → display y = 376/880*242 ≈ 103px (ear/jaw line)
-    // pivot at ~80px from top = roughly the neck
-    const PIVOT_X = DST_W * 0.5
-    const PIVOT_Y = DST_H * 0.33   // ~80px from top
+    // SLEEPY: eyes mostly closed (slow half-sine keeps a sliver open)
+    const effectiveEyeAlpha = emotion === Emotion.SLEEPY
+      ? Math.min(eyeAlpha, 0.15 + Math.abs(Math.sin(t * 0.4)) * 0.12)
+      : eyeAlpha
 
-    // Draw each layer
+    const PIVOT_X = DST_W * 0.5
+    const PIVOT_Y = DST_H * 0.33
+
     for (const { name, img } of layers) {
       const isEye  = EYE_LAYERS.has(name)
       const isHead = HEAD_LAYERS.has(name)
 
       ctx.save()
-      if (isEye && eyeAlpha < 1) ctx.globalAlpha = eyeAlpha
+      if (isEye) ctx.globalAlpha = effectiveEyeAlpha
 
       if (isHead) {
         ctx.translate(PIVOT_X, PIVOT_Y + headOffY)
@@ -228,31 +243,28 @@ async function init() {
         ctx.translate(-DST_W / 2, -DST_H / 2)
       }
 
-      ctx.drawImage(
-        img,
-        CROP.x, CROP.y, CROP.w, CROP.h,
-        bodyOffX, bodyOffY, DST_W, DST_H
-      )
-
+      ctx.drawImage(img, cropRect.x, cropRect.y, cropRect.w, cropRect.h,
+                    bodyOffX, bodyOffY, DST_W, DST_H)
       ctx.restore()
     }
 
-    requestAnimationFrame(render)
+    rafId = requestAnimationFrame(render)
   }
-  requestAnimationFrame(render)
-
-  // ─── Agent events ────────────────────────────────────────────────────────────
-  if (window.pet) {
-    window.pet.on('agent.start',     () => setEmotion(Emotion.ALERT,   800))
-    window.pet.on('agent.thinking',  () => setEmotion(Emotion.THINKING, 0))
-    window.pet.on('agent.tool_call', () => setEmotion(Emotion.WORKING,  0))
-    window.pet.on('agent.done',  (d) => { setEmotion(Emotion.HAPPY, 4000); if (d?.text) showBubble(d.text) })
-    window.pet.on('agent.error',     () => setEmotion(Emotion.SAD,    4000))
-  }
+  rafId = requestAnimationFrame(render)
 }
 
-init().catch(e => {
-  document.getElementById('loading').textContent = '加载失败: ' + e.message
+// ─── Agent events ──────────────────────────────────────────────────────────────
+if (window.pet) {
+  window.pet.on('agent.start',      () => setEmotion(Emotion.ALERT,   800))
+  window.pet.on('agent.thinking',   () => setEmotion(Emotion.THINKING, 0))
+  window.pet.on('agent.tool_call',  () => setEmotion(Emotion.WORKING,  0))
+  window.pet.on('agent.done',  (d) => { setEmotion(Emotion.HAPPY, 4000); if (d?.text) showBubble(d.text) })
+  window.pet.on('agent.error',      () => setEmotion(Emotion.SAD,    4000))
+  window.pet.on('pet.switch-model', (d) => loadCharacter(d?.model ?? 'deepseek').catch(console.error))
+}
+
+loadCharacter('deepseek').catch(e => {
+  loadingEl.textContent = '加载失败: ' + e.message
   console.error(e)
 })
 
@@ -269,7 +281,6 @@ function showBubble(text) {
 
 // ─── Drag ──────────────────────────────────────────────────────────────────────
 let dragging = false, startMouse = null, startWin = null
-const canvas = document.getElementById('canvas')
 
 canvas.addEventListener('mousedown', async (e) => {
   if (e.button !== 0) return

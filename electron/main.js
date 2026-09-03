@@ -212,14 +212,34 @@ function setupIpc(b) {
   // Pet: native context menu
   ipcMain.on('pet:context-menu', () => {
     if (!petWin) return
-    const menu = Menu.buildFromTemplate([
-      { label: '打开主窗口',  click: () => { chatWin?.show(); chatWin?.focus() } },
+
+    // Scan available character models at runtime
+    const layersDir = path.join(__dirname, 'src', 'pet', 'layers')
+    let models = []
+    try {
+      models = fs.readdirSync(layersDir).filter(d =>
+        fs.existsSync(path.join(layersDir, d, 'manifest.json'))
+      )
+    } catch {}
+
+    const template = [
+      { label: '打开主窗口', click: () => { chatWin?.show(); chatWin?.focus() } },
       { label: petWin.isVisible() ? '隐藏桌宠' : '显示桌宠',
         click: () => petWin?.isVisible() ? petWin.hide() : petWin?.show() },
-      { type: 'separator' },
-      { label: '退出 KittyMind', click: () => app.quit() },
-    ])
-    menu.popup({ window: petWin })
+    ]
+
+    if (models.length > 1) {
+      template.push({
+        label: '切换角色',
+        submenu: models.map(m => ({
+          label: m,
+          click: () => petWin?.webContents.send('ws:event:pet.switch-model', { model: m }),
+        })),
+      })
+    }
+
+    template.push({ type: 'separator' }, { label: '退出 KittyMind', click: () => app.quit() })
+    Menu.buildFromTemplate(template).popup({ window: petWin })
   })
 }
 

@@ -1,6 +1,7 @@
 {
   "width": 1024,
   "height": 1024,
+  "crop": { "x": 220, "y": 20, "w": 620, "h": 1000 },
   "layers": [
     {
       "name": "back hair",
