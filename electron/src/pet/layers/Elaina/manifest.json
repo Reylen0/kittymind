@@ -1,0 +1,76 @@
+{
+  "width": 768,
+  "height": 768,
+  "layers": [
+    {
+      "name": "back hair",
+      "file": "back_hair.png",
+      "hidden": false
+    },
+    {
+      "name": "footwear",
+      "file": "footwear.png",
+      "hidden": false
+    },
+    {
+      "name": "bottomwear",
+      "file": "bottomwear.png",
+      "hidden": false
+    },
+    {
+      "name": "topwear",
+      "file": "topwear.png",
+      "hidden": false
+    },
+    {
+      "name": "handwear",
+      "file": "handwear.png",
+      "hidden": false
+    },
+    {
+      "name": "ears",
+      "file": "ears.png",
+      "hidden": false
+    },
+    {
+      "name": "face",
+      "file": "face.png",
+      "hidden": false
+    },
+    {
+      "name": "nose",
+      "file": "nose.png",
+      "hidden": false
+    },
+    {
+      "name": "mouth",
+      "file": "mouth.png",
+      "hidden": false
+    },
+    {
+      "name": "eyebrow",
+      "file": "eyebrow.png",
+      "hidden": false
+    },
+    {
+      "name": "eyewhite",
+      "file": "eyewhite.png",
+      "hidden": false
+    },
+    {
+      "name": "eyelash",
+      "file": "eyelash.png",
+      "hidden": false
+    },
+    {
+      "name": "irides",
+      "file": "irides.png",
+      "hidden": false
+    },
+    {
+      "name": "front hair",
+      "file": "front_hair.png",
+      "hidden": false
+    }
+  ]
+}

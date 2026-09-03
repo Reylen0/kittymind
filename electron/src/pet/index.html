@@ -8,20 +8,20 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
-      width: 180px; height: 220px;
+      width: 200px; height: 323px;
       background: transparent;
       overflow: hidden;
       user-select: none;
     }
-    #root { position: relative; width: 180px; height: 220px; }
+    #root { position: relative; width: 200px; height: 323px; }
     canvas { display: block; cursor: grab; }
     canvas:active { cursor: grabbing; }
 
     #bubble {
       position: absolute;
-      top: 2px; left: 50%;
+      top: 4px; left: 50%;
       transform: translateX(-50%);
-      max-width: 168px;
+      max-width: 188px;
       background: rgba(255,255,255,0.96);
       color: #1e1e2e;
       font-family: -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
@@ -47,419 +47,216 @@
       border-bottom: none;
     }
     #bubble.visible { opacity: 1; }
+
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: sans-serif;
+      font-size: 12px;
+      color: rgba(255,255,255,0.7);
+    }
   </style>
 </head>
 <body>
 <div id="root">
   <div id="bubble"></div>
-  <canvas id="canvas" width="180" height="220"></canvas>
+  <div id="loading">加载中…</div>
+  <canvas id="canvas" width="200" height="323"></canvas>
 </div>
 
 <script>
 'use strict'
 
-// ─── Emotion State Machine ────────────────────────────────────────────────────
+// ─── Emotion State Machine ─────────────────────────────────────────────────────
 const Emotion = Object.freeze({
   IDLE: 'idle', THINKING: 'thinking', WORKING: 'working',
   HAPPY: 'happy', SAD: 'sad', SLEEPY: 'sleepy', ALERT: 'alert',
 })
 
-let currentEmotion = Emotion.IDLE
-let emotionTimer   = null
-let lastActivity   = Date.now()
+let emotion     = Emotion.IDLE
+let emotionTimer = null
+let lastActivity = Date.now()
 
 function setEmotion(name, durationMs = 0) {
-  currentEmotion = name
-  lastActivity   = Date.now()
+  emotion = name
+  lastActivity = Date.now()
   clearTimeout(emotionTimer)
   if (durationMs > 0) emotionTimer = setTimeout(() => setEmotion(Emotion.IDLE), durationMs)
 }
 
 setInterval(() => {
-  if (Date.now() - lastActivity > 20 * 60 * 1000 && currentEmotion === Emotion.IDLE)
+  if (Date.now() - lastActivity > 20 * 60 * 1000 && emotion === Emotion.IDLE)
     setEmotion(Emotion.SLEEPY)
 }, 30000)
 
-// ─── Particles ────────────────────────────────────────────────────────────────
-const particles = []
-function spawnSparkles(cx, cy) {
-  for (let i = 0; i < 8; i++) {
-    const angle = (i / 8) * Math.PI * 2
-    const speed = 0.8 + Math.random() * 0.6
-    particles.push({
-      x: cx, y: cy,
-      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      life: 1, decay: 0.025 + Math.random() * 0.015,
-      size: 2 + Math.random() * 2,
-      color: ['#89b4fa','#cba6f7','#f5c2e7','#a6e3a1'][Math.floor(Math.random() * 4)],
+// ─── Layer groups for animation ───────────────────────────────────────────────
+const HEAD_LAYERS = new Set(['headwear', 'face', 'mouth', 'eyewhite', 'irides',
+                              'eyebrow', 'eyelash', 'front hair', 'earwear', 'ears'])
+const EYE_LAYERS  = new Set(['eyewhite', 'irides', 'eyelash'])
+
+// ─── Main renderer ────────────────────────────────────────────────────────────
+async function init() {
+  const MODEL = 'deepseek'
+  const BASE  = `./layers/${MODEL}/`
+
+  // Load manifest
+  const manifest = await fetch(BASE + 'manifest.json').then(r => r.json())
+  const { width: SRC_SIZE } = manifest   // source canvas is SRC_SIZE × SRC_SIZE
+
+  // 角色实际范围: back_hair x=292-838, y=81-900; topwear x=373-713, y=541-817
+  // 留少量边距后居中裁切
+  const CROP = { x: 220, y: 20, w: 620, h: 1000 }
+  // 维持 620:1000 比例 → 200×323
+  const DST_W = 200, DST_H = 323
+
+  // Pre-load all layer images
+  const layers = []
+  for (const { name, file } of manifest.layers) {
+    if (!file) continue
+    const img = await new Promise((res, rej) => {
+      const i = new Image()
+      i.onload  = () => res({ name, img: i })
+      i.onerror = () => { console.warn('layer load failed:', name); res(null) }
+      i.src = BASE + file
     })
-  }
-}
-function updateParticles() {
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i]
-    p.x += p.vx; p.y += p.vy; p.vy += 0.04; p.life -= p.decay
-    if (p.life <= 0) particles.splice(i, 1)
-  }
-}
-function drawParticles(ctx) {
-  for (const p of particles) {
-    ctx.globalAlpha = p.life
-    ctx.fillStyle = p.color
-    ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill()
-  }
-  ctx.globalAlpha = 1
-}
-
-// ─── Canvas renderer — Ram (Re:Zero) ─────────────────────────────────────────
-const canvas = document.getElementById('canvas')
-const ctx    = canvas.getContext('2d')
-const CX = 90  // center x
-const HY = 130 // head center y
-
-function drawRam(phase, emotion) {
-  let offsetY = 0, scaleY = 1, scaleX = 1, rotate = 0
-
-  switch (emotion) {
-    case Emotion.IDLE:     scaleY  = 1 + Math.sin(phase * 1.2) * 0.015; break
-    case Emotion.THINKING: rotate  = Math.sin(phase * 2.5) * 0.1; break
-    case Emotion.WORKING:  offsetY = Math.sin(phase * 8) * 5; break
-    case Emotion.HAPPY:
-      scaleY  = 1 + Math.abs(Math.sin(phase * 5)) * 0.1
-      offsetY = -Math.abs(Math.sin(phase * 5)) * 7
-      scaleX  = 1 - Math.abs(Math.sin(phase * 5)) * 0.05
-      break
-    case Emotion.SAD:   offsetY = Math.sin(phase * 0.8) * 2; break
-    case Emotion.SLEEPY: offsetY = Math.sin(phase * 0.6) * 3; break
-    case Emotion.ALERT: scaleY  = 1 + Math.abs(Math.sin(phase * 6)) * 0.05; break
+    if (img) layers.push(img)
   }
 
-  ctx.save()
-  ctx.translate(CX, HY + offsetY)
-  ctx.rotate(rotate)
-  ctx.scale(scaleX, scaleY)
-  ctx.translate(-CX, -HY)
+  document.getElementById('loading').style.display = 'none'
 
-  // ── Body / dress (white + blue trim) ──────────────────────────────────────
-  // Dress main body
-  const dressGrad = ctx.createLinearGradient(CX - 28, HY + 20, CX + 28, HY + 80)
-  dressGrad.addColorStop(0, '#f8f8ff')
-  dressGrad.addColorStop(1, '#e8eaf6')
-  ctx.fillStyle = dressGrad
-  ctx.beginPath()
-  ctx.moveTo(CX - 28, HY + 22)
-  ctx.bezierCurveTo(CX - 36, HY + 50, CX - 40, HY + 80, CX - 30, HY + 90)
-  ctx.lineTo(CX + 30, HY + 90)
-  ctx.bezierCurveTo(CX + 40, HY + 80, CX + 36, HY + 50, CX + 28, HY + 22)
-  ctx.closePath()
-  ctx.fill()
+  const canvas = document.getElementById('canvas')
+  const ctx    = canvas.getContext('2d')
 
-  // Blue apron / center panel
-  ctx.fillStyle = '#5b8dd9'
-  ctx.beginPath()
-  ctx.moveTo(CX - 12, HY + 28)
-  ctx.bezierCurveTo(CX - 14, HY + 55, CX - 14, HY + 75, CX - 10, HY + 90)
-  ctx.lineTo(CX + 10, HY + 90)
-  ctx.bezierCurveTo(CX + 14, HY + 75, CX + 14, HY + 55, CX + 12, HY + 28)
-  ctx.closePath()
-  ctx.fill()
+  // ── Blink state ──────────────────────────────────────────────────────────────
+  let blinkCooldown = 3 + Math.random() * 3  // seconds until next blink
+  let blinkElapsed  = 0
+  let blinking      = false
+  let eyeAlpha      = 1
 
-  // White apron overlay
-  ctx.fillStyle = 'rgba(255,255,255,0.85)'
-  ctx.beginPath()
-  ctx.moveTo(CX - 9, HY + 34)
-  ctx.bezierCurveTo(CX - 10, HY + 55, CX - 10, HY + 72, CX - 7, HY + 88)
-  ctx.lineTo(CX + 7, HY + 88)
-  ctx.bezierCurveTo(CX + 10, HY + 72, CX + 10, HY + 55, CX + 9, HY + 34)
-  ctx.closePath()
-  ctx.fill()
+  // ── Render loop ───────────────────────────────────────────────────────────────
+  let prevTs = 0
+  function render(ts) {
+    const dt = Math.min((ts - prevTs) / 1000, 0.05)
+    prevTs = ts
+    const t  = ts / 1000
 
-  // Blue collar band
-  ctx.fillStyle = '#5b8dd9'
-  ctx.beginPath()
-  ctx.moveTo(CX - 20, HY + 20)
-  ctx.lineTo(CX + 20, HY + 20)
-  ctx.lineTo(CX + 16, HY + 30)
-  ctx.lineTo(CX - 16, HY + 30)
-  ctx.closePath()
-  ctx.fill()
+    ctx.clearRect(0, 0, DST_W, DST_H)
 
-  // White collar
-  ctx.fillStyle = '#ffffff'
-  ctx.beginPath()
-  ctx.moveTo(CX - 8, HY + 18)
-  ctx.lineTo(CX, HY + 28)
-  ctx.lineTo(CX + 8, HY + 18)
-  ctx.closePath()
-  ctx.fill()
+    // Compute body animation
+    let bodyOffX = 0, bodyOffY = 0
+    let headRot  = 0, headOffY = 0
+    let bodyScale = 1
 
-  // ── Arms ──────────────────────────────────────────────────────────────────
-  ctx.strokeStyle = '#f0d0c0'
-  ctx.lineWidth   = 10
-  ctx.lineCap     = 'round'
-
-  const armSwing = emotion === Emotion.WORKING ? Math.sin(phase * 8) * 10 : Math.sin(phase * 1.5) * 4
-
-  // Left arm
-  ctx.beginPath()
-  ctx.moveTo(CX - 22, HY + 28)
-  ctx.quadraticCurveTo(CX - 40, HY + 50, CX - 35, HY + 68 + armSwing)
-  ctx.stroke()
-  // Right arm
-  ctx.beginPath()
-  ctx.moveTo(CX + 22, HY + 28)
-  ctx.quadraticCurveTo(CX + 40, HY + 50, CX + 35, HY + 68 - armSwing)
-  ctx.stroke()
-
-  // Sleeve ruffles
-  ctx.fillStyle = '#ffffff'
-  ;[[-35, 68 + armSwing], [35, 68 - armSwing]].forEach(([x, y]) => {
-    ctx.beginPath()
-    ctx.ellipse(CX + x, HY + y, 8, 5, 0, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.strokeStyle = '#c9d8f0'; ctx.lineWidth = 1
-    ctx.stroke()
-  })
-
-  // ── Neck ──────────────────────────────────────────────────────────────────
-  ctx.fillStyle = '#f5dfd0'
-  ctx.beginPath()
-  ctx.ellipse(CX, HY + 14, 7, 9, 0, 0, Math.PI * 2)
-  ctx.fill()
-
-  // ── Head ──────────────────────────────────────────────────────────────────
-  const headGrad = ctx.createRadialGradient(CX - 6, HY - 8, 4, CX, HY, 36)
-  headGrad.addColorStop(0, '#fde8d8')
-  headGrad.addColorStop(1, '#f5cbb4')
-  ctx.fillStyle = headGrad
-  ctx.beginPath()
-  ctx.ellipse(CX, HY, 36, 34, 0, 0, Math.PI * 2)
-  ctx.fill()
-
-  // ── Hair — base (blue-lavender) ───────────────────────────────────────────
-  const hairColor = '#7aaad4'
-  const hairDark  = '#5b8dbf'
-
-  // Back hair
-  ctx.fillStyle = hairDark
-  ctx.beginPath()
-  ctx.ellipse(CX, HY - 6, 38, 36, 0, 0, Math.PI * 2)
-  ctx.fill()
-
-  // Main front hair layer
-  ctx.fillStyle = hairColor
-  ctx.beginPath()
-  ctx.ellipse(CX, HY - 8, 36, 34, 0, 0, Math.PI * 2)
-  ctx.fill()
-
-  // ── Maid headband / hairpiece ─────────────────────────────────────────────
-  // White headband base
-  ctx.fillStyle = '#ffffff'
-  ctx.beginPath()
-  ctx.moveTo(CX - 38, HY - 18)
-  ctx.quadraticCurveTo(CX, HY - 50, CX + 38, HY - 18)
-  ctx.quadraticCurveTo(CX + 36, HY - 10, CX - 36, HY - 10)
-  ctx.closePath()
-  ctx.fill()
-
-  // Blue trim on headband
-  ctx.fillStyle = '#5b8dd9'
-  ctx.beginPath()
-  ctx.moveTo(CX - 38, HY - 14)
-  ctx.quadraticCurveTo(CX, HY - 44, CX + 38, HY - 14)
-  ctx.lineWidth = 3
-  ctx.strokeStyle = '#5b8dd9'
-  ctx.stroke()
-
-  // Headband bow / flower ornament (right side, Ram's signature)
-  function drawBow(bx, by, size) {
-    // Left petal
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath()
-    ctx.ellipse(bx - size * 0.9, by, size, size * 0.55, -0.5, 0, Math.PI * 2)
-    ctx.fill()
-    // Right petal
-    ctx.beginPath()
-    ctx.ellipse(bx + size * 0.9, by, size, size * 0.55, 0.5, 0, Math.PI * 2)
-    ctx.fill()
-    // Center
-    ctx.fillStyle = '#e8d4ee'
-    ctx.beginPath()
-    ctx.arc(bx, by, size * 0.4, 0, Math.PI * 2)
-    ctx.fill()
-    // Blue outline
-    ctx.strokeStyle = '#c9d8f0'; ctx.lineWidth = 1.2
-    ctx.beginPath()
-    ctx.ellipse(bx - size * 0.9, by, size, size * 0.55, -0.5, 0, Math.PI * 2)
-    ctx.stroke()
-    ctx.beginPath()
-    ctx.ellipse(bx + size * 0.9, by, size, size * 0.55, 0.5, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-  drawBow(CX + 28, HY - 28, 7)
-
-  // ── Side hair tufts ────────────────────────────────────────────────────────
-  ctx.fillStyle = hairColor
-  // Left tuft
-  ctx.beginPath()
-  ctx.moveTo(CX - 32, HY - 5)
-  ctx.bezierCurveTo(CX - 50, HY + 5, CX - 48, HY + 25, CX - 38, HY + 35)
-  ctx.bezierCurveTo(CX - 32, HY + 22, CX - 30, HY + 10, CX - 28, HY + 5)
-  ctx.closePath()
-  ctx.fill()
-  // Right tuft
-  ctx.beginPath()
-  ctx.moveTo(CX + 32, HY - 5)
-  ctx.bezierCurveTo(CX + 50, HY + 5, CX + 48, HY + 25, CX + 38, HY + 35)
-  ctx.bezierCurveTo(CX + 32, HY + 22, CX + 30, HY + 10, CX + 28, HY + 5)
-  ctx.closePath()
-  ctx.fill()
-
-  // Front bangs
-  ctx.fillStyle = hairColor
-  ctx.beginPath()
-  ctx.moveTo(CX - 36, HY - 12)
-  ctx.bezierCurveTo(CX - 30, HY - 40, CX - 10, HY - 44, CX, HY - 42)
-  ctx.bezierCurveTo(CX + 10, HY - 44, CX + 30, HY - 40, CX + 36, HY - 12)
-  ctx.bezierCurveTo(CX + 20, HY - 8, CX - 20, HY - 8, CX - 36, HY - 12)
-  ctx.closePath()
-  ctx.fill()
-
-  // Bang strands
-  ctx.fillStyle = hairDark
-  ;[[-14, -6], [0, -4], [14, -6]].forEach(([dx, dy]) => {
-    ctx.beginPath()
-    ctx.moveTo(CX + dx - 5, HY - 36)
-    ctx.quadraticCurveTo(CX + dx, HY + dy, CX + dx + 5, HY - 36)
-    ctx.closePath()
-    ctx.fill()
-  })
-
-  // ── Eyes ──────────────────────────────────────────────────────────────────
-  const lx = CX - 12, rx = CX + 12, ey = HY - 2
-
-  if (emotion === Emotion.SLEEPY) {
-    ctx.strokeStyle = '#4a7ab5'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'
-    ctx.beginPath(); ctx.moveTo(lx - 6, ey); ctx.quadraticCurveTo(lx, ey + 3, lx + 6, ey); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(rx - 6, ey); ctx.quadraticCurveTo(rx, ey + 3, rx + 6, ey); ctx.stroke()
-  } else if (emotion === Emotion.HAPPY) {
-    ctx.strokeStyle = '#4a7ab5'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'
-    ctx.beginPath(); ctx.moveTo(lx - 6, ey + 2); ctx.quadraticCurveTo(lx, ey - 7, lx + 6, ey + 2); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(rx - 6, ey + 2); ctx.quadraticCurveTo(rx, ey - 7, rx + 6, ey + 2); ctx.stroke()
-  } else {
-    // Normal eyes — blue irises
-    // White sclera
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath(); ctx.ellipse(lx, ey, 7, 7.5, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(rx, ey, 7, 7.5, 0, 0, Math.PI * 2); ctx.fill()
-    // Blue iris
-    ctx.fillStyle = '#4a7ab5'
-    ctx.beginPath(); ctx.ellipse(lx, ey, 5.5, 6, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(rx, ey, 5.5, 6, 0, 0, Math.PI * 2); ctx.fill()
-    // Dark pupil
-    ctx.fillStyle = '#1a2a40'
-    ctx.beginPath(); ctx.ellipse(lx, ey + 0.5, 2.5, 3, 0, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(rx, ey + 0.5, 2.5, 3, 0, 0, Math.PI * 2); ctx.fill()
-    // Highlights
-    ctx.fillStyle = '#ffffff'
-    ctx.beginPath(); ctx.arc(lx + 2, ey - 2, 1.5, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.arc(rx + 2, ey - 2, 1.5, 0, Math.PI * 2); ctx.fill()
-
-    // Eyelashes (upper)
-    ctx.strokeStyle = '#2a3a50'; ctx.lineWidth = 1.5; ctx.lineCap = 'round'
-    ctx.beginPath(); ctx.moveTo(lx - 6, ey - 6); ctx.lineTo(lx - 7, ey - 9); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(lx, ey - 7); ctx.lineTo(lx, ey - 10); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(lx + 6, ey - 6); ctx.lineTo(lx + 7, ey - 9); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(rx - 6, ey - 6); ctx.lineTo(rx - 7, ey - 9); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(rx, ey - 7); ctx.lineTo(rx, ey - 10); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(rx + 6, ey - 6); ctx.lineTo(rx + 7, ey - 9); ctx.stroke()
-
-    // Thinking: brow furrow
-    if (emotion === Emotion.THINKING) {
-      ctx.strokeStyle = '#2a3a50'; ctx.lineWidth = 2
-      const tilt = Math.sin(phase * 2.5) * 0.08
-      ctx.beginPath(); ctx.moveTo(lx - 6, ey - 11 - tilt * 10); ctx.lineTo(lx + 6, ey - 11 + tilt * 10); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(rx - 6, ey - 11 + tilt * 10); ctx.lineTo(rx + 6, ey - 11 - tilt * 10); ctx.stroke()
+    switch (emotion) {
+      case Emotion.IDLE:
+        bodyOffY = Math.sin(t * 1.1) * 2.5
+        break
+      case Emotion.ALERT:
+        bodyOffY = Math.sin(t * 1.1) * 2.5
+        bodyScale = 1 + Math.abs(Math.sin(t * 8)) * 0.02
+        break
+      case Emotion.THINKING:
+        bodyOffY = Math.sin(t * 0.8) * 2
+        headRot  = Math.sin(t * 2.2) * 0.07
+        break
+      case Emotion.WORKING:
+        bodyOffX = Math.sin(t * 14) * 1.8
+        bodyOffY = Math.sin(t * 9)  * 1.5
+        break
+      case Emotion.HAPPY:
+        bodyOffY = -Math.abs(Math.sin(t * 5.5)) * 6
+        headOffY = bodyOffY * 0.5
+        break
+      case Emotion.SAD:
+        bodyOffY = Math.sin(t * 0.6) * 1.5
+        headRot  = -0.06
+        break
+      case Emotion.SLEEPY:
+        bodyOffY = Math.sin(t * 0.4) * 2.5
+        headRot  = Math.sin(t * 0.3) * 0.08 + 0.06
+        break
     }
 
-    // Sad: drooping brows + watery eyes
-    if (emotion === Emotion.SAD) {
-      ctx.strokeStyle = '#2a3a50'; ctx.lineWidth = 2
-      ctx.beginPath(); ctx.moveTo(lx - 6, ey - 10); ctx.lineTo(lx + 6, ey - 12); ctx.stroke()
-      ctx.beginPath(); ctx.moveTo(rx - 6, ey - 12); ctx.lineTo(rx + 6, ey - 10); ctx.stroke()
-      // Tear drop
-      ctx.fillStyle = 'rgba(137, 180, 250, 0.7)'
-      ctx.beginPath()
-      const ty = ey + 5 + Math.sin(phase * 2) * 3
-      ctx.moveTo(lx, ty); ctx.bezierCurveTo(lx - 3, ty + 4, lx + 3, ty + 4, lx, ty); ctx.fill()
+    // Blink update
+    blinkElapsed += dt
+    if (!blinking && blinkElapsed >= blinkCooldown) {
+      blinking = true
+      blinkElapsed = 0
     }
-  }
+    if (blinking) {
+      // total blink duration 180ms: close 60ms, open 120ms
+      const BLINK_DUR = 0.18, CLOSE_END = 0.06
+      if (blinkElapsed < CLOSE_END) {
+        eyeAlpha = 1 - blinkElapsed / CLOSE_END
+      } else if (blinkElapsed < BLINK_DUR) {
+        eyeAlpha = (blinkElapsed - CLOSE_END) / (BLINK_DUR - CLOSE_END)
+      } else {
+        eyeAlpha = 1
+        blinking = false
+        blinkElapsed = 0
+        blinkCooldown = 3 + Math.random() * 4
+      }
+      eyeAlpha = Math.max(0, Math.min(1, eyeAlpha))
+    }
 
-  // ── Nose ──────────────────────────────────────────────────────────────────
-  ctx.strokeStyle = '#d4a090'; ctx.lineWidth = 1.2; ctx.lineCap = 'round'
-  ctx.beginPath(); ctx.moveTo(CX - 2, HY + 10); ctx.lineTo(CX + 2, HY + 10); ctx.stroke()
+    // Head pivot in destination space
+    // earwear at source y=376 → display y = 376/880*242 ≈ 103px (ear/jaw line)
+    // pivot at ~80px from top = roughly the neck
+    const PIVOT_X = DST_W * 0.5
+    const PIVOT_Y = DST_H * 0.33   // ~80px from top
 
-  // ── Mouth ─────────────────────────────────────────────────────────────────
-  ctx.strokeStyle = '#c8806a'; ctx.lineWidth = 1.8; ctx.lineCap = 'round'
-  ctx.beginPath()
-  if (emotion === Emotion.HAPPY) {
-    ctx.moveTo(CX - 9, HY + 15); ctx.quadraticCurveTo(CX, HY + 23, CX + 9, HY + 15)
-  } else if (emotion === Emotion.SAD) {
-    ctx.moveTo(CX - 7, HY + 19); ctx.quadraticCurveTo(CX, HY + 14, CX + 7, HY + 19)
-  } else {
-    ctx.moveTo(CX - 7, HY + 16); ctx.quadraticCurveTo(CX, HY + 19, CX + 7, HY + 16)
-  }
-  ctx.stroke()
+    // Draw each layer
+    for (const { name, img } of layers) {
+      const isEye  = EYE_LAYERS.has(name)
+      const isHead = HEAD_LAYERS.has(name)
 
-  // ── Blush (happy) ─────────────────────────────────────────────────────────
-  if (emotion === Emotion.HAPPY) {
-    ctx.fillStyle = 'rgba(255, 182, 193, 0.4)'
-    ctx.beginPath(); ctx.ellipse(CX - 24, HY + 8, 9, 5, -0.15, 0, Math.PI * 2); ctx.fill()
-    ctx.beginPath(); ctx.ellipse(CX + 24, HY + 8, 9, 5,  0.15, 0, Math.PI * 2); ctx.fill()
-  }
+      ctx.save()
+      if (isEye && eyeAlpha < 1) ctx.globalAlpha = eyeAlpha
 
-  // ── Zzz (sleepy) ──────────────────────────────────────────────────────────
-  if (emotion === Emotion.SLEEPY) {
-    ['z','z','Z'].forEach((z, i) => {
-      const t = ((phase * 0.5 + i * 0.33) % 1)
-      const alpha = t < 0.5 ? t * 2 : (1 - t) * 2
-      ctx.globalAlpha = alpha * 0.8
-      ctx.fillStyle = '#89b4fa'
-      ctx.font = `bold ${10 + i * 2}px sans-serif`
-      ctx.fillText(z, CX + 36 + i * 8, HY - 28 - i * 10 - t * 15)
-    })
-    ctx.globalAlpha = 1
-  }
+      if (isHead) {
+        ctx.translate(PIVOT_X, PIVOT_Y + headOffY)
+        ctx.rotate(headRot)
+        ctx.translate(-PIVOT_X, -(PIVOT_Y + headOffY))
+      }
 
-  // ── Tool sparkle (working) ─────────────────────────────────────────────────
-  if (emotion === Emotion.WORKING) {
-    const sw = 0.5 + 0.5 * Math.abs(Math.sin(phase * 4))
-    ctx.fillStyle = `rgba(203, 166, 247, ${sw})`
-    ctx.font = `${14 + Math.round(sw * 4)}px sans-serif`
-    ctx.fillText('✦', CX + 32, HY - 16)
-  }
+      if (bodyScale !== 1) {
+        ctx.translate(DST_W / 2, DST_H / 2)
+        ctx.scale(bodyScale, bodyScale)
+        ctx.translate(-DST_W / 2, -DST_H / 2)
+      }
 
-  ctx.restore()
-}
+      ctx.drawImage(
+        img,
+        CROP.x, CROP.y, CROP.w, CROP.h,
+        bodyOffX, bodyOffY, DST_W, DST_H
+      )
 
-// ─── Animation Loop ───────────────────────────────────────────────────────────
-let lastSparkle = 0
+      ctx.restore()
+    }
 
-function render(ts) {
-  const phase = ts / 1000
-  ctx.clearRect(0, 0, 180, 220)
-  updateParticles()
-  drawRam(phase, currentEmotion)
-  drawParticles(ctx)
-  if (currentEmotion === Emotion.HAPPY && ts - lastSparkle > 400) {
-    spawnSparkles(CX, HY - 20)
-    lastSparkle = ts
+    requestAnimationFrame(render)
   }
   requestAnimationFrame(render)
-}
-requestAnimationFrame(render)
 
-// ─── Speech Bubble ────────────────────────────────────────────────────────────
+  // ─── Agent events ────────────────────────────────────────────────────────────
+  if (window.pet) {
+    window.pet.on('agent.start',     () => setEmotion(Emotion.ALERT,   800))
+    window.pet.on('agent.thinking',  () => setEmotion(Emotion.THINKING, 0))
+    window.pet.on('agent.tool_call', () => setEmotion(Emotion.WORKING,  0))
+    window.pet.on('agent.done',  (d) => { setEmotion(Emotion.HAPPY, 4000); if (d?.text) showBubble(d.text) })
+    window.pet.on('agent.error',     () => setEmotion(Emotion.SAD,    4000))
+  }
+}
+
+init().catch(e => {
+  document.getElementById('loading').textContent = '加载失败: ' + e.message
+  console.error(e)
+})
+
+// ─── Speech Bubble ─────────────────────────────────────────────────────────────
 const bubble    = document.getElementById('bubble')
 let bubbleTimer = null
 function showBubble(text) {
@@ -470,13 +267,15 @@ function showBubble(text) {
   bubbleTimer = setTimeout(() => bubble.classList.remove('visible'), 6000)
 }
 
-// ─── Drag ─────────────────────────────────────────────────────────────────────
+// ─── Drag ──────────────────────────────────────────────────────────────────────
 let dragging = false, startMouse = null, startWin = null
+const canvas = document.getElementById('canvas')
+
 canvas.addEventListener('mousedown', async (e) => {
   if (e.button !== 0) return
-  dragging = true
+  dragging   = true
   startMouse = { x: e.screenX, y: e.screenY }
-  startWin = await window.pet?.getWindowBounds() ?? { x: 0, y: 0 }
+  startWin   = await window.pet?.getWindowBounds() ?? { x: 0, y: 0 }
   e.preventDefault()
 })
 window.addEventListener('mousemove', (e) => {
@@ -489,17 +288,7 @@ window.addEventListener('mouseup', async () => {
   await window.pet?.snapToEdge()
 })
 
-// ─── Right-click ──────────────────────────────────────────────────────────────
 canvas.addEventListener('contextmenu', (e) => { e.preventDefault(); window.pet?.showContextMenu() })
-
-// ─── Agent events ─────────────────────────────────────────────────────────────
-if (window.pet) {
-  window.pet.on('agent.start',    () => setEmotion(Emotion.ALERT,   800))
-  window.pet.on('agent.thinking', () => setEmotion(Emotion.THINKING, 0))
-  window.pet.on('agent.tool_call',() => setEmotion(Emotion.WORKING,  0))
-  window.pet.on('agent.done',  (d) => { setEmotion(Emotion.HAPPY, 4000); if (d?.text) showBubble(d.text) })
-  window.pet.on('agent.error',    () => setEmotion(Emotion.SAD,    4000))
-}
 </script>
 </body>
 </html>

@@ -28,7 +28,7 @@ const IS_DEV       = !app.isPackaged
 const WIN_SPEC = {
   // CHAT html is only used in prod; dev uses VITE_DEV_URL
   CHAT:    { w: 900, h: 650, html: path.join(__dirname, 'renderer-dist', 'index.html') },
-  PET:     { w: 180, h: 200, html: path.join(__dirname, 'src', 'pet',      'index.html') },
+  PET:     { w: 200, h: 323, html: path.join(__dirname, 'src', 'pet',      'index.html') },
   OVERLAY: { w: 500, h: 80,  html: path.join(__dirname, 'src', 'overlay',  'index.html') },
 }
 
