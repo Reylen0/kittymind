@@ -3,8 +3,11 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('pet', {
-  on:  (event, cb) => ipcRenderer.on(`ws:event:${event}`, (_e, data) => cb(data)),
-  off: (event, cb) => ipcRenderer.removeListener(`ws:event:${event}`, cb),
+  on: (event, cb) => {
+    const wrapper = (_e, data) => cb(data)
+    ipcRenderer.on(`ws:event:${event}`, wrapper)
+    return () => ipcRenderer.removeListener(`ws:event:${event}`, wrapper)
+  },
 
   // Toggle mouse click-through (true = transparent to clicks, false = interactive)
   setClickThrough: (ignore) => ipcRenderer.send('pet:set-ignore-mouse', ignore),

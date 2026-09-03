@@ -28,7 +28,12 @@ contextBridge.exposeInMainWorld('kitty', {
     ipcRenderer.invoke('ws:call', { method: 'agent/status', params: {} }),
 
   // ── Event subscriptions ──────────────────────────────────────────────────
-  on:   (event, cb) => ipcRenderer.on(`ws:event:${event}`, (_e, data) => cb(data)),
-  off:  (event, cb) => ipcRenderer.removeListener(`ws:event:${event}`, cb),
+  // on() registers a wrapper and returns an unsubscribe function.
+  // Do NOT use off() — pass the returned cleanup to useEffect's return instead.
+  on: (event, cb) => {
+    const wrapper = (_e, data) => cb(data)
+    ipcRenderer.on(`ws:event:${event}`, wrapper)
+    return () => ipcRenderer.removeListener(`ws:event:${event}`, wrapper)
+  },
   once: (event, cb) => ipcRenderer.once(`ws:event:${event}`, (_e, data) => cb(data)),
 })

@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld('overlay', {
 
   hide: () => ipcRenderer.send('overlay:hide'),
 
-  on:  (event, cb) => ipcRenderer.on(`ws:event:${event}`, (_e, data) => cb(data)),
+  on: (event, cb) => {
+    const wrapper = (_e, data) => cb(data)
+    ipcRenderer.on(`ws:event:${event}`, wrapper)
+    return () => ipcRenderer.removeListener(`ws:event:${event}`, wrapper)
+  },
   off: (event, cb) => ipcRenderer.removeListener(`ws:event:${event}`, cb),
 })

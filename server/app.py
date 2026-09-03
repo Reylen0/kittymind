@@ -38,10 +38,22 @@ def build_agent() -> KittyAgent:
 
 async def main() -> None:
     host = os.getenv("WS_HOST", "127.0.0.1")
-    port = int(os.getenv("WS_PORT", "8765"))
+    base_port = int(os.getenv("WS_PORT", "8765"))
     agent = build_agent()
-    print(f"[ready] ws://{host}:{port}", flush=True)
-    await start_server(agent, host, port)
+
+    # 如果首选端口被占用，自动往后找一个可用端口
+    port = base_port
+    for _ in range(10):
+        try:
+            print(f"[ready] ws://{host}:{port}", flush=True)
+            await start_server(agent, host, port)
+            return
+        except OSError as e:
+            if e.errno == 10048 or e.errno == 98:  # Windows / Linux address in use
+                print(f"[warn] port {port} in use, trying {port + 1}", flush=True)
+                port += 1
+            else:
+                raise
 
 
 if __name__ == "__main__":

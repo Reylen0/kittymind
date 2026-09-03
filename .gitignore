@@ -51,3 +51,4 @@ test_doc.txt
 # Electron
 electron/node_modules/
 electron/dist/
+electron/renderer-dist/

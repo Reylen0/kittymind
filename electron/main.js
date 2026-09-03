@@ -18,6 +18,7 @@ const { spawn } = require('child_process')
 const path      = require('path')
 const fs        = require('fs')
 const WebSocket = require('ws')
+const { ensureTrayIcon } = require('./icon-gen')
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,10 +26,13 @@ const PROJECT_ROOT = path.join(__dirname, '..')
 const IS_DEV       = !app.isPackaged
 
 const WIN_SPEC = {
-  CHAT:    { w: 900, h: 650, html: path.join(__dirname, 'src', 'renderer', 'index.html') },
+  // CHAT html is only used in prod; dev uses VITE_DEV_URL
+  CHAT:    { w: 900, h: 650, html: path.join(__dirname, 'renderer-dist', 'index.html') },
   PET:     { w: 180, h: 180, html: path.join(__dirname, 'src', 'pet',      'index.html') },
   OVERLAY: { w: 500, h: 80,  html: path.join(__dirname, 'src', 'overlay',  'index.html') },
 }
+
+const VITE_DEV_URL = IS_DEV ? 'http://localhost:5173' : null
 
 // Agent events that get relayed from Python → all renderer windows
 const PUSH_EVENTS = [
@@ -203,8 +207,12 @@ function createChatWindow() {
       nodeIntegration:  false,
     },
   })
-  chatWin.loadFile(WIN_SPEC.CHAT.html)
-  if (IS_DEV) chatWin.webContents.openDevTools({ mode: 'detach' })
+  if (VITE_DEV_URL) {
+    chatWin.loadURL(VITE_DEV_URL)
+    chatWin.webContents.openDevTools({ mode: 'detach' })
+  } else {
+    chatWin.loadFile(WIN_SPEC.CHAT.html)
+  }
   chatWin.on('closed', () => { chatWin = null })
   return chatWin
 }
@@ -262,9 +270,8 @@ function createOverlayWindow() {
 
 function setupTray() {
   const iconPath = path.join(PROJECT_ROOT, 'assets', 'tray-icon.png')
-  const icon = fs.existsSync(iconPath)
-    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-    : nativeImage.createEmpty()
+  ensureTrayIcon(iconPath)
+  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
 
   tray = new Tray(icon)
   tray.setToolTip('KittyMind')
