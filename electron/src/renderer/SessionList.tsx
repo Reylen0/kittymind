@@ -74,7 +74,7 @@ export default function SessionList({
   return (
     <div className="session-list">
       <div className="sidebar-header">
-        <span className="sidebar-version">v0.1.0</span>
+        <span className="sidebar-version">版本 v0.1.0</span>
         <div className="sidebar-header-btns">
           <button
             className={`sidebar-icon-btn${searching ? ' active' : ''}`}
@@ -104,12 +104,11 @@ export default function SessionList({
 
       <div className="session-new">
         <button className="btn-new-text" onClick={onCreate}>
-          <IcoPlus />
-          <span>新会话</span>
+          <span>新对话</span>
         </button>
       </div>
 
-      <div className="session-section-label">会话</div>
+      <div className="session-section-label">对话</div>
 
       <div className="session-items">
         {filtered.map(s => (

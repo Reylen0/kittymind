@@ -340,7 +340,7 @@ function createChatWindow() {
     titleBarOverlay: {
       color:       '#f5f5f7',
       symbolColor: '#1c1c1e',
-      height:      40,
+      height:      32,
     },
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),

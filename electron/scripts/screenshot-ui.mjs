@@ -25,31 +25,17 @@ for (let i = 0; i < 60; i++) {
 }
 
 await page.waitForLoadState('domcontentloaded');
-await new Promise(r => setTimeout(r, 1200));
+await new Promise(r => setTimeout(r, 1500));
 
-// 1. sidebar open with session history
-await page.screenshot({ path: path.join(SHOT_DIR, '01-sidebar-open.png') });
-console.log('01-sidebar-open.png');
+// Full screenshot
+await page.screenshot({ path: path.join(SHOT_DIR, 'full.png') });
 
-// 2. search active
-await page.evaluate(() => {
-  const btns = [...document.querySelectorAll('.sidebar-icon-btn')];
-  // first icon btn is search
-  btns[0]?.click();
+// Top-right crop: clip to right 300px, top 80px
+await page.screenshot({
+  path: path.join(SHOT_DIR, 'topright.png'),
+  clip: { x: 580, y: 0, width: 320, height: 80 },
 });
-await new Promise(r => setTimeout(r, 400));
-await page.screenshot({ path: path.join(SHOT_DIR, '02-search-active.png') });
-console.log('02-search-active.png');
 
-// 3. collapse sidebar
-await page.evaluate(() => {
-  const btns = [...document.querySelectorAll('.sidebar-icon-btn')];
-  // click the panel icon (second one)
-  btns[1]?.click();
-});
-await new Promise(r => setTimeout(r, 400));
-await page.screenshot({ path: path.join(SHOT_DIR, '03-sidebar-collapsed.png') });
-console.log('03-sidebar-collapsed.png');
-
+console.log('done');
 await app.close();
 process.exit(0);
