@@ -332,10 +332,8 @@ function createOverlayWindow() {
 
 // ─── Tray ─────────────────────────────────────────────────────────────────────
 
-function setupTray() {
-  const iconPath = path.join(__dirname, 'assets', 'tray-icon.png')
-  ensureTrayIcon(iconPath)
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+async function setupTray() {
+  const icon = await app.getFileIcon(process.execPath, { size: 'small' })
 
   tray = new Tray(icon)
   tray.setToolTip('KittyMind')
@@ -358,9 +356,7 @@ function setupTray() {
     if (!chatWin) return
     chatWin.isVisible() ? chatWin.focus() : chatWin.show()
   })
-  // Right-click: context menu (rebuilt each time for fresh visibility state)
-  tray.on('right-click', () => tray.setContextMenu(buildMenu()))
-  tray.setContextMenu(buildMenu())
+  tray.on('right-click', () => tray.popUpContextMenu(buildMenu()))
 }
 
 // ─── Hotkeys ──────────────────────────────────────────────────────────────────
@@ -412,7 +408,7 @@ app.whenReady().then(async () => {
   createChatWindow()
   createPetWindow()
   createOverlayWindow()
-  setupTray()
+  await setupTray()
   setupHotkeys()
   console.log('[main] Ready')
 })
