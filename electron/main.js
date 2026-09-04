@@ -12,7 +12,7 @@
 
 const {
   app, BrowserWindow, ipcMain, globalShortcut,
-  Tray, Menu, nativeImage, screen,
+  Tray, Menu, nativeImage, screen, dialog,
 } = require('electron')
 const { spawn } = require('child_process')
 const path      = require('path')
@@ -115,6 +115,37 @@ class PythonBridge {
 
 // ─── Python Process ───────────────────────────────────────────────────────────
 
+// PID 文件路径——用于跨进程清理僵尸服务
+const PID_FILE = path.join(
+  process.env.APPDATA || require('os').homedir(),
+  '.kittymind', 'server.pid'
+)
+
+function writePid(pid) {
+  try {
+    fs.mkdirSync(path.dirname(PID_FILE), { recursive: true })
+    fs.writeFileSync(PID_FILE, String(pid), 'utf8')
+  } catch {}
+}
+
+function clearPid() {
+  try { fs.unlinkSync(PID_FILE) } catch {}
+}
+
+// 杀掉上次残留的 Python 进程（开发调试时 will-quit 不一定触发）
+function killOrphan() {
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10)
+    if (!pid || isNaN(pid)) return
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' })
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+  } catch {}
+  clearPid()
+}
+
 function spawnPython() {
   let cmd, args, cwd
 
@@ -140,8 +171,11 @@ function spawnPython() {
   proc.on('error', e  => console.error('[py] spawn error:', e.message))
   proc.on('exit',  (code, sig) => {
     console.log(`[py] exited code=${code} sig=${sig}`)
+    clearPid()
     pythonProc = null
   })
+
+  writePid(proc.pid)
 
   return proc
 }
@@ -215,6 +249,15 @@ function setupIpc(b) {
 
   // Overlay: hide on request or after sending a message
   ipcMain.on('overlay:hide', () => overlayWin?.hide())
+
+  // Workspace: open native folder picker
+  ipcMain.handle('workspace:select', async () => {
+    const result = await dialog.showOpenDialog(chatWin, {
+      properties: ['openDirectory'],
+      title: '选择工作区目录',
+    })
+    return result.canceled ? null : result.filePaths[0] ?? null
+  })
 
   // Pet: toggle click-through mode
   ipcMain.on('pet:set-ignore-mouse', (_e, ignore) => {
@@ -469,6 +512,9 @@ app.whenReady().then(async () => {
 
   Menu.setApplicationMenu(null)   // 菜单移入自定义顶栏，去掉原生第二行
 
+  // 清理上次残留的 Python 进程
+  killOrphan()
+
   try {
     console.log('[main] Starting Python server...')
     pythonProc = spawnPython()
@@ -520,8 +566,12 @@ function killPython() {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
   bridge?.close()
+  clearPid()
   killPython()
 })
+
+// 捕获 Node 进程直接退出的情况（如 Ctrl+C 在终端）
+process.on('exit', () => { clearPid() })
 
 // Ctrl+C in terminal sends SIGINT to the process group; handle it explicitly
 // so will-quit fires and Python is cleaned up

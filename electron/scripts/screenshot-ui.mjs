@@ -27,14 +27,16 @@ for (let i = 0; i < 60; i++) {
 await page.waitForLoadState('domcontentloaded');
 await new Promise(r => setTimeout(r, 1500));
 
-// Full screenshot
+// Full screenshot (initial state)
 await page.screenshot({ path: path.join(SHOT_DIR, 'full.png') });
 
-// Top-right crop: clip to right 300px, top 80px
-await page.screenshot({
-  path: path.join(SHOT_DIR, 'topright.png'),
-  clip: { x: 580, y: 0, width: 320, height: 80 },
-});
+// Click 新对话 to enter landing view
+await page.evaluate(() => {
+  const btn = document.querySelector('.btn-new-text')
+  btn?.click()
+})
+await new Promise(r => setTimeout(r, 400))
+await page.screenshot({ path: path.join(SHOT_DIR, 'landing.png') })
 
 console.log('done');
 await app.close();

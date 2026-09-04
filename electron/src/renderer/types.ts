@@ -15,4 +15,12 @@ export interface Session {
   id: string
   title: string
   created_at: string
+  workspace_id?: string | null
+}
+
+export interface Workspace {
+  id: string
+  name: string
+  path: string
+  created_at: string
 }

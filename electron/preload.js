@@ -8,14 +8,20 @@ contextBridge.exposeInMainWorld('kitty', {
     ipcRenderer.invoke('ws:call', { method, params }),
 
   // Conversation
-  sendMessage: (text, sessionId) =>
-    ipcRenderer.invoke('ws:call', { method: 'turn/run',    params: { text, session_id: sessionId } }),
+  sendMessage: (text, sessionId, workspaceId) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'turn/run',
+      params: { text, session_id: sessionId, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
+    }),
   cancelTurn: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'turn/cancel', params: { session_id: sessionId } }),
 
   // Session management
-  createSession: (title) =>
-    ipcRenderer.invoke('ws:call', { method: 'session/create', params: { title } }),
+  createSession: (title, workspaceId) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/create',
+      params: { title, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
+    }),
   listSessions: () =>
     ipcRenderer.invoke('ws:call', { method: 'session/list',   params: {} }),
   getSession: (sessionId) =>
@@ -23,15 +29,20 @@ contextBridge.exposeInMainWorld('kitty', {
   deleteSession: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'session/delete', params: { session_id: sessionId } }),
 
+  // Workspace management
+  listWorkspaces: () =>
+    ipcRenderer.invoke('ws:call', { method: 'workspace/list', params: {} }),
+  createWorkspace: (name, path) =>
+    ipcRenderer.invoke('ws:call', { method: 'workspace/create', params: { name, path } }),
+  selectWorkspace: () =>
+    ipcRenderer.invoke('workspace:select'),
+
   // Agent state
   agentStatus: () =>
     ipcRenderer.invoke('ws:call', { method: 'agent/status', params: {} }),
 
   // Window / edit controls (custom TopBar)
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
-
-  // Workspace: open native directory picker
-  selectWorkspace: () => ipcRenderer.invoke('workspace:select'),
 
   // Event subscriptions — on() returns an unsubscribe function
   on: (event, cb) => {

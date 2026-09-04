@@ -6,13 +6,13 @@ declare global {
     kitty?: {
       call(method: string, params?: Record<string, unknown>): Promise<unknown>
 
-      sendMessage(text: string, sessionId: string): Promise<unknown>
+      sendMessage(text: string, sessionId: string, workspaceId?: string): Promise<unknown>
       cancelTurn(sessionId: string): Promise<unknown>
 
-      createSession(title?: string): Promise<{ session_id: string; title: string }>
-      listSessions(): Promise<Array<{ id: string; title: string; created_at: string }>>
+      createSession(title?: string, workspaceId?: string): Promise<{ session_id: string; title: string }>
+      listSessions(): Promise<Array<{ id: string; title: string; created_at: string; workspace_id?: string | null }>>
       getSession(sessionId: string): Promise<{
-        header: { id: string; title: string; created_at: string }
+        header: { id: string; title: string; created_at: string; workspace_id?: string | null }
         messages: Array<{
           role: string
           content: string | null
@@ -21,6 +21,11 @@ declare global {
         }>
       } | null>
       deleteSession(sessionId: string): Promise<{ deleted: boolean }>
+
+      listWorkspaces(): Promise<Array<{ id: string; name: string; path: string; created_at: string }>>
+      createWorkspace(name: string, path: string): Promise<{ id: string; name: string; path: string; created_at: string }>
+      selectWorkspace(): Promise<string | null>
+
       agentStatus(): Promise<{ name: string; model: string; running_sessions: string[] }>
 
       // on() returns an unsubscribe function — call it in useEffect cleanup

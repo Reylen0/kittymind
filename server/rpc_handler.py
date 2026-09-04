@@ -33,13 +33,15 @@ class RpcHandler:
         params = request.get("params") or {}
 
         handlers = {
-            "turn/run":       self._turn_run,
-            "turn/cancel":    self._turn_cancel,
-            "session/create": self._session_create,
-            "session/list":   self._session_list,
-            "session/get":    self._session_get,
-            "session/delete": self._session_delete,
-            "agent/status":   self._agent_status,
+            "turn/run":         self._turn_run,
+            "turn/cancel":      self._turn_cancel,
+            "session/create":   self._session_create,
+            "session/list":     self._session_list,
+            "session/get":      self._session_get,
+            "session/delete":   self._session_delete,
+            "agent/status":     self._agent_status,
+            "workspace/list":   self._workspace_list,
+            "workspace/create": self._workspace_create,
         }
 
         fn = handlers.get(method)
@@ -130,9 +132,13 @@ class RpcHandler:
         # 立即 ack，事件通过 server push 异步推送
         await self._result(req_id, {"status": "started"})
 
+        workspace_id = params.get("workspace_id")
+
         async def _run() -> None:
             try:
-                async for _ in self.agent.async_stream_run(session_id, text):
+                async for _ in self.agent.async_stream_run(
+                    session_id, text, workspace_id=workspace_id
+                ):
                     pass  # 文字 delta 已由 fwd_chunk 推给客户端
             except asyncio.CancelledError:
                 await self._push("agent.done", {
@@ -217,3 +223,27 @@ class RpcHandler:
             "model": self.agent.llm.model,
             "running_sessions": list(self._tasks.keys()),
         })
+
+    # ──────────────────────────────────────────────────────────────
+    # workspace/*
+    # ──────────────────────────────────────────────────────────────
+
+    def _wm(self):
+        return getattr(self.agent, "workspace_manager", None)
+
+    async def _workspace_list(self, req_id: Any, params: dict) -> None:
+        wm = self._wm()
+        await self._result(req_id, wm.list_workspaces() if wm else [])
+
+    async def _workspace_create(self, req_id: Any, params: dict) -> None:
+        wm = self._wm()
+        if not wm:
+            await self._error(req_id, "no workspace manager configured")
+            return
+        name = params.get("name", "").strip()
+        path = params.get("path", "").strip()
+        if not name or not path:
+            await self._error(req_id, "name and path are required")
+            return
+        ws = wm.create_workspace(name, path)
+        await self._result(req_id, ws)

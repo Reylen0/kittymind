@@ -1,16 +1,20 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import MessageItem from './MessageItem'
-import type { Message } from './types'
+import WorkspaceSelector from './WorkspaceSelector'
+import type { Message, Workspace } from './types'
 
 interface Props {
-  sessionId: string
-  onSessionUpdate: () => void
+  sessionId:          string
+  workspaces:         Workspace[]
+  onSessionUpdate:    () => void
+  onWorkspaceCreated: (ws: Workspace) => void
 }
 
-export default function ChatView({ sessionId, onSessionUpdate }: Props) {
-  const [messages, setMessages]   = useState<Message[]>([])
-  const [input, setInput]         = useState('')
-  const [isLoading, setIsLoading] = useState(false)
+export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
+  const [messages,            setMessages]            = useState<Message[]>([])
+  const [input,               setInput]               = useState('')
+  const [isLoading,           setIsLoading]           = useState(false)
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
@@ -24,6 +28,7 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
   useEffect(() => {
     setMessages([])
     setIsLoading(false)
+    setSelectedWorkspaceId(null)
 
     async function loadHistory() {
       const data = await window.kitty?.getSession(sessionId)
@@ -113,8 +118,10 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
     setInput('')
     setIsLoading(true)
     setMessages(prev => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text }])
-    await window.kitty?.sendMessage(text, sessionId)
-  }, [input, isLoading, sessionId])
+    // 首条消息携带 workspace_id（若已选择）
+    const wsId = messages.length === 0 ? selectedWorkspaceId ?? undefined : undefined
+    await window.kitty?.sendMessage(text, sessionId, wsId)
+  }, [input, isLoading, sessionId, messages.length, selectedWorkspaceId])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -151,7 +158,17 @@ export default function ChatView({ sessionId, onSessionUpdate }: Props) {
         <div className="landing-view">
           <div className="landing-content">
             <div className="landing-title">🐱 KittyMind</div>
-            {inputBox}
+            <div className="landing-input-area">
+              <div className="landing-ws-row">
+                <WorkspaceSelector
+                  workspaces={workspaces}
+                  selectedId={selectedWorkspaceId}
+                  onSelect={setSelectedWorkspaceId}
+                  onCreated={onWorkspaceCreated}
+                />
+              </div>
+              {inputBox}
+            </div>
           </div>
         </div>
       </div>

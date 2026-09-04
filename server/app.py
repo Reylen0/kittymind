@@ -32,6 +32,7 @@ else:
 from kittymind.core.llm import BaseAgentLLM
 from kittymind.events.bus import EventBus
 from kittymind.session.manager import SessionManager
+from kittymind.workspace.manager import WorkspaceManager
 from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
 from server.ws_server import start_server
@@ -45,6 +46,7 @@ def build_agent() -> KittyAgent:
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=EventBus(),
         session_manager=SessionManager(),
+        workspace_manager=WorkspaceManager(),
     )
 
 

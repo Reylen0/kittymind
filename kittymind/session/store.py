@@ -47,6 +47,18 @@ class SessionStore:
                     records.append(data)
         return header, records
 
+    def update_header(self, session_id: str, updates: dict) -> None:
+        """就地更新 header 字段（重写第一行）。"""
+        header, records = self.read(session_id)
+        if header is None:
+            return
+        header.update(updates)
+        path = self._path(session_id)
+        lines = [json.dumps(header, ensure_ascii=False)]
+        for r in records:
+            lines.append(json.dumps(r, ensure_ascii=False))
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     def exists(self, session_id: str) -> bool:
         return self._path(session_id).exists()
 
