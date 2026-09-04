@@ -174,7 +174,7 @@ export default function SessionList({
             className="session-section-label collapsible"
             onClick={() => setSpacesCollapsed(v => !v)}
           >
-            <span>空间 ({workspaces.length})</span>
+            <span>工作区 ({workspaces.length})</span>
             <span className="section-arrow">{spacesCollapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
           </button>
           {!spacesCollapsed && workspaces.map(ws => {

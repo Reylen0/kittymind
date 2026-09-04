@@ -16,7 +16,7 @@ class BaseAgentLLM:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: Optional[float] = None,
+        temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
         **kwargs
@@ -39,11 +39,7 @@ class BaseAgentLLM:
         self._client = create_adapter(self.model, self.api_key, self.base_url, self.timeout)
 
     def _base_kwargs(self, kwargs: dict) -> dict:
-        call_kwargs: dict = {}
-        # 只有明确设置了 temperature 才发送（新版 Claude 模型已废弃该参数）
-        t = kwargs.pop("temperature", self.temperature)
-        if t is not None:
-            call_kwargs["temperature"] = t
+        call_kwargs = {"temperature": kwargs.pop("temperature", self.temperature)}
         if self.max_tokens:
             call_kwargs["max_tokens"] = kwargs.pop("max_tokens", self.max_tokens)
         call_kwargs.update(kwargs)
