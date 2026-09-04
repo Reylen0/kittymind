@@ -17,6 +17,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from kittymind.tools.builtin.bash_tool import BashTool
+from kittymind.tools.builtin.file_read_tool import FileReadTool
+from kittymind.tools.builtin.file_write_tool import FileWriteTool
+
 # .env 加载优先级：
 #   1. ~/.kittymind/.env  （用户级配置，打包和开发都适用）
 #   2. exe/脚本所在目录/.env
@@ -42,7 +46,7 @@ def build_agent() -> KittyAgent:
     return KittyAgent(
         name="kitty",
         llm=BaseAgentLLM(),
-        tools=[GetCurrentTimeTool()],
+        tools=[GetCurrentTimeTool(), FileReadTool(), FileWriteTool(), BashTool()],
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=EventBus(),
         session_manager=SessionManager(),

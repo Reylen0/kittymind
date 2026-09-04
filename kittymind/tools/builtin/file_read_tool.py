@@ -3,6 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from .bash_tool import bash_cwd
 
 _MAX_LINES = 2000
 _MAX_BYTES = 800_000
@@ -24,7 +25,11 @@ class FileReadTool(BaseTool):
     param_class = FileReadToolParam
 
     def execute(self, parameters: FileReadToolParam) -> str:
-        path = os.path.abspath(parameters.path)
+        raw = parameters.path
+        if os.path.isabs(raw):
+            path = os.path.normpath(raw)
+        else:
+            path = os.path.normpath(os.path.join(bash_cwd.get(), raw))
         if not os.path.exists(path): return f"错误: 文件不存在 — {path}"
         if not os.path.isfile(path): return f"错误: 路径不是文件 — {path}"
         size = os.path.getsize(path)

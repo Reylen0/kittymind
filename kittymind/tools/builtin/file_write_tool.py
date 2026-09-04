@@ -3,6 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from .bash_tool import bash_cwd
 
 _MAX_WRITE_BYTES = 1_000_000
 
@@ -22,11 +23,15 @@ class FileWriteTool(BaseTool):
     param_class = FileWriteToolParam
 
     def execute(self, parameters: FileWriteToolParam) -> str:
-        path = os.path.abspath(parameters.path)
+        raw = parameters.path
+        if os.path.isabs(raw):
+            path = os.path.normpath(raw)
+        else:
+            path = os.path.normpath(os.path.join(bash_cwd.get(), raw))
         if len(parameters.content.encode(parameters.encoding, errors="replace")) > _MAX_WRITE_BYTES:
             return "错误: 内容超过 1MB 限制，拒绝写入"
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         except Exception as e:
             return f"错误: 无法创建目录 — {e}"
         try:
