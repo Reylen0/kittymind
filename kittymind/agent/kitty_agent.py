@@ -41,7 +41,7 @@ class KittyAgent(ToolAgent):
         event_bus: Optional[EventBus] = None,
         session_manager: Optional[SessionManager] = None,
         workspace_manager=None,
-        max_iterations: int = 10,
+        max_iterations: int = 30,
     ):
         super().__init__(
             name=name, llm=llm, system_prompt=system_prompt,
