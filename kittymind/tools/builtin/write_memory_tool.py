@@ -38,7 +38,6 @@ class WriteMemoryTool(BaseTool):
     """
 
     name: str = "write_memory"
-    category: str = "工具"
     description: str = (
         "写入一条持久化记忆，在未来的会话中可被按需召回。"
         "适合记录用户偏好、项目事实、可复用的行为指导、外部资源指针。"

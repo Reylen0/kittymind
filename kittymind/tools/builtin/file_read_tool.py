@@ -19,7 +19,6 @@ class FileReadToolParam(BaseModel):
 
 class FileReadTool(BaseTool):
     name: str = "file_read"
-    category: str = "文件"
     description: str = (
         "读取文件内容并显示行号，支持指定行范围。"
         "单次最多返回 2000 行；大文件请用 start_line/end_line 分段读取。"

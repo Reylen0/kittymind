@@ -17,7 +17,6 @@ class LsToolParam(BaseModel):
 
 class LsTool(BaseTool):
     name: str = "ls"
-    category: str = "探索"
     description: str = (
         "以树形结构列出目录内容，显示文件大小。"
         "自动跳过 .git、node_modules、__pycache__ 等目录。"

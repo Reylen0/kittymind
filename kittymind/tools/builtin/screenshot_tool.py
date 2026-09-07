@@ -19,7 +19,6 @@ class ScreenshotToolParam(BaseModel):
 class ScreenshotTool(BaseTool):
     """屏幕截图工具"""
     name: str = "screenshot"
-    category: str = "桌面"
     description: str = (
         "截取屏幕并将图片保存到本地文件，返回文件路径和尺寸信息。"
         "默认截取主显示器全屏（monitor=1）；"

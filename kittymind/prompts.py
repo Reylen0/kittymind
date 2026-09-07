@@ -6,7 +6,6 @@ KittyMind 所有 LLM Prompt 集中管理。
 """
 
 from __future__ import annotations
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from .memory.store import MEMORY_TYPES
@@ -19,7 +18,9 @@ if TYPE_CHECKING:
 _BASE_PROMPT = """\
 你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具完成任务。
 
-{tool_section}
+## 可用工具
+
+{tool_list}
 ## 行为规范
 
 1. **先读后改**：修改任何文件前，先用 file_read 确认当前内容，不要假设文件内容
@@ -31,30 +32,12 @@ _BASE_PROMPT = """\
 
 
 def build_system_prompt(tools: list[BaseTool]) -> str:
-    """从工具实例列表动态生成含工具指南的系统提示词。"""
-    # 按 category 分组
-    groups: dict[str, list[BaseTool]] = defaultdict(list)
+    """从工具实例列表动态生成系统提示词。"""
+    lines = []
     for t in tools:
-        groups[t.category].append(t)
-
-    # 固定分组顺序
-    ORDER = ["探索", "文件", "执行", "桌面", "工具", "通用"]
-    sorted_groups = sorted(
-        groups.items(),
-        key=lambda kv: ORDER.index(kv[0]) if kv[0] in ORDER else len(ORDER),
-    )
-
-    lines = ["## 可用工具\n"]
-    for cat, cat_tools in sorted_groups:
-        lines.append(f"### {cat}")
-        for t in cat_tools:
-            # 取 description 第一句（到第一个句号/换行）
-            first_line = t.description.replace("\n", "").split("。")[0]
-            lines.append(f"- **{t.name}**：{first_line}")
-        lines.append("")
-
-    tool_section = "\n".join(lines) + "\n"
-    return _BASE_PROMPT.format(tool_section=tool_section)
+        first_sentence = t.description.replace("\n", "").split("。")[0]
+        lines.append(f"- **{t.name}**：{first_sentence}")
+    return _BASE_PROMPT.format(tool_list="\n".join(lines) + "\n\n")
 
 
 # ── 记忆提取 ─────────────────────────────────────────────────────

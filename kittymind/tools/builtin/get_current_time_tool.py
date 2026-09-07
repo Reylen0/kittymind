@@ -15,7 +15,6 @@ class GetCurrentTimeParam(BaseModel):
 
 class GetCurrentTimeTool(BaseTool):
     name: str = "get_current_time"
-    category: str = "工具"
     description: str = (
         "获取系统当前时间、日期和星期几。"
         "无需任何参数即可直接调用，返回本地时间。"

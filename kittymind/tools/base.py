@@ -8,7 +8,6 @@ class BaseTool(ABC):
     name: str = None
     description: str = None
     param_class: BaseModel = None
-    category: str = "通用"       # 用于 build_system_prompt 分组
 
     def __init__(self, name=None, description=None, param_class=None):
         if name is not None: self.name = name

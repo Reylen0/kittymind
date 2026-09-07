@@ -35,7 +35,6 @@ class BashToolParam(BaseModel):
 class BashTool(BaseTool):
     """执行 Shell 命令工具"""
     name: str = "bash"
-    category: str = "执行"
     description: str = (
         "在本地执行 shell 命令并返回标准输出和标准错误。"
         "耗时命令可设 run_in_background=true 在后台执行，不阻塞 Agent。"

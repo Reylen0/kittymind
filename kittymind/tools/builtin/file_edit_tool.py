@@ -17,7 +17,6 @@ class FileEditToolParam(BaseModel):
 
 class FileEditTool(BaseTool):
     name: str = "file_edit"
-    category: str = "文件"
     description: str = (
         "在文件中将 old_string 精确替换为 new_string。"
         "old_string 必须在文件中唯一出现一次。"
