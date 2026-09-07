@@ -17,6 +17,7 @@ class FileWriteToolParam(BaseModel):
 
 class FileWriteTool(BaseTool):
     name: str = "file_write"
+    category: str = "文件"
     description: str = (
         "创建或覆写一个文件，写入指定内容。父目录不存在时自动创建。"
         "如需局部修改已有文件，应使用 file_edit 工具。"

@@ -23,6 +23,7 @@ class GrepToolParam(BaseModel):
 
 class GrepTool(BaseTool):
     name: str = "grep"
+    category: str = "探索"
     description: str = (
         "在文件内容中搜索正则表达式，返回匹配行及上下文。"
         "支持跨多个文件搜索，可通过 file_pattern 过滤文件类型。"

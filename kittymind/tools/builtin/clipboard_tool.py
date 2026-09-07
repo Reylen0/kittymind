@@ -12,8 +12,8 @@ class ClipboardToolParam(BaseModel):
 
 class ClipboardTool(BaseTool):
     """剪贴板读写工具"""
-
     name: str = "clipboard"
+    category: str = "桌面"
     description: str = (
         "读取或写入系统剪贴板。"
         "action=read：返回当前剪贴板文本内容；"

@@ -30,6 +30,7 @@ class GitToolParam(BaseModel):
 
 class GitTool(BaseTool):
     name: str = "git"
+    category: str = "执行"
     description: str = "执行常用 git 操作：查看状态、查看 diff、暂存文件、提交、查看日志。"
     param_class = GitToolParam
 

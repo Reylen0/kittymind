@@ -96,7 +96,7 @@ class KittyAgent(ToolAgent):
 
             messages = self._build_messages(session_id, input_text)
 
-            # 召回相关长期记忆，注入 system prompt
+            # 召回相关长期记忆，追加到 system prompt 末尾
             if self._memory_recall:
                 try:
                     relevant = await asyncio.to_thread(

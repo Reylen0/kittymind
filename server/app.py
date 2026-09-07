@@ -44,23 +44,25 @@ from kittymind.session.manager import SessionManager
 from kittymind.workspace.manager import WorkspaceManager
 from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
+from kittymind.prompts import build_system_prompt
 from server.ws_server import start_server
 
 
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
     llm = BaseAgentLLM()
     memory_store = MemoryStore()
+    tools = [
+        GetCurrentTimeTool(),
+        FileReadTool(),
+        FileWriteTool(),
+        BashTool(),
+        WriteMemoryTool(memory_store),
+    ]
     agent = KittyAgent(
         name="kitty",
         llm=llm,
-        tools=[
-            GetCurrentTimeTool(),
-            FileReadTool(),
-            FileWriteTool(),
-            BashTool(),
-            WriteMemoryTool(memory_store),
-        ],
-        system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
+        tools=tools,
+        system_prompt=build_system_prompt(tools),
         event_bus=EventBus(),
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),

@@ -16,6 +16,7 @@ class GlobToolParam(BaseModel):
 
 class GlobTool(BaseTool):
     name: str = "glob"
+    category: str = "探索"
     description: str = (
         "按 glob 模式递归搜索文件，返回相对路径列表。"
         "支持 ** 跨目录通配。自动跳过 .git、node_modules 等目录。"
