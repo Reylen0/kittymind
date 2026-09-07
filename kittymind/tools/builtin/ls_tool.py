@@ -3,17 +3,15 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from ...config import cfg
 
-_SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", "dist", "build", ".pytest_cache", ".tox",
-}
-_MAX_ENTRIES = 500
+_SKIP_DIRS  = cfg.SKIP_DIRS
+_MAX_ENTRIES = cfg.LS_MAX_ENTRIES
 
 
 class LsToolParam(BaseModel):
     path: str = Field(default=".", description="要列出的目录路径，默认当前工作目录")
-    depth: int = Field(default=2, description="目录树展开深度，默认 2")
+    depth: int = Field(default=cfg.LS_DEPTH, description="目录树展开深度，默认 2")
     show_hidden: str = Field(default="false", description="是否显示隐藏文件，true 或 false")
 
 

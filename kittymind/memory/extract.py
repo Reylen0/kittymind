@@ -13,9 +13,10 @@
 import json
 
 from .store import MEMORY_TYPES
+from ..config import cfg
 
-_CONSOLIDATE_THRESHOLD = 10
-_MAX_HISTORY_CHARS = 8_000
+_CONSOLIDATE_THRESHOLD = cfg.MEMORY_CONSOLIDATE_THRESHOLD
+_MAX_HISTORY_CHARS     = cfg.MEMORY_MAX_HISTORY_CHARS
 
 
 def extract_memories(messages: list[dict], llm, memory_store) -> bool:

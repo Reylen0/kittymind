@@ -4,9 +4,10 @@ from pydantic import BaseModel, Field
 
 from ..base import BaseTool
 from .bash_tool import bash_cwd
+from ...config import cfg
 
-_MAX_LINES = 2000
-_MAX_BYTES = 800_000
+_MAX_LINES = cfg.FILE_READ_MAX_LINES
+_MAX_BYTES = cfg.FILE_READ_MAX_BYTES
 
 
 class FileReadToolParam(BaseModel):

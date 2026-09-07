@@ -7,12 +7,14 @@
 
 import json
 
+from ..config import cfg
+
 
 class MemoryRecall:
     """按需召回相关记忆，注入 system prompt 末尾。"""
 
-    MAX_RELEVANT  = 5     # 最多召回条数
-    MAX_BODY_CHARS = 800  # 每条记忆正文截断
+    MAX_RELEVANT   = cfg.MEMORY_RECALL_MAX_RELEVANT
+    MAX_BODY_CHARS = cfg.MEMORY_RECALL_MAX_BODY_CHARS
 
     def __init__(self, memory_store, llm):
         self._store = memory_store

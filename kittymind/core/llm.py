@@ -6,7 +6,7 @@ from typing import Optional, Iterator
 from .llm_adapters import create_adapter
 from .llm_response import LLMResponse, StreamEvent
 from .exceptions import BaseAgentException, LLMException
-
+from ..config import cfg
 
 class BaseAgentLLM:
     """统一 LLM 客户端，支持 OpenAI 及所有兼容接口。"""
@@ -16,7 +16,7 @@ class BaseAgentLLM:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        temperature: float = 0.7,
+        temperature: float = cfg.LLM_TEMPERATURE,
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
         **kwargs

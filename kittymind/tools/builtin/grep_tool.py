@@ -5,26 +5,19 @@ import re
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from ...config import cfg
 
-_SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", "dist", "build", ".pytest_cache", ".tox",
-}
-_BINARY_EXTS = {
-    ".pyc", ".pyo", ".so", ".dll", ".exe", ".bin",
-    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico",
-    ".pdf", ".zip", ".tar", ".gz", ".whl", ".egg",
-    ".db", ".sqlite", ".lock",
-}
-_MAX_RESULTS = 100
-_MAX_FILE_SIZE = 1_000_000
+_SKIP_DIRS     = cfg.SKIP_DIRS
+_BINARY_EXTS   = cfg.BINARY_EXTS
+_MAX_RESULTS   = cfg.GREP_MAX_RESULTS
+_MAX_FILE_SIZE = cfg.GREP_MAX_FILE_SIZE
 
 
 class GrepToolParam(BaseModel):
     pattern: str = Field(description="搜索的正则表达式或普通字符串")
     path: str = Field(default=".", description="搜索目录或单个文件路径，默认当前工作目录")
     file_pattern: str = Field(default="*", description="文件名过滤 glob 模式，如 *.py")
-    context_lines: int = Field(default=2, description="匹配行前后各显示的上下文行数")
+    context_lines: int = Field(default=cfg.GREP_CONTEXT_LINES, description="匹配行前后各显示的上下文行数")
     case_sensitive: str = Field(default="true", description="是否区分大小写，true 或 false")
 
 

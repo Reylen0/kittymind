@@ -3,6 +3,7 @@ import threading
 from typing import AsyncIterator, Iterator, Optional
 
 from ..callbacks.base import BaseCallBack
+from ..config import cfg
 from ..core.exceptions import AgentException, LLMException
 from ..core.llm import BaseAgentLLM
 from ..core.message import Message
@@ -23,7 +24,7 @@ class ToolAgent(Agent):
         tools: Optional[list[BaseTool]] = None,
         description: Optional[str] = None,
         callbacks: Optional[list[BaseCallBack]] = None,
-        max_iterations: int = 10,
+        max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
     ):
         super().__init__(name, llm, system_prompt, description, callbacks)
         self.max_iterations = max_iterations

@@ -1,17 +1,15 @@
 """截图工具。使用 mss 库截取屏幕，保存到本地文件并返回路径。"""
 
 import time
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
-
-_SAVE_DIR = Path.home() / ".kittymind" / "screenshots"
+from ...config import cfg
 
 
 class ScreenshotToolParam(BaseModel):
-    monitor: int = Field(default=1, description="截取的显示器编号，1 = 主显示器，0 = 全部合并")
+    monitor: int = Field(default=cfg.SCREENSHOT_MONITOR, description="截取的显示器编号，1 = 主显示器，0 = 全部合并")
     left: int = Field(default=0, description="截取区域左边界（像素），与 width/height 配合使用")
     top: int = Field(default=0, description="截取区域上边界（像素）")
     width: int = Field(default=0, description="截取区域宽度（像素），0 = 截取整个显示器")
@@ -55,9 +53,9 @@ class ScreenshotTool(BaseTool):
 
             png_bytes = mss.tools.to_png(screenshot.rgb, screenshot.size)
 
-        _SAVE_DIR.mkdir(parents=True, exist_ok=True)
+        cfg.SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
         filename = f"screenshot_{int(time.time())}.png"
-        save_path = _SAVE_DIR / filename
+        save_path = cfg.SCREENSHOTS_DIR / filename
         save_path.write_bytes(png_bytes)
 
         w, h = screenshot.size

@@ -3,17 +3,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..config import cfg
+
 UTC = timezone.utc
 
 
 class WorkspaceManager:
-    """工作区持久化管理。
+    """工作区持久化管理。"""
 
-    存储位置：~/.kittymind/workspaces.json
-    格式：[{ id, name, path, created_at }, ...]
-    """
-
-    DEFAULT_PATH = Path.home() / ".kittymind" / "workspaces.json"
+    DEFAULT_PATH = cfg.WORKSPACES_FILE
 
     def __init__(self, file_path: Path | None = None) -> None:
         self._path = file_path or self.DEFAULT_PATH

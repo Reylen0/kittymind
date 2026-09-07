@@ -1,8 +1,8 @@
 import asyncio
 import threading
-from pathlib import Path
 from typing import AsyncIterator, Optional
 
+from ..config import cfg
 from ..core.exceptions import AgentException, LLMException
 from ..core.llm import BaseAgentLLM
 from ..core.message import Message
@@ -43,7 +43,7 @@ class KittyAgent(ToolAgent):
         session_manager: Optional[SessionManager] = None,
         workspace_manager=None,
         memory: Optional[MemoryStore] = None,
-        max_iterations: int = 30,
+        max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
     ):
         super().__init__(
             name=name, llm=llm, system_prompt=system_prompt,
@@ -84,7 +84,7 @@ class KittyAgent(ToolAgent):
             if session_data:
                 effective_workspace_id = session_data["header"].get("workspace_id")
 
-        cwd_path = str(Path.home())
+        cwd_path = str(cfg.DEFAULT_WORKSPACE_DIR)
         if effective_workspace_id and self.workspace_manager:
             ws = self.workspace_manager.get_workspace(effective_workspace_id)
             if ws and ws.get("path"):

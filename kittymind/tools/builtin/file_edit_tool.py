@@ -3,8 +3,9 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from ...config import cfg
 
-_MAX_FILE_SIZE = 2_000_000
+_MAX_FILE_SIZE = cfg.FILE_EDIT_MAX_SIZE
 
 
 class FileEditToolParam(BaseModel):

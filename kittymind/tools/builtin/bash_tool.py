@@ -3,17 +3,14 @@ import re
 import subprocess
 import sys
 from contextvars import ContextVar
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
-
-_TIMEOUT = 30
-_MAX_OUTPUT = 50_000
+from ...config import cfg
 
 # 由 KittyAgent 在每次 async_stream_run 开始前设置
-bash_cwd: ContextVar[str] = ContextVar("bash_cwd", default=str(Path.home()))
+bash_cwd: ContextVar[str] = ContextVar("bash_cwd", default=str(cfg.DEFAULT_WORKSPACE_DIR))
 
 if sys.platform == "win32":
     import ctypes
@@ -31,7 +28,7 @@ _DANGEROUS_RE = re.compile("|".join(_DANGEROUS_PATTERNS), re.IGNORECASE)
 
 class BashToolParam(BaseModel):
     command: str = Field(description="要执行的 shell 命令")
-    timeout: int = Field(default=_TIMEOUT, description="超时秒数，默认 30")
+    timeout: int = Field(default=cfg.BASH_TIMEOUT, description="超时秒数，默认 30")
     run_in_background: bool = Field(default=False, description="设为 true 时在后台线程执行")
 
 
@@ -70,7 +67,7 @@ class BashTool(BaseTool):
             return f"错误: {e}"
 
         parts = [f"[工作目录: {cwd}]"]
-        if proc.stdout: parts.append(proc.stdout[:_MAX_OUTPUT])
-        if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:_MAX_OUTPUT]}")
+        if proc.stdout: parts.append(proc.stdout[:cfg.BASH_MAX_OUTPUT])
+        if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:cfg.BASH_MAX_OUTPUT]}")
         if proc.returncode != 0: parts.append(f"[退出码: {proc.returncode}]")
         return "\n".join(parts) if len(parts) > 1 else parts[0] + "\n(无输出)"

@@ -4,8 +4,9 @@ from pydantic import BaseModel, Field
 
 from ..base import BaseTool
 from .bash_tool import bash_cwd
+from ...config import cfg
 
-_MAX_WRITE_BYTES = 1_000_000
+_MAX_WRITE_BYTES = cfg.FILE_WRITE_MAX_BYTES
 
 
 class FileWriteToolParam(BaseModel):

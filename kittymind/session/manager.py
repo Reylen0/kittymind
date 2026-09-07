@@ -3,12 +3,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .store import SessionStore
+from ..config import cfg
 
 UTC = timezone.utc
 
 
 class SessionManager:
-    DEFAULT_DIR = Path.home() / ".kittymind" / "sessions"
+    DEFAULT_DIR = cfg.SESSIONS_DIR
 
     def __init__(self, data_dir: Path | None = None) -> None:
         self.store = SessionStore(data_dir or self.DEFAULT_DIR)

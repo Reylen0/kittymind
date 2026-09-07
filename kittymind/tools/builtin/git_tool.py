@@ -6,8 +6,9 @@ import sys
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from ...config import cfg
 
-_TIMEOUT = 30
+_TIMEOUT = cfg.GIT_TIMEOUT
 
 if sys.platform == "win32":
     import ctypes
@@ -22,7 +23,7 @@ class GitToolParam(BaseModel):
     action: str = Field(description="git 操作: status、diff、add、commit、log、branch、show")
     files: str = Field(default="", description="add 操作的目标文件，空格分隔；留空暂存所有")
     message: str = Field(default="", description="commit 操作的提交信息")
-    count: int = Field(default=10, description="log 显示的提交条数")
+    count: int = Field(default=cfg.GIT_LOG_COUNT, description="log 显示的提交条数")
     extra: str = Field(default="", description="附加给 git 命令的额外参数")
     workdir: str = Field(default=".", description="执行 git 命令的工作目录")
 

@@ -4,11 +4,9 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool
+from ...config import cfg
 
-_SKIP_DIRS = {
-    ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".mypy_cache", "dist", "build", ".pytest_cache", ".tox",
-}
+_SKIP_DIRS = cfg.SKIP_DIRS
 
 
 class GlobToolParam(BaseModel):

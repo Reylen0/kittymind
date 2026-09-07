@@ -13,6 +13,8 @@ import os
 import re
 from pathlib import Path
 
+from ..config import cfg
+
 _INDEX_FILE = "MEMORY.md"
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _KV_RE = re.compile(r"^(\w[\w-]*)\s*:\s*(.+)$", re.MULTILINE)
@@ -21,7 +23,7 @@ MEMORY_TYPES = {"user", "feedback", "project", "reference"}
 
 
 def _default_memory_dir() -> Path:
-    return Path.home() / ".kittymind" / "memory"
+    return cfg.MEMORY_DIR
 
 
 class MemoryStore:

@@ -23,6 +23,7 @@ from kittymind.tools.builtin.file_write_tool import FileWriteTool
 from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.permission import PermissionToolExecutor
 from kittymind.memory.store import MemoryStore
+from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
 
 # .env 加载优先级：
@@ -74,13 +75,13 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
 
 
 async def main() -> None:
-    host = os.getenv("WS_HOST", "127.0.0.1")
-    base_port = int(os.getenv("WS_PORT", "8765"))
+    host = os.getenv("WS_HOST", cfg.WS_HOST)
+    base_port = int(os.getenv("WS_PORT", cfg.WS_PORT))
     bridge = PermissionBridge()
     agent = build_agent(bridge)
 
     port = base_port
-    for _ in range(20):
+    for _ in range(cfg.PORT_RETRY_COUNT):
         try:
             await start_server(agent, host, port, bridge=bridge)
             return
