@@ -21,8 +21,7 @@ MEMORY_TYPES = {"user", "feedback", "project", "reference"}
 
 
 def _default_memory_dir() -> Path:
-    base = os.environ.get("APPDATA") or Path.home()
-    return Path(base) / ".kittymind" / "memory"
+    return Path.home() / ".kittymind" / "memory"
 
 
 class MemoryStore:
