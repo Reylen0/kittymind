@@ -6,7 +6,6 @@ from ..callbacks.base import BaseCallBack
 from ..core.exceptions import AgentException, LLMException
 from ..core.llm import BaseAgentLLM
 from ..core.message import Message
-from ..memory.base import BaseMemory
 from ..tools.base import BaseTool
 from ..tools.executor import ToolExecutor
 from ..tools.registry import ToolRegistry
@@ -22,12 +21,11 @@ class ToolAgent(Agent):
         llm: BaseAgentLLM,
         system_prompt: Optional[str] = None,
         tools: Optional[list[BaseTool]] = None,
-        memory: Optional[BaseMemory] = None,
         description: Optional[str] = None,
         callbacks: Optional[list[BaseCallBack]] = None,
         max_iterations: int = 10,
     ):
-        super().__init__(name, llm, system_prompt, memory, description, callbacks)
+        super().__init__(name, llm, system_prompt, description, callbacks)
         self.max_iterations = max_iterations
         self.tools = tools or []
         self.tool_registry = ToolRegistry()

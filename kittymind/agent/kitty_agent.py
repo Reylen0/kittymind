@@ -11,7 +11,6 @@ from ..events.types import (
     AGENT_START, AGENT_THINKING, AGENT_CHUNK,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
 )
-from ..memory.base import BaseMemory
 from ..memory.extract import extract_memories
 from ..memory.recall import MemoryRecall
 from ..memory.store import MemoryStore
@@ -39,25 +38,24 @@ class KittyAgent(ToolAgent):
         llm: BaseAgentLLM,
         system_prompt: Optional[str] = None,
         tools: Optional[list[BaseTool]] = None,
-        memory: Optional[BaseMemory] = None,
         description: Optional[str] = None,
         event_bus: Optional[EventBus] = None,
         session_manager: Optional[SessionManager] = None,
         workspace_manager=None,
-        long_term_memory: Optional[MemoryStore] = None,
+        memory: Optional[MemoryStore] = None,
         max_iterations: int = 30,
     ):
         super().__init__(
             name=name, llm=llm, system_prompt=system_prompt,
-            tools=tools, memory=memory, description=description,
+            tools=tools, description=description,
             max_iterations=max_iterations,
         )
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager
-        self.long_term_memory: Optional[MemoryStore] = long_term_memory
+        self.memory: Optional[MemoryStore] = memory
         self._memory_recall: Optional[MemoryRecall] = (
-            MemoryRecall(long_term_memory, llm) if long_term_memory else None
+            MemoryRecall(memory, llm) if memory else None
         )
         self._loaded_sessions: set[str] = set()
 
@@ -184,7 +182,7 @@ class KittyAgent(ToolAgent):
                 await bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
 
                 # 后台异步提取长期记忆（不阻塞响应）
-                if self.long_term_memory is not None:
+                if self.memory is not None:
                     asyncio.create_task(
                         self._extract_memories_bg(turn_messages)
                     )
@@ -200,7 +198,7 @@ class KittyAgent(ToolAgent):
         """在后台线程中运行记忆提取，不阻塞当前对话。"""
         try:
             await asyncio.to_thread(
-                extract_memories, turn_messages, self.llm, self.long_term_memory
+                extract_memories, turn_messages, self.llm, self.memory
             )
         except Exception as e:
             print(f"[memory] background extraction error: {e}", flush=True)

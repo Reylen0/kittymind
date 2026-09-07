@@ -63,7 +63,7 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         event_bus=EventBus(),
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
-        long_term_memory=memory_store,
+        memory=memory_store,
     )
     # 用 PermissionToolExecutor 替换默认 ToolExecutor，接入 GUI 权限确认
     agent.tool_executor = PermissionToolExecutor(
