@@ -28,6 +28,8 @@ declare global {
 
       agentStatus(): Promise<{ name: string; model: string; running_sessions: string[] }>
 
+      respondPermission(requestId: string, approved: boolean): Promise<unknown>
+
       // on() returns an unsubscribe function — call it in useEffect cleanup
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       on(event: string, cb: (data: any) => void): () => void

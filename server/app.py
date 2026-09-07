@@ -20,6 +20,8 @@ from dotenv import load_dotenv
 from kittymind.tools.builtin.bash_tool import BashTool
 from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
+from kittymind.tools.permission import PermissionToolExecutor
+from server.permission_bridge import PermissionBridge
 
 # .env 加载优先级：
 #   1. ~/.kittymind/.env  （用户级配置，打包和开发都适用）
@@ -42,8 +44,8 @@ from kittymind.agent import KittyAgent
 from server.ws_server import start_server
 
 
-def build_agent() -> KittyAgent:
-    return KittyAgent(
+def build_agent(bridge: PermissionBridge) -> KittyAgent:
+    agent = KittyAgent(
         name="kitty",
         llm=BaseAgentLLM(),
         tools=[GetCurrentTimeTool(), FileReadTool(), FileWriteTool(), BashTool()],
@@ -52,17 +54,24 @@ def build_agent() -> KittyAgent:
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
     )
+    # 用 PermissionToolExecutor 替换默认 ToolExecutor，接入 GUI 权限确认
+    agent.tool_executor = PermissionToolExecutor(
+        agent.tool_registry,
+        ask_fn=bridge.ask,
+    )
+    return agent
 
 
 async def main() -> None:
     host = os.getenv("WS_HOST", "127.0.0.1")
     base_port = int(os.getenv("WS_PORT", "8765"))
-    agent = build_agent()
+    bridge = PermissionBridge()
+    agent = build_agent(bridge)
 
     port = base_port
     for _ in range(20):
         try:
-            await start_server(agent, host, port)
+            await start_server(agent, host, port, bridge=bridge)
             return
         except OSError as e:
             if e.errno in (10048, 98):

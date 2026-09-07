@@ -38,6 +38,7 @@ const VITE_DEV_URL = IS_DEV ? 'http://localhost:5173' : null
 const PUSH_EVENTS = [
   'agent.start', 'agent.thinking', 'agent.chunk',
   'agent.tool_call', 'agent.tool_result', 'agent.done', 'agent.error',
+  'tool.permission_request',
 ]
 
 // ─── Global State ─────────────────────────────────────────────────────────────

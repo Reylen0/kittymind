@@ -13,8 +13,9 @@ from kittymind.agent import KittyAgent
 from .rpc_handler import RpcHandler
 
 
-async def _handle(websocket, agent: KittyAgent) -> None:
-    handler = RpcHandler(agent, websocket)
+async def _handle(websocket, agent: KittyAgent, bridge=None) -> None:
+    loop = asyncio.get_running_loop()
+    handler = RpcHandler(agent, websocket, bridge=bridge, loop=loop)
     try:
         async for raw in websocket:
             try:
@@ -27,11 +28,13 @@ async def _handle(websocket, agent: KittyAgent) -> None:
         pass
     finally:
         await handler.cancel_all()
+        if bridge:
+            bridge.clear_connection()
 
 
-async def start_server(agent: KittyAgent, host: str, port: int) -> None:
+async def start_server(agent: KittyAgent, host: str, port: int, bridge=None) -> None:
     server = await websockets.serve(
-        lambda ws: _handle(ws, agent), host, port
+        lambda ws: _handle(ws, agent, bridge=bridge), host, port
     )
     print(f"[ready] ws://{host}:{port}", flush=True)
     async with server:

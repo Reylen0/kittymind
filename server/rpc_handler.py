@@ -17,11 +17,13 @@ from kittymind.agent import KittyAgent
 
 
 class RpcHandler:
-    def __init__(self, agent: KittyAgent, ws) -> None:
+    def __init__(self, agent: KittyAgent, ws, bridge=None, loop=None) -> None:
         self.agent = agent
         self.ws = ws
-        # session_id → running asyncio.Task
         self._tasks: dict[str, asyncio.Task] = {}
+        self._bridge = bridge
+        if bridge is not None and loop is not None:
+            bridge.set_connection(loop, self._push)
 
     # ──────────────────────────────────────────────────────────────
     # 消息收发
@@ -33,15 +35,16 @@ class RpcHandler:
         params = request.get("params") or {}
 
         handlers = {
-            "turn/run":         self._turn_run,
-            "turn/cancel":      self._turn_cancel,
-            "session/create":   self._session_create,
-            "session/list":     self._session_list,
-            "session/get":      self._session_get,
-            "session/delete":   self._session_delete,
-            "agent/status":     self._agent_status,
-            "workspace/list":   self._workspace_list,
-            "workspace/create": self._workspace_create,
+            "turn/run":                self._turn_run,
+            "turn/cancel":             self._turn_cancel,
+            "session/create":          self._session_create,
+            "session/list":            self._session_list,
+            "session/get":             self._session_get,
+            "session/delete":          self._session_delete,
+            "agent/status":            self._agent_status,
+            "workspace/list":          self._workspace_list,
+            "workspace/create":        self._workspace_create,
+            "tool/permission_response": self._permission_response,
         }
 
         fn = handlers.get(method)
@@ -247,3 +250,14 @@ class RpcHandler:
             return
         ws = wm.create_workspace(name, path)
         await self._result(req_id, ws)
+
+    # ──────────────────────────────────────────────────────────────
+    # tool/permission_response
+    # ──────────────────────────────────────────────────────────────
+
+    async def _permission_response(self, req_id: Any, params: dict) -> None:
+        request_id = params.get("request_id", "")
+        approved = bool(params.get("approved", False))
+        if self._bridge is not None:
+            self._bridge.respond(request_id, approved)
+        await self._result(req_id, {"ok": True})

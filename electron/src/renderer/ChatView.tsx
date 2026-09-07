@@ -15,6 +15,12 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   const [input,               setInput]               = useState('')
   const [isLoading,           setIsLoading]           = useState(false)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [permRequest, setPermRequest] = useState<{
+    request_id: string
+    tool: string
+    args: Record<string, unknown>
+    reason: string
+  } | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
@@ -112,6 +118,20 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
     return () => unsubs.forEach(u => u?.())
   }, [sessionId])
 
+  useEffect(() => {
+    const unsub = window.kitty?.on('tool.permission_request', (data) => {
+      setPermRequest(data)
+    })
+    return () => unsub?.()
+  }, [])
+
+  async function handlePermission(approved: boolean) {
+    if (!permRequest) return
+    const id = permRequest.request_id
+    setPermRequest(null)
+    await window.kitty?.respondPermission(id, approved)
+  }
+
   const sendMessage = useCallback(async () => {
     const text = input.trim()
     if (!text || isLoading) return
@@ -167,6 +187,9 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
                   onCreated={onWorkspaceCreated}
                 />
               </div>
+              {permRequest && (
+                <PermissionBanner req={permRequest} onRespond={handlePermission} />
+              )}
               {inputBox}
             </div>
           </div>
@@ -181,8 +204,39 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
         {messages.map(m => <MessageItem key={m.id} message={m} />)}
         <div ref={bottomRef} />
       </div>
+      {permRequest && (
+        <PermissionBanner req={permRequest} onRespond={handlePermission} />
+      )}
       <div className="input-area">
         {inputBox}
+      </div>
+    </div>
+  )
+}
+
+function PermissionBanner({
+  req,
+  onRespond,
+}: {
+  req: { request_id: string; tool: string; args: Record<string, unknown>; reason: string }
+  onRespond: (approved: boolean) => void
+}) {
+  const argsText = Object.entries(req.args)
+    .map(([k, v]) => `${k}: ${String(v)}`)
+    .join('\n')
+
+  return (
+    <div className="perm-banner">
+      <div className="perm-banner-header">
+        <span className="perm-banner-icon">🔐</span>
+        <span className="perm-banner-title">工具请求确认</span>
+        <span className="perm-banner-tool">{req.tool}</span>
+      </div>
+      <div className="perm-banner-reason">{req.reason}</div>
+      {argsText && <div className="perm-banner-args">{argsText}</div>}
+      <div className="perm-banner-actions">
+        <button className="perm-btn perm-btn-deny"  onClick={() => onRespond(false)}>拒绝</button>
+        <button className="perm-btn perm-btn-allow" onClick={() => onRespond(true)}>允许</button>
       </div>
     </div>
   )

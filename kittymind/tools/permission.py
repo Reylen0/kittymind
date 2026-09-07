@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
+from .builtin.bash_tool import bash_cwd
 from .executor import ToolExecutor
 from .registry import ToolRegistry
 
@@ -28,25 +29,34 @@ _BASH_HARD_DENY: list[tuple[str, str]] = [
 ]
 
 # ── 闸门 2：软规则 ─────────────────────────────────────────────
+# 注意：路径规则用 bash_cwd.get() 作为工作目录参考，与 FileWriteTool/FileReadTool
+# 实际解析路径的基准保持一致（均为当前会话的工作区路径）。
+def _check_path_outside(args: dict) -> bool:
+    cwd = bash_cwd.get()
+    raw = args.get("path", ".")
+    # 对齐 FileWriteTool/FileReadTool 的解析逻辑
+    resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
+    return not _inside_workdir(resolved, cwd)
+
 _RULES: list[tuple[set, object, str]] = [
     (
         {"file_write", "file_edit"},
-        lambda args, wd: not _inside_workdir(args.get("path", "."), wd),
+        lambda args: _check_path_outside(args),
         "写入路径在工作目录之外",
     ),
     (
         {"file_read"},
-        lambda args, wd: not _inside_workdir(args.get("path", "."), wd),
+        lambda args: _check_path_outside(args),
         "读取路径在工作目录之外",
     ),
     (
         {"bash"},
-        lambda args, _: _has_any(args.get("command", ""), ["rm ", "del ", "rmdir ", "Remove-Item"]),
+        lambda args: _has_any(args.get("command", ""), ["rm ", "del ", "rmdir ", "Remove-Item"]),
         "命令包含删除操作",
     ),
     (
         {"bash"},
-        lambda args, _: _has_any(args.get("command", ""), [
+        lambda args: _has_any(args.get("command", ""), [
             "> /etc/", "> /usr/", "> /bin/", "> /boot/",
             "> C:\\Windows\\", "> C:\\System32",
         ]),
@@ -54,7 +64,7 @@ _RULES: list[tuple[set, object, str]] = [
     ),
     (
         {"bash"},
-        lambda args, _: "chmod 777" in args.get("command", ""),
+        lambda args: "chmod 777" in args.get("command", ""),
         "命令将权限设置为 777",
     ),
 ]
@@ -107,11 +117,9 @@ class PermissionToolExecutor(ToolExecutor):
     def __init__(
         self,
         registry: ToolRegistry,
-        workdir: str = ".",
         ask_fn: Optional[Callable[[str, dict, str], bool]] = None,
     ):
         super().__init__(registry)
-        self.workdir = os.path.abspath(workdir)
         self._ask_fn = ask_fn or _cli_ask
         self._last_call_key: Optional[str] = None
 
@@ -149,7 +157,7 @@ class PermissionToolExecutor(ToolExecutor):
             if name not in tool_names:
                 continue
             try:
-                triggered = check_fn(args, self.workdir)
+                triggered = check_fn(args)
             except Exception:
                 triggered = False
             if not triggered:

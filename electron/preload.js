@@ -41,6 +41,13 @@ contextBridge.exposeInMainWorld('kitty', {
   agentStatus: () =>
     ipcRenderer.invoke('ws:call', { method: 'agent/status', params: {} }),
 
+  // Tool permission confirmation
+  respondPermission: (requestId, approved) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'tool/permission_response',
+      params: { request_id: requestId, approved },
+    }),
+
   // Window / edit controls (custom TopBar)
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
 
