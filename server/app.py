@@ -20,7 +20,9 @@ from dotenv import load_dotenv
 from kittymind.tools.builtin.bash_tool import BashTool
 from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
+from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.permission import PermissionToolExecutor
+from kittymind.memory.store import MemoryStore
 from server.permission_bridge import PermissionBridge
 
 # .env 加载优先级：
@@ -45,14 +47,23 @@ from server.ws_server import start_server
 
 
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
+    llm = BaseAgentLLM()
+    memory_store = MemoryStore()
     agent = KittyAgent(
         name="kitty",
-        llm=BaseAgentLLM(),
-        tools=[GetCurrentTimeTool(), FileReadTool(), FileWriteTool(), BashTool()],
+        llm=llm,
+        tools=[
+            GetCurrentTimeTool(),
+            FileReadTool(),
+            FileWriteTool(),
+            BashTool(),
+            WriteMemoryTool(memory_store),
+        ],
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=EventBus(),
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
+        long_term_memory=memory_store,
     )
     # 用 PermissionToolExecutor 替换默认 ToolExecutor，接入 GUI 权限确认
     agent.tool_executor = PermissionToolExecutor(

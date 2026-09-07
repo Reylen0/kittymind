@@ -12,6 +12,9 @@ from ..events.types import (
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
 )
 from ..memory.base import BaseMemory
+from ..memory.extract import extract_memories
+from ..memory.recall import MemoryRecall
+from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
 from ..tools.base import BaseTool
 from ..tools.builtin.bash_tool import bash_cwd
@@ -41,6 +44,7 @@ class KittyAgent(ToolAgent):
         event_bus: Optional[EventBus] = None,
         session_manager: Optional[SessionManager] = None,
         workspace_manager=None,
+        long_term_memory: Optional[MemoryStore] = None,
         max_iterations: int = 30,
     ):
         super().__init__(
@@ -51,6 +55,10 @@ class KittyAgent(ToolAgent):
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager
+        self.long_term_memory: Optional[MemoryStore] = long_term_memory
+        self._memory_recall: Optional[MemoryRecall] = (
+            MemoryRecall(long_term_memory, llm) if long_term_memory else None
+        )
         self._loaded_sessions: set[str] = set()
 
     async def async_stream_run(
@@ -89,6 +97,24 @@ class KittyAgent(ToolAgent):
             await bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
             messages = self._build_messages(session_id, input_text)
+
+            # 召回相关长期记忆，注入 system prompt
+            if self._memory_recall:
+                try:
+                    relevant = await asyncio.to_thread(
+                        self._memory_recall.select_relevant, input_text
+                    )
+                    recall_section = self._memory_recall.build_recall_section(relevant)
+                    if recall_section and messages:
+                        if messages[0]["role"] == "system":
+                            messages[0] = {
+                                **messages[0],
+                                "content": messages[0]["content"] + recall_section,
+                            }
+                        else:
+                            messages.insert(0, {"role": "system", "content": recall_section})
+                except Exception:
+                    pass  # 召回失败不影响正常对话
             tools_schema = self.tool_registry.get_schemas()
             final_text: str | None = None
             turn_messages: list[dict] = [{"role": "user", "content": input_text}]
@@ -157,12 +183,27 @@ class KittyAgent(ToolAgent):
 
                 await bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
 
+                # 后台异步提取长期记忆（不阻塞响应）
+                if self.long_term_memory is not None:
+                    asyncio.create_task(
+                        self._extract_memories_bg(turn_messages)
+                    )
+
             except Exception as e:
                 await bus.emit(AGENT_ERROR, {"session_id": session_id, "error": str(e)})
                 raise
 
         finally:
             bash_cwd.reset(cwd_token)
+
+    async def _extract_memories_bg(self, turn_messages: list[dict]) -> None:
+        """在后台线程中运行记忆提取，不阻塞当前对话。"""
+        try:
+            await asyncio.to_thread(
+                extract_memories, turn_messages, self.llm, self.long_term_memory
+            )
+        except Exception as e:
+            print(f"[memory] background extraction error: {e}", flush=True)
 
     async def _stream_with_tools_async(self, messages, tools, **kwargs):
         """将同步 stream_with_tools() 包装为异步生成器（Thread + asyncio.Queue）。"""
