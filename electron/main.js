@@ -164,7 +164,7 @@ function spawnPython() {
 
   const proc = spawn(cmd, args, {
     cwd,
-    env:   { ...process.env },
+    env:   { ...process.env, PYTHONUTF8: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
