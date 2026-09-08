@@ -11,6 +11,7 @@
 
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 from ..config import cfg
@@ -39,8 +40,9 @@ class MemoryStore:
         """写入或覆盖一条记忆，同步重建索引。"""
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._dir / f"{self._slug(name)}.md"
+        updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         path.write_text(
-            self._document(name, mem_type, description, body),
+            self._document(name, mem_type, description, body, updated_at),
             encoding="utf-8",
         )
         self._rebuild_index()
@@ -165,10 +167,10 @@ class MemoryStore:
         return slug[:64] or "memory"
 
     @staticmethod
-    def _document(name: str, mem_type: str, description: str, body: str) -> str:
+    def _document(name: str, mem_type: str, description: str, body: str, updated_at: str) -> str:
         return (
             f"---\nname: {name}\ntype: {mem_type}\n"
-            f"description: {description}\n---\n\n{body.strip()}\n"
+            f"description: {description}\nupdated_at: {updated_at}\n---\n\n{body.strip()}\n"
         )
 
     @staticmethod
