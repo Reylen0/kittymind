@@ -17,6 +17,7 @@ from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
 from ..tools.base import BaseTool
 from ..tools.builtin.bash_tool import bash_cwd
+from ..tools.permission import PermissionToolExecutor
 from .tool_agent import ToolAgent
 
 
@@ -44,12 +45,17 @@ class KittyAgent(ToolAgent):
         workspace_manager=None,
         memory: Optional[MemoryStore] = None,
         max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
+        ask_fn=None,
     ):
         super().__init__(
             name=name, llm=llm, system_prompt=system_prompt,
             tools=tools, description=description,
             max_iterations=max_iterations,
         )
+        if ask_fn is not None:
+            self.tool_executor = PermissionToolExecutor(
+                self.tool_registry, ask_fn=ask_fn
+            )
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager

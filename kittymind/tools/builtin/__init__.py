@@ -9,10 +9,13 @@ from .ls_tool import LsTool
 from .git_tool import GitTool
 from .screenshot_tool import ScreenshotTool
 from .clipboard_tool import ClipboardTool
+from .write_memory_tool import WriteMemoryTool
+from .task_tool import TaskTool
 
 __all__ = [
     "GetCurrentTimeTool",
     "BashTool", "FileReadTool", "FileWriteTool", "FileEditTool",
     "GlobTool", "GrepTool", "LsTool", "GitTool",
     "ScreenshotTool", "ClipboardTool",
+    "WriteMemoryTool", "TaskTool",
 ]

@@ -7,6 +7,7 @@ from .builtin import (
     BashTool, FileReadTool, FileWriteTool, FileEditTool,
     GlobTool, GrepTool, LsTool, GitTool,
     ScreenshotTool, ClipboardTool,
+    WriteMemoryTool, TaskTool,
 )
 
 __all__ = [
@@ -15,4 +16,5 @@ __all__ = [
     "BashTool", "FileReadTool", "FileWriteTool", "FileEditTool",
     "GlobTool", "GrepTool", "LsTool", "GitTool",
     "ScreenshotTool", "ClipboardTool",
+    "WriteMemoryTool", "TaskTool",
 ]

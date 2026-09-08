@@ -21,7 +21,7 @@ from kittymind.tools.builtin.bash_tool import BashTool
 from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
 from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
-from kittymind.tools.permission import PermissionToolExecutor
+from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.memory.store import MemoryStore
 from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
@@ -51,26 +51,28 @@ from server.ws_server import start_server
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
     llm = BaseAgentLLM()
     memory_store = MemoryStore()
-    tools = [
+    base_tools = [
         GetCurrentTimeTool(),
         FileReadTool(),
         FileWriteTool(),
         BashTool(),
         WriteMemoryTool(memory_store),
     ]
+    task_tool = TaskTool(
+        llm=llm,
+        sub_tools=base_tools,
+        ask_fn=bridge.ask,
+    )
+    all_tools = base_tools + [task_tool]
     agent = KittyAgent(
         name="kitty",
         llm=llm,
-        tools=tools,
-        system_prompt=build_system_prompt(tools),
+        tools=all_tools,
+        system_prompt=build_system_prompt(all_tools),
         event_bus=EventBus(),
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
         memory=memory_store,
-    )
-    # 用 PermissionToolExecutor 替换默认 ToolExecutor，接入 GUI 权限确认
-    agent.tool_executor = PermissionToolExecutor(
-        agent.tool_registry,
         ask_fn=bridge.ask,
     )
     return agent
