@@ -7,7 +7,6 @@
  */
 
 import { spawn }          from 'child_process'
-import { createConnection } from 'net'
 import { createRequire }  from 'module'
 import { fileURLToPath }  from 'url'
 import { dirname, join }  from 'path'
@@ -15,32 +14,35 @@ import { dirname, join }  from 'path'
 const __dirname   = dirname(fileURLToPath(import.meta.url))
 const require     = createRequire(import.meta.url)
 const root        = join(__dirname, '..')
-const electronBin = require('electron')        // electron npm 包直接导出二进制路径
+const electronBin = require('electron')
 const viteBin     = join(root, 'node_modules', 'vite', 'bin', 'vite.js')
 
-function run(cmd, args) {
-  return spawn(cmd, args, { stdio: 'inherit', shell: false, cwd: root })
+function run(cmd, args, opts = {}) {
+  return spawn(cmd, args, { stdio: 'inherit', shell: false, cwd: root, ...opts })
 }
 
-async function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const ok = await new Promise(resolve => {
-      const s = createConnection({ host: '127.0.0.1', port })
-      s.once('connect', () => { s.destroy(); resolve(true)  })
-      s.once('error',   () => { s.destroy(); resolve(false) })
-    })
-    if (ok) return
-    await new Promise(r => setTimeout(r, 300))
-  }
-  throw new Error(`Port ${port} not ready within ${timeoutMs / 1000}s`)
-}
+// ── 启动 Vite，监听 stdout 等 ready 信号 ────────────────────────────
+process.stdout.write('[dev] Starting Vite...\n')
 
-// ── 启动 Vite（直接用 node 运行，不走 .cmd 包装） ────────────────
-const vite = run(process.execPath, [viteBin])
+const vite = spawn(process.execPath, [viteBin], {
+  shell: false, cwd: root,
+  stdio: ['inherit', 'pipe', 'inherit'],  // stdout pipe 以便检测 ready
+})
 
-process.stdout.write('[dev] Waiting for Vite on :5173...\n')
-await waitForPort(5173)
+// 把 Vite stdout 透传给终端
+vite.stdout.pipe(process.stdout)
+
+await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('Vite did not start within 30s')), 30_000)
+  vite.stdout.on('data', chunk => {
+    if (chunk.toString().includes('ready in') || chunk.toString().includes('Local:')) {
+      clearTimeout(timer)
+      resolve()
+    }
+  })
+  vite.on('exit', code => { clearTimeout(timer); reject(new Error(`Vite exited with ${code}`)) })
+})
+
 process.stdout.write('[dev] Vite ready. Starting Electron...\n')
 
 // ── 启动 Electron ────────────────────────────────────────────────
@@ -56,5 +58,5 @@ function cleanup(exitCode = 0) {
 electron.on('exit', code => cleanup(code ?? 0))
 vite.on('exit',     code => cleanup(code ?? 0))
 
-// ── Ctrl+C：直接退出，无弹窗 ─────────────────────────────────────
 process.on('SIGINT', () => cleanup(0))
+
