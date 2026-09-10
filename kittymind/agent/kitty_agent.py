@@ -11,6 +11,7 @@ from ..events.bus import EventBus
 from ..events.types import (
     AGENT_START, AGENT_THINKING, AGENT_CHUNK,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
+    AGENT_CONTEXT_USAGE,
 )
 from ..memory.extract import extract_memories
 from ..memory.recall import MemoryRecall
@@ -117,6 +118,12 @@ class KittyAgent(ToolAgent):
                                 tool_calls = event.tool_calls
                             elif event.type == "usage" and event.usage:
                                 tracker.update_from_usage(event.usage)
+                                await self.event_bus.emit(AGENT_CONTEXT_USAGE, {
+                                    "session_id":  session_id,
+                                    "used_tokens": tracker.used_tokens(messages),
+                                    "total_tokens": tracker._effective,
+                                    "ratio":       min(tracker.ratio(messages), 1.0),
+                                })
                                 if did_compress:
                                     cooldown_until, ineffective_count = self._check_anti_thrash(
                                         event.usage, cooldown_until, ineffective_count

@@ -11,7 +11,7 @@ from typing import Any
 from kittymind.events.types import (
     AGENT_CHUNK, AGENT_THINKING,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT,
-    AGENT_DONE, AGENT_ERROR,
+    AGENT_DONE, AGENT_ERROR, AGENT_CONTEXT_USAGE,
 )
 from kittymind.agent import KittyAgent
 
@@ -125,12 +125,17 @@ class RpcHandler:
             if data.get("session_id") == session_id:
                 await self._push("agent.error", data)
 
-        bus.subscribe(AGENT_CHUNK,       fwd_chunk)
-        bus.subscribe(AGENT_THINKING,    fwd_thinking)
-        bus.subscribe(AGENT_TOOL_CALL,   fwd_tool_call)
-        bus.subscribe(AGENT_TOOL_RESULT, fwd_tool_result)
-        bus.subscribe(AGENT_DONE,        fwd_done)
-        bus.subscribe(AGENT_ERROR,       fwd_error)
+        async def fwd_context_usage(et, data):
+            if data.get("session_id") == session_id:
+                await self._push("agent.context_usage", data)
+
+        bus.subscribe(AGENT_CHUNK,         fwd_chunk)
+        bus.subscribe(AGENT_THINKING,      fwd_thinking)
+        bus.subscribe(AGENT_TOOL_CALL,     fwd_tool_call)
+        bus.subscribe(AGENT_TOOL_RESULT,   fwd_tool_result)
+        bus.subscribe(AGENT_DONE,          fwd_done)
+        bus.subscribe(AGENT_ERROR,         fwd_error)
+        bus.subscribe(AGENT_CONTEXT_USAGE, fwd_context_usage)
 
         # 立即 ack，事件通过 server push 异步推送
         await self._result(req_id, {"status": "started"})
@@ -150,12 +155,13 @@ class RpcHandler:
             except Exception:
                 pass  # agent.error 已由 KittyAgent 通过 EventBus 推送
             finally:
-                bus.unsubscribe(AGENT_CHUNK,       fwd_chunk)
-                bus.unsubscribe(AGENT_THINKING,    fwd_thinking)
-                bus.unsubscribe(AGENT_TOOL_CALL,   fwd_tool_call)
-                bus.unsubscribe(AGENT_TOOL_RESULT, fwd_tool_result)
-                bus.unsubscribe(AGENT_DONE,        fwd_done)
-                bus.unsubscribe(AGENT_ERROR,       fwd_error)
+                bus.unsubscribe(AGENT_CHUNK,         fwd_chunk)
+                bus.unsubscribe(AGENT_THINKING,      fwd_thinking)
+                bus.unsubscribe(AGENT_TOOL_CALL,     fwd_tool_call)
+                bus.unsubscribe(AGENT_TOOL_RESULT,   fwd_tool_result)
+                bus.unsubscribe(AGENT_DONE,          fwd_done)
+                bus.unsubscribe(AGENT_ERROR,         fwd_error)
+                bus.unsubscribe(AGENT_CONTEXT_USAGE, fwd_context_usage)
                 self._tasks.pop(session_id, None)
 
         task = asyncio.create_task(_run())

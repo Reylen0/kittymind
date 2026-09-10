@@ -15,6 +15,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   const [input,               setInput]               = useState('')
   const [isLoading,           setIsLoading]           = useState(false)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
+  const [ctxRatio,            setCtxRatio]            = useState(0)
   const [permRequest, setPermRequest] = useState<{
     request_id: string
     tool: string
@@ -35,6 +36,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
     setMessages([])
     setIsLoading(false)
     setSelectedWorkspaceId(null)
+    setCtxRatio(0)
 
     async function loadHistory() {
       const data = await window.kitty?.getSession(sessionId)
@@ -108,12 +110,18 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
       setIsLoading(false)
     }
 
+    const onContextUsage = (d: { session_id: string; ratio: number }) => {
+      if (d.session_id !== sessionId) return
+      setCtxRatio(d.ratio)
+    }
+
     const unsubs = [
-      window.kitty?.on('agent.chunk',       onChunk),
-      window.kitty?.on('agent.tool_call',   onToolCall),
-      window.kitty?.on('agent.tool_result', onToolResult),
-      window.kitty?.on('agent.done',        onDone),
-      window.kitty?.on('agent.error',       onError),
+      window.kitty?.on('agent.chunk',         onChunk),
+      window.kitty?.on('agent.tool_call',     onToolCall),
+      window.kitty?.on('agent.tool_result',   onToolResult),
+      window.kitty?.on('agent.done',          onDone),
+      window.kitty?.on('agent.error',         onError),
+      window.kitty?.on('agent.context_usage', onContextUsage),
     ]
     return () => unsubs.forEach(u => u?.())
   }, [sessionId])
@@ -246,14 +254,27 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
             )}
           </div>
 
-          {/* 上下文占用量圆环（占位数据），悬停显示文字 */}
-          <div className="ctx-ring" role="status" aria-label="上下文已用 1%">
-            <svg width="18" height="18" viewBox="0 0 18 18">
-              <circle className="ctx-ring-track" cx="9" cy="9" r="7" />
-              <circle className="ctx-ring-arc" cx="9" cy="9" r="7" strokeDasharray="3 41" />
-            </svg>
-            <span className="ctx-tip">上下文已用 <b>1%</b></span>
-          </div>
+          {/* 上下文占用量圆环 */}
+          {(() => {
+            const CIRC = 2 * Math.PI * 7          // ≈ 43.98
+            const arc  = Math.max(0.5, CIRC * ctxRatio)  // 最小 0.5 保证弧线可见
+            const gap  = Math.max(0, CIRC - arc)
+            const pct  = Math.round(ctxRatio * 100)
+            const stroke = ctxRatio >= 0.9 ? 'var(--danger, #f03)' :
+                           ctxRatio >= 0.7 ? 'var(--warning, #f90)' :
+                           'var(--accent)'
+            return (
+              <div className="ctx-ring" role="status" aria-label={`上下文已用 ${pct}%`}>
+                <svg width="18" height="18" viewBox="0 0 18 18">
+                  <circle className="ctx-ring-track" cx="9" cy="9" r="7" />
+                  <circle className="ctx-ring-arc" cx="9" cy="9" r="7"
+                    strokeDasharray={`${arc} ${gap}`}
+                    style={{ stroke }} />
+                </svg>
+                <span className="ctx-tip">上下文已用 <b>{pct}%</b></span>
+              </div>
+            )
+          })()}
 
           {isLoading
             ? (

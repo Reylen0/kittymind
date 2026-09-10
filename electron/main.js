@@ -39,6 +39,7 @@ const PUSH_EVENTS = [
   'agent.start', 'agent.thinking', 'agent.chunk',
   'agent.tool_call', 'agent.tool_result', 'agent.done', 'agent.error',
   'tool.permission_request',
+  'agent.context_usage',
 ]
 
 // ─── Global State ─────────────────────────────────────────────────────────────

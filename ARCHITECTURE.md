@@ -332,7 +332,8 @@ MVP 之外已额外落地：长期记忆系统（`memory/`：提取/整合/召�
 | 14.5 | 迁移脚本 | `kittymind/session/migrate.py` | 扫描现有 JSONL 导入 SQLite，所有行写入时 `active=1, compacted=0` |
 | 14.6 | 配置切换 | `config.py` | `SESSION_BACKEND = jsonl \| sqlite` |
 | 14.7 | 压缩状态跨轮持久化 | `kitty_agent.py` | 现 `TokenTracker`/`ContextCompressor` 是单轮局部对象，`_compressed_once`/反抖动冷却/token 校准基线每轮重置。改为 per-session 实例属性并落库，使衰减、冷却、校准跨轮（乃至跨重启）延续 |
-| 14.8 | 移除 `_history` 内存缓存 | `agent/base.py`、`kitty_agent.py` | `_history` 是 JSONL 阶段的过渡设计：因存储层不可改写+读慢，才在 Agent 层维护内存镜像。SQLite 落地后 `WHERE active=1` 读取足够快，`archive_and_compact` 直接落库，`_history`/`replace_history`/`_loaded_sessions`/`_load_session_history` 可整体删除，`_build_messages` 改为每轮从 SQLite 读活跃消息 |
+| 14.8 | 上下文占用环恢复 | `sqlite_store.py`、`server/rpc_handler.py`、`electron/src/renderer/ChatView.tsx` | 依赖 14.7 落库的 per-session `prompt_tokens`。`session/get` 返回当前占用比（或加载时推 `agent.context_usage` 事件），前端切换/重启会话后正确恢复 ctx-ring，取代当前"切走即归零"的临时行为。**验收点：会话切换/重启后上下文占用环能正确恢复** |
+| 14.9 | 移除 `_history` 内存缓存 | `agent/base.py`、`kitty_agent.py` | `_history` 是 JSONL 阶段的过渡设计：因存储层不可改写+读慢，才在 Agent 层维护内存镜像。SQLite 落地后 `WHERE active=1` 读取足够快，`archive_and_compact` 直接落库，`_history`/`replace_history`/`_loaded_sessions`/`_load_session_history` 可整体删除，`_build_messages` 改为每轮从 SQLite 读活跃消息 |
 
 #### Phase 15 — FTS5 全文搜索
 
