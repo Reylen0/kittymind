@@ -1,5 +1,4 @@
 import asyncio
-import threading
 import time
 from typing import AsyncIterator, Optional
 
@@ -313,26 +312,8 @@ class KittyAgent(ToolAgent):
             print(f"[memory] background extraction error: {e}", flush=True)
 
     async def _stream_with_tools_async(self, messages, tools, **kwargs):
-        """将同步 stream_with_tools() 包装为异步生成器（Thread + asyncio.Queue）。"""
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue = asyncio.Queue()
-        _DONE = object()
-
-        def _producer():
-            try:
-                for event in self.llm.stream_with_tools(messages=messages, tools=tools, **kwargs):
-                    loop.call_soon_threadsafe(queue.put_nowait, event)
-            except Exception as exc:
-                loop.call_soon_threadsafe(queue.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
-
-        threading.Thread(target=_producer, daemon=True).start()
-
-        while True:
-            item = await queue.get()
-            if item is _DONE:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
+        """直接调用 AsyncOpenAI 流式接口的异步生成器。"""
+        async for event in self.llm.async_stream_with_tools(
+            messages=messages, tools=tools, **kwargs
+        ):
+            yield event

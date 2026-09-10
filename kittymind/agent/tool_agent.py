@@ -1,6 +1,4 @@
-import asyncio
-import threading
-from typing import AsyncIterator, Iterator, Optional
+from typing import Iterator, Optional
 
 from ..callbacks.base import BaseCallBack
 from ..config import cfg
@@ -143,36 +141,6 @@ class ToolAgent(Agent):
         except Exception as e:
             self._emit("on_agent_error", self.name, e)
             raise
-
-    # ──────────────────────────────────────────────────────────────
-    # 异步包装 async_stream_run()（Thread + asyncio.Queue 桥接）
-    # ──────────────────────────────────────────────────────────────
-
-    async def async_stream_run(
-        self, session_id: str | None, input_text: str, **kwargs
-    ) -> AsyncIterator[str]:
-        loop = asyncio.get_event_loop()
-        aqueue: asyncio.Queue = asyncio.Queue()
-        _DONE = object()
-
-        def _producer():
-            try:
-                for chunk in self.stream_run(session_id, input_text, **kwargs):
-                    loop.call_soon_threadsafe(aqueue.put_nowait, chunk)
-            except Exception as exc:
-                loop.call_soon_threadsafe(aqueue.put_nowait, exc)
-            finally:
-                loop.call_soon_threadsafe(aqueue.put_nowait, _DONE)
-
-        threading.Thread(target=_producer, daemon=True).start()
-
-        while True:
-            item = await aqueue.get()
-            if item is _DONE:
-                break
-            if isinstance(item, Exception):
-                raise item
-            yield item
 
     # ──────────────────────────────────────────────────────────────
     # 内部工具

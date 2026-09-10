@@ -63,3 +63,18 @@ class BaseAgentLLM:
             yield from self._client.stream_with_tools(messages=messages, tools=tools, **call_kwargs)
         except Exception as e:
             raise LLMException(f"LLM流式调用失败: {e}")
+
+    async def async_stream_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        **kwargs,
+    ):
+        call_kwargs = self._base_kwargs(kwargs)
+        try:
+            async for event in self._client.async_stream_with_tools(
+                messages=messages, tools=tools, **call_kwargs
+            ):
+                yield event
+        except Exception as e:
+            raise LLMException(f"LLM流式调用失败: {e}")

@@ -10,9 +10,13 @@ class BaseLLMAdapter(ABC):
         self.base_url = base_url
         self.timeout = timeout
         self._client = None
+        self._async_client = None
 
     @abstractmethod
     def _create_client(self): pass
+
+    def _create_async_client(self):
+        raise NotImplementedError
 
     @abstractmethod
     def invoke(self, messages: list[dict], **kwargs) -> LLMResponse: pass
@@ -23,6 +27,9 @@ class BaseLLMAdapter(ABC):
     @abstractmethod
     def stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs): pass
 
+    async def async_stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
+        raise NotImplementedError
+
 
 class OpenAIAdapter(BaseLLMAdapter):
     """OpenAI 兼容接口适配器（DeepSeek/Qwen/Kimi/智谱/Ollama 等）"""
@@ -30,6 +37,10 @@ class OpenAIAdapter(BaseLLMAdapter):
     def _create_client(self):
         from openai import OpenAI
         return OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+
+    def _create_async_client(self):
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
 
     def invoke(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> LLMResponse:
         if not self._client:
@@ -76,7 +87,61 @@ class OpenAIAdapter(BaseLLMAdapter):
         usage_snapshot: dict | None = None
 
         for chunk in self._client.chat.completions.create(**create_kwargs):
-            # 末尾 usage-only chunk（无 choices）——记录但不跳过
+            if not chunk.choices:
+                if chunk.usage is not None:
+                    usage_snapshot = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    }
+                continue
+
+            delta = chunk.choices[0].delta
+
+            if delta.content:
+                yield StreamEvent(type='text_delta', delta=delta.content)
+
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_buf:
+                        tool_calls_buf[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                    if tc.id:
+                        tool_calls_buf[idx]["id"] += tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_buf[idx]["function"]["name"] += tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
+
+        if tool_calls_buf:
+            for tc in tool_calls_buf.values():
+                if not tc["function"]["arguments"]:
+                    tc["function"]["arguments"] = "{}"
+            yield StreamEvent(type='tool_calls_done', tool_calls=list(tool_calls_buf.values()))
+
+        if usage_snapshot:
+            yield StreamEvent(type='usage', usage=usage_snapshot)
+
+    async def async_stream_with_tools(
+        self, messages: list[dict], tools: list[dict] | None = None, **kwargs
+    ):
+        if not self._async_client:
+            self._async_client = self._create_async_client()
+
+        create_kwargs = {
+            "model": self.model, "messages": messages, "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            create_kwargs["tools"] = tools
+        create_kwargs.update(kwargs)
+
+        tool_calls_buf: dict[int, dict] = {}
+        usage_snapshot: dict | None = None
+
+        response = await self._async_client.chat.completions.create(**create_kwargs)
+        async for chunk in response:
             if not chunk.choices:
                 if chunk.usage is not None:
                     usage_snapshot = {
