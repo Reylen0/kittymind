@@ -5,6 +5,7 @@ export interface Message {
   role: MessageRole
   content: string
   isStreaming?: boolean
+  isError?: boolean
   // tool call fields
   toolName?: string
   toolArgs?: string

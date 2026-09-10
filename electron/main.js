@@ -248,6 +248,13 @@ function setupIpc(b) {
     }
   })
 
+  // 渲染层主题切换时，同步原生窗口控制按钮（titleBarOverlay）配色
+  ipcMain.handle('window:set-overlay', (_e, { color, symbolColor }) => {
+    try {
+      chatWin?.setTitleBarOverlay({ color, symbolColor })
+    } catch { /* 平台不支持（如 Linux）时忽略 */ }
+  })
+
   // Overlay: hide on request or after sending a message
   ipcMain.on('overlay:hide', () => overlayWin?.hide())
 
@@ -379,12 +386,12 @@ function createChatWindow() {
     width:           WIN_SPEC.CHAT.w,
     height:          WIN_SPEC.CHAT.h,
     title:           'KittyMind',
-    backgroundColor: '#f5f5f7',
+    backgroundColor: '#f7f8fa',
     titleBarStyle:   'hidden',
     titleBarOverlay: {
-      color:       '#f5f5f7',
-      symbolColor: '#1c1c1e',
-      height:      32,
+      color:       '#f7f8fa',
+      symbolColor: '#1d1d21',
+      height:      36,
     },
     webPreferences: {
       preload:          path.join(__dirname, 'preload.js'),

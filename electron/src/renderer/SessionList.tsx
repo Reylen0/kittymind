@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import type { Session, Workspace } from './types'
+import { getTheme, toggleTheme, type Theme } from './theme'
 
 interface Props {
   sessions:    Session[]
@@ -59,6 +60,35 @@ function IcoFolder() {
   )
 }
 
+function IcoGear() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  )
+}
+
+function IcoMoon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 8.5A5.5 5.5 0 0 1 5.5 2a5.5 5.5 0 1 0 6.5 6.5z"/>
+    </svg>
+  )
+}
+
+function IcoSun() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <circle cx="7" cy="7" r="2.6"/>
+      <line x1="7" y1="0.8" x2="7" y2="2.2"/><line x1="7" y1="11.8" x2="7" y2="13.2"/>
+      <line x1="0.8" y1="7" x2="2.2" y2="7"/><line x1="11.8" y1="7" x2="13.2" y2="7"/>
+      <line x1="2.6" y1="2.6" x2="3.6" y2="3.6"/><line x1="10.4" y1="10.4" x2="11.4" y2="11.4"/>
+      <line x1="2.6" y1="11.4" x2="3.6" y2="10.4"/><line x1="10.4" y1="3.6" x2="11.4" y2="2.6"/>
+    </svg>
+  )
+}
+
 function SessionItem({ s, currentId, onSelect, onDelete }: {
   s: Session; currentId: string | null
   onSelect: (id: string) => void; onDelete: (id: string) => void
@@ -84,6 +114,7 @@ export default function SessionList({
   const [collapsedSpaces,   setCollapsedSpaces]   = useState<Set<string>>(new Set())
   const [dialogCollapsed,   setDialogCollapsed]   = useState(false)
   const [spacesCollapsed,   setSpacesCollapsed]   = useState(false)
+  const [theme,             setTheme]             = useState<Theme>(getTheme())
   const searchRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -110,6 +141,11 @@ export default function SessionList({
       <div className="sidebar-collapsed">
         <button className="sidebar-icon-btn" onClick={onToggle} title="展开侧边栏"><IcoPanel /></button>
         <button className="sidebar-icon-btn" onClick={onCreate} title="新建对话"><IcoPlus /></button>
+        <button
+          className="sidebar-icon-btn"
+          onClick={() => setTheme(toggleTheme())}
+          title={theme === 'dark' ? '切换浅色模式' : '切换深色模式'}
+        >{theme === 'dark' ? <IcoSun /> : <IcoMoon />}</button>
       </div>
     )
   }
@@ -118,12 +154,17 @@ export default function SessionList({
   return (
     <div className="session-list">
       <div className="sidebar-header">
-        <span className="sidebar-version">版本 v0.1.0</span>
+        <span className="sidebar-title">版本 v0.1.0</span>
         <div className="sidebar-header-btns">
           <button
             className={`sidebar-icon-btn${searching ? ' active' : ''}`}
             onClick={() => setSearching(v => !v)} title="搜索对话"
           ><IcoSearch /></button>
+          <button
+            className="sidebar-icon-btn"
+            onClick={() => setTheme(toggleTheme())}
+            title={theme === 'dark' ? '切换浅色模式' : '切换深色模式'}
+          >{theme === 'dark' ? <IcoSun /> : <IcoMoon />}</button>
           <button className="sidebar-icon-btn" onClick={onToggle} title="收起侧边栏"><IcoPanel /></button>
         </div>
       </div>
@@ -140,7 +181,12 @@ export default function SessionList({
       )}
 
       <div className="session-new">
-        <button className="btn-new-text" onClick={onCreate}>新对话</button>
+        <button className="btn-new-text" onClick={onCreate}>
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+            <line x1="7" y1="2.5" x2="7" y2="11.5" /><line x1="2.5" y1="7" x2="11.5" y2="7" />
+          </svg>
+          <span>新对话</span>
+        </button>
       </div>
 
       <div className="session-scroll">
@@ -207,6 +253,13 @@ export default function SessionList({
         </>
       )}
       </div>  {/* /session-scroll */}
+
+      <div className="sidebar-footer">
+        <button className="footer-settings-btn" title="设置">
+          <IcoGear />
+          <span>设置</span>
+        </button>
+      </div>
     </div>
   )
 }

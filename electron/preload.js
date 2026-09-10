@@ -51,6 +51,9 @@ contextBridge.exposeInMainWorld('kitty', {
   // Window / edit controls (custom TopBar)
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
 
+  // Sync native titleBarOverlay colors when renderer theme changes
+  setNativeTheme: (opts) => ipcRenderer.invoke('window:set-overlay', opts),
+
   // Event subscriptions — on() returns an unsubscribe function
   on: (event, cb) => {
     const wrapper = (_e, data) => cb(data)

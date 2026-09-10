@@ -28,6 +28,9 @@ declare global {
 
       agentStatus(): Promise<{ name: string; model: string; running_sessions: string[] }>
 
+      windowControl(action: string): Promise<unknown>
+      setNativeTheme?(opts: { color: string; symbolColor: string }): Promise<unknown>
+
       respondPermission(requestId: string, approved: boolean): Promise<unknown>
 
       // on() returns an unsubscribe function — call it in useEffect cleanup
