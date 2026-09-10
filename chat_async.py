@@ -3,7 +3,10 @@
 import asyncio
 from dotenv import load_dotenv
 
+from kittymind.tools.builtin.bash_tool import BashTool
 from kittymind.tools.builtin.clipboard_tool import ClipboardTool
+from kittymind.tools.builtin.file_read_tool import FileReadTool
+from kittymind.tools.builtin.file_write_tool import FileWriteTool
 from kittymind.tools.builtin.screenshot_tool import ScreenshotTool
 load_dotenv()
 
@@ -60,7 +63,14 @@ async def main():
     agent = KittyAgent(
         name="kitty",
         llm=llm,
-        tools=[GetCurrentTimeTool(), ClipboardTool(), ScreenshotTool()],
+        tools=[
+            GetCurrentTimeTool(), 
+            ClipboardTool(), 
+            ScreenshotTool(),
+            FileReadTool(),
+            FileWriteTool(),
+            BashTool(),
+        ],
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=bus,
         session_manager=mgr,
