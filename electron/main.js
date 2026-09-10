@@ -405,7 +405,13 @@ function createChatWindow() {
   } else {
     chatWin.loadFile(WIN_SPEC.CHAT.html)
   }
-  chatWin.on('closed', () => { chatWin = null })
+  chatWin.on('closed', () => {
+    chatWin = null
+    // In dev mode, quit the app when the main window is closed instead of
+    // staying in the tray — petWin/overlayWin are skipTaskbar so window-all-closed
+    // never fires while they're alive, leaving Electron and Python as orphans.
+    if (IS_DEV) app.quit()
+  })
   return chatWin
 }
 

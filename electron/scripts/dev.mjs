@@ -6,10 +6,12 @@
  * 也无 SIGTERM 在 Windows 上被忽略导致的挂起问题。
  */
 
-import { spawn }          from 'child_process'
-import { createRequire }  from 'module'
-import { fileURLToPath }  from 'url'
-import { dirname, join }  from 'path'
+import { spawn, spawnSync } from 'child_process'
+import { readFileSync }      from 'fs'
+import { homedir }           from 'os'
+import { createRequire }     from 'module'
+import { fileURLToPath }     from 'url'
+import { dirname, join }     from 'path'
 
 const __dirname   = dirname(fileURLToPath(import.meta.url))
 const require     = createRequire(import.meta.url)
@@ -49,9 +51,35 @@ process.stdout.write('[dev] Vite ready. Starting Electron...\n')
 const electron = run(electronBin, ['.', '--dev'])
 
 // ── 任一进程退出时清理另一个 ─────────────────────────────────────
+// PID file written by main.js to track the Python/uv process
+const PID_FILE = join(process.env.APPDATA || homedir(), '.kittymind', 'server.pid')
+
+function taskkillTree(pid) {
+  if (!pid) return
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/F', '/T', '/PID', String(pid)], { stdio: 'ignore' })
+  } else {
+    try { process.kill(pid, 'SIGTERM') } catch {}
+  }
+}
+
+let cleanedUp = false
 function cleanup(exitCode = 0) {
-  try { electron.kill() } catch {}
-  try { vite.kill()     } catch {}
+  if (cleanedUp) return
+  cleanedUp = true
+
+  // Kill Python/uv via PID file first — uv may create Python in a separate
+  // process group, so it won't appear in Electron's /T tree.
+  try {
+    const pid = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
+    if (pid && !isNaN(pid)) taskkillTree(pid)
+  } catch {}
+
+  // Kill Electron tree (and whatever children survived)
+  taskkillTree(electron?.pid)
+  // Kill Vite
+  taskkillTree(vite?.pid)
+
   process.exit(exitCode)
 }
 
