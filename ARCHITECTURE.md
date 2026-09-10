@@ -75,16 +75,33 @@ kittymind/                      # 项目根目录
 ├── kittymind/                  # Python 统一包
 │   ├── core/                   # LLM 层：llm / llm_adapters / llm_response / message / exceptions
 │   ├── agent/                  # base / tool_agent（流式 ReAct）/ kitty_agent（EventBus+Session 集成）
+│   ├── context/                # token_counter / micro_compaction / compressor（上下文压缩管线）
 │   ├── tools/                  # base / registry / executor / permission + builtin/（13 个工具）
 │   ├── memory/                 # store / extract / recall（LLM 驱动的长期记忆）
 │   ├── events/                 # bus（asyncio Pub/Sub）/ types
 │   ├── session/                # store（JSONL）/ manager
 │   ├── workspace/              # manager（cwd 上下文隔离）
+│   ├── callbacks/              # base（回调接口）
 │   ├── config.py               # 统一配置（~/.kittymind/settings.json 覆盖）
 │   └── prompts.py              # 集中管理 system_prompt
 ├── server/                     # app（启动入口）/ ws_server / rpc_handler / permission_bridge
-├── electron/                   # main.js + preload + src/{renderer, pet, overlay}
-├── assets/                     # pet/sprites 精灵图
+├── electron/                   # Electron 主进程 & 前端
+│   ├── main.js                 # 主进程：子进程管理 / 多窗口 / 热键 / 托盘
+│   ├── preload.js              # 聊天窗口 preload（IPC 桥）
+│   ├── preload-pet.js          # 桌宠窗口 preload
+│   ├── preload-overlay.js      # 悬浮层 preload
+│   ├── src/
+│   │   ├── renderer/           # React 聊天界面（App / ChatView / SessionList / TopBar…）
+│   │   ├── pet/                # 桌宠窗口（精灵图分层动画）
+│   │   └── overlay/            # 全局悬浮覆盖层
+│   ├── scripts/                # 开发辅助脚本（dev / analyze-bounds / screenshot…）
+│   ├── vite.config.ts          # Vite 构建配置
+│   └── package.json
+├── test/                       # Python 单元测试
+│   ├── test_event_bus.py       # EventBus pub/sub 测试
+│   ├── test_rpc_handler.py     # WebSocket RPC 协议测试
+│   └── test_session.py         # JSONL 会话读写测试
+├── assets/                     # 应用图标 / 托盘图
 ├── chat.py / chat_async.py     # CLI 演示
 └── ARCHITECTURE.md
 ```
@@ -309,9 +326,12 @@ MVP 之外已额外落地：长期记忆系统（`memory/`：提取/整合/召�
 | # | 任务 | 文件 | 关键点 |
 |---|------|------|--------|
 | 14.1 | Store 接口抽象 | `kittymind/session/store.py` | 抽象 `SessionStore`，保留 `JsonlSessionStore` |
-| 14.2 | SQLite 实现 | `kittymind/session/sqlite_store.py` | sessions/messages 表 + WAL + schema 版本 |
-| 14.3 | 迁移脚本 | `kittymind/session/migrate.py` | 扫描现有 JSONL 导入 SQLite |
-| 14.4 | 配置切换 | `config.py` | `SESSION_BACKEND = jsonl | sqlite` |
+| 14.2 | SQLite 实现 | `kittymind/session/sqlite_store.py` | sessions/messages 表 + WAL + schema 版本；messages 表含 `active`/`compacted`/`_compressed_summary` 三个软标记字段（见 §5.3 schema） |
+| 14.3 | 压缩落库原子操作 | `kittymind/session/sqlite_store.py` | `archive_and_compact(session_id, summary_msg, tail_msgs)`：单事务内将旧活跃消息标记 `active=0, compacted=1`（不删除），摘要+尾部作为新 `active=1` 行写入；**压缩视图持久化后重启无需重压** |
+| 14.4 | 双视图读取 | `sqlite_store.py` | 模型视图 `WHERE active=1`（摘要+尾部）；完整视图 `WHERE active=1 OR compacted=1`（原始历史+摘要，供审计/回溯）；重启加载 session 走模型视图，直接得到已压缩状态 |
+| 14.5 | 迁移脚本 | `kittymind/session/migrate.py` | 扫描现有 JSONL 导入 SQLite，所有行写入时 `active=1, compacted=0` |
+| 14.6 | 配置切换 | `config.py` | `SESSION_BACKEND = jsonl \| sqlite` |
+| 14.7 | 压缩状态跨轮持久化 | `kitty_agent.py` | 现 `TokenTracker`/`ContextCompressor` 是单轮局部对象，`_compressed_once`/反抖动冷却/token 校准基线每轮重置。改为 per-session 实例属性并落库，使衰减、冷却、校准跨轮（乃至跨重启）延续 |
 
 #### Phase 15 — FTS5 全文搜索
 

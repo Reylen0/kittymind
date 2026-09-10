@@ -82,6 +82,16 @@ PORT_RETRY_COUNT = 20
 # ── LLM ─────────────────────────────────────────────────────────
 LLM_TEMPERATURE = 0.7
 
+# ── 上下文压缩 ────────────────────────────────────────
+LLM_CONTEXT_WINDOW         = 204_800  # 模型上下文窗口 token 数，settings.json 可覆盖
+LLM_RESERVED_OUTPUT_TOKENS = 4_096    # 预留给输出的 token，effective = window - reserved
+COMPRESS_THRESHOLD_RATIO   = 0.75     # 占用比超过此值则触发压缩
+COMPRESS_TARGET_RATIO      = 0.40     # 压缩后目标占用比（留足腾挪空间防抖）
+COMPRESS_PROTECT_FIRST_N   = 2        # 头部历史保护条数（首次压缩后衰减为 0）
+COMPRESS_TAIL_MIN_MSGS     = 6        # 尾部最少保留消息条数
+COMPRESS_MICRO_TOOL_CHARS  = 8_000    # 单条 tool 结果超此字符数则微压缩修剪
+COMPRESS_COOLDOWN_SECONDS  = 300      # 反抖动冷却秒数（内存态 monotonic）
+
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -99,6 +109,10 @@ _OVERRIDABLE = {
     "AGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT",
     "LLM_TEMPERATURE",
+    "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",
+    "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",
+    "COMPRESS_PROTECT_FIRST_N", "COMPRESS_TAIL_MIN_MSGS",
+    "COMPRESS_MICRO_TOOL_CHARS", "COMPRESS_COOLDOWN_SECONDS",
 }
 
 

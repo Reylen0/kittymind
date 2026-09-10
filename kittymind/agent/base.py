@@ -38,6 +38,18 @@ class Agent(ABC):
         if session_id in self._history:
             self._history[session_id].clear()
 
+    def replace_history(self, session_id: str, messages: list[dict]):
+        """用压缩后的 dict 列表替换 _history，使下轮 _build_messages 用压缩版。"""
+        self._history[session_id] = [
+            Message(
+                content=m.get("content"),
+                role=m["role"],
+                tool_calls=m.get("tool_calls"),
+                tool_call_id=m.get("tool_call_id"),
+            )
+            for m in messages
+        ]
+
     def get_history(self, session_id: str) -> list[Message]:
         return self._history.get(session_id, [])
 

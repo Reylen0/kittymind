@@ -9,10 +9,12 @@ class StreamEvent:
     type:
       'text_delta'      — 文字片段
       'tool_calls_done' — 流结束时的完整工具调用列表
+      'usage'           — 本次调用真实 token 用量（OpenAI usage 字段）
     """
     type: str
     delta: str = ''
     tool_calls: list = field(default_factory=list)
+    usage: Optional[dict] = None
 
 
 class LLMResponse:

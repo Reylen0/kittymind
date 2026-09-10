@@ -64,16 +64,28 @@ class OpenAIAdapter(BaseLLMAdapter):
         if not self._client:
             self._client = self._create_client()
 
-        create_kwargs = {"model": self.model, "messages": messages, "stream": True}
+        create_kwargs = {
+            "model": self.model, "messages": messages, "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         if tools:
             create_kwargs["tools"] = tools
         create_kwargs.update(kwargs)
 
         tool_calls_buf: dict[int, dict] = {}
+        usage_snapshot: dict | None = None
 
         for chunk in self._client.chat.completions.create(**create_kwargs):
+            # 末尾 usage-only chunk（无 choices）——记录但不跳过
             if not chunk.choices:
+                if chunk.usage is not None:
+                    usage_snapshot = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    }
                 continue
+
             delta = chunk.choices[0].delta
 
             if delta.content:
@@ -97,6 +109,9 @@ class OpenAIAdapter(BaseLLMAdapter):
                 if not tc["function"]["arguments"]:
                     tc["function"]["arguments"] = "{}"
             yield StreamEvent(type='tool_calls_done', tool_calls=list(tool_calls_buf.values()))
+
+        if usage_snapshot:
+            yield StreamEvent(type='usage', usage=usage_snapshot)
 
 
 def create_adapter(model: str, api_key: str, base_url: str, timeout: int) -> BaseLLMAdapter:
