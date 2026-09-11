@@ -10,10 +10,13 @@ interface Props {
   onWorkspaceCreated: (ws: Workspace) => void
 }
 
+// 预览辅助：?loading 初始即处于"思考中"状态，便于截图验证取消按钮（生产环境无参数，恒为 false）
+const INIT_LOADING = new URLSearchParams(window.location.search).has('loading')
+
 export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
   const [messages,            setMessages]            = useState<Message[]>([])
   const [input,               setInput]               = useState('')
-  const [isLoading,           setIsLoading]           = useState(false)
+  const [isLoading,           setIsLoading]           = useState(INIT_LOADING)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   const [ctxRatio,            setCtxRatio]            = useState(0)
   const [permRequest, setPermRequest] = useState<{
@@ -34,7 +37,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
 
   useEffect(() => {
     setMessages([])
-    setIsLoading(false)
+    setIsLoading(INIT_LOADING)
     setSelectedWorkspaceId(null)
     setCtxRatio(0)
 
