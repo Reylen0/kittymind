@@ -89,10 +89,10 @@ LLM_TEMPERATURE  = 0.7
 LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，OpenAI 可选）
 
 # ── 上下文压缩 ────────────────────────────────────────
-LLM_CONTEXT_WINDOW         = 1024_000  # 模型上下文窗口 token 数，settings.json 可覆盖
+LLM_CONTEXT_WINDOW         = 102_400  # 模型上下文窗口 token 数，settings.json 可覆盖
 LLM_RESERVED_OUTPUT_TOKENS = 1024    # 预留给输出的 token，effective = window - reserved
-COMPRESS_THRESHOLD_RATIO   = 0.75     # 占用比超过此值则触发压缩
-COMPRESS_TARGET_RATIO      = 0.40     # 压缩后目标占用比（留足腾挪空间防抖）
+COMPRESS_THRESHOLD_RATIO   = 0.40     # 占用比超过此值则触发压缩
+COMPRESS_TARGET_RATIO      = 0.20     # 压缩后目标占用比（留足腾挪空间防抖）
 COMPRESS_PROTECT_FIRST_N   = 2        # 头部历史保护条数（首次压缩后衰减为 0）
 COMPRESS_TAIL_MIN_MSGS     = 6        # 尾部最少保留消息条数
 COMPRESS_MICRO_TOOL_CHARS  = 8_000    # 单条 tool 结果超此字符数则微压缩修剪

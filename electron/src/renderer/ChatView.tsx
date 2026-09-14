@@ -26,6 +26,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   const [ctxRatio,            setCtxRatio]            = useState(0)
   const [ctxUsed,             setCtxUsed]             = useState(0)
   const [ctxTotal,            setCtxTotal]            = useState(0)
+  const [isHistoryLoading,    setIsHistoryLoading]    = useState(true)
   const [permRequest, setPermRequest] = useState<{
     request_id: string
     tool: string
@@ -46,37 +47,41 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
     setMessages([])
     setIsLoading(INIT_LOADING)
     setSelectedWorkspaceId(null)
-    setCtxRatio(0)   // 切换时先归零，loadHistory 完成后若有持久化值会覆盖
+    setCtxRatio(0)
     setCtxUsed(0)
     setCtxTotal(0)
+    setIsHistoryLoading(true)
 
     async function loadHistory() {
-      const data = await window.kitty?.getSession(sessionId)
-      // 14.8 — 从持久化的 token 数恢复圆环（比例现算，换模型后不失效）
-      const savedUsed  = data?.header?.used_tokens  as number | undefined
-      const savedTotal = data?.header?.total_tokens as number | undefined
-      if (savedTotal && savedTotal > 0) {
-        setCtxUsed(savedUsed ?? 0)
-        setCtxTotal(savedTotal)
-        setCtxRatio(Math.min((savedUsed ?? 0) / savedTotal, 1.0))
-      }
-      if (!data?.messages?.length) return
-
-      const msgs: Message[] = []
-      for (let i = 0; i < data.messages.length; i++) {
-        const m = data.messages[i]
-        if (m.role === 'user' && m.content) {
-          msgs.push({ id: `h-${i}`, role: 'user', content: m.content })
-        } else if (m.role === 'assistant' && m.content) {
-          msgs.push({ id: `h-${i}`, role: 'assistant', content: m.content })
-        } else if (m.role === 'tool' && m.content) {
-          const prior = data.messages[i - 1]
-          const tc = Array.isArray(prior?.tool_calls) ? prior.tool_calls[0] : null
-          const name = (tc as { function?: { name?: string } } | null)?.function?.name ?? 'tool'
-          msgs.push({ id: `h-${i}`, role: 'tool', content: '', toolName: name, toolArgs: '', toolResult: m.content })
+      try {
+        const data = await window.kitty?.getSession(sessionId)
+        const savedUsed  = data?.header?.used_tokens  as number | undefined
+        const savedTotal = data?.header?.total_tokens as number | undefined
+        if (savedTotal && savedTotal > 0) {
+          setCtxUsed(savedUsed ?? 0)
+          setCtxTotal(savedTotal)
+          setCtxRatio(Math.min((savedUsed ?? 0) / savedTotal, 1.0))
         }
+        if (!data?.messages?.length) return
+
+        const msgs: Message[] = []
+        for (let i = 0; i < data.messages.length; i++) {
+          const m = data.messages[i]
+          if (m.role === 'user' && m.content) {
+            msgs.push({ id: `h-${i}`, role: 'user', content: m.content })
+          } else if (m.role === 'assistant' && m.content) {
+            msgs.push({ id: `h-${i}`, role: 'assistant', content: m.content })
+          } else if (m.role === 'tool' && m.content) {
+            const prior = data.messages[i - 1]
+            const tc = Array.isArray(prior?.tool_calls) ? prior.tool_calls[0] : null
+            const name = (tc as { function?: { name?: string } } | null)?.function?.name ?? 'tool'
+            msgs.push({ id: `h-${i}`, role: 'tool', content: '', toolName: name, toolArgs: '', toolResult: m.content })
+          }
+        }
+        setMessages(msgs)
+      } finally {
+        setIsHistoryLoading(false)
       }
-      setMessages(msgs)
     }
     loadHistory()
   }, [sessionId])
@@ -321,6 +326,10 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
       </div>
     </div>
   )
+
+  if (isHistoryLoading) {
+    return <div className="chat-view" />
+  }
 
   if (messages.length === 0) {
     return (

@@ -1,4 +1,4 @@
-"""命令行持续对话入口"""
+"""命令行单轮对话入口（无跨轮记忆）"""
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,9 +18,8 @@ def main():
     )
 
     print("=== Agent 对话 ===")
-    print("输入 'quit' 退出，输入 'clear' 清空历史\n")
+    print("输入 'quit' 退出\n")
 
-    session_id = "session_1"
     while True:
         try:
             user_input = input("你: ").strip()
@@ -33,13 +32,9 @@ def main():
         if user_input.lower() in ("quit", "exit"):
             print("再见！")
             break
-        if user_input.lower() == "clear":
-            agent.clear_history(session_id)
-            print("历史已清空\n")
-            continue
 
         print("Assistant: ", end="", flush=True)
-        for chunk in agent.stream_run(session_id, user_input):
+        for chunk in agent.stream_run(None, user_input):
             print(chunk, end="", flush=True)
         print("\n")
 

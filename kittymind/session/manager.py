@@ -42,16 +42,16 @@ class SessionManager:
         return sorted(result, key=lambda x: x["created_at"], reverse=True)
 
     def get_session(self, session_id: str) -> dict | None:
-        header, records = self.store.read(session_id)
+        header, _ = self.store.read(session_id)
         if header is None:
             return None
-        # 上下文占用：已用 token 来自持久化，总窗口按当前 cfg 现算
-        # （改窗口/换模型后占用比自动跟随，不会用到过期快照）
+        # 前端展示用原始消息（compacted）+ 活跃非摘要消息，不含压缩摘要行
+        display_records = self.store.read_display(session_id)
         header["used_tokens"]  = header.get("last_prompt_tokens") or 0
         header["total_tokens"] = max(
             1, cfg.LLM_CONTEXT_WINDOW - cfg.LLM_RESERVED_OUTPUT_TOKENS
         )
-        return {"header": header, "messages": records}
+        return {"header": header, "messages": display_records}
 
     def delete_session(self, session_id: str) -> None:
         self.store.delete(session_id)
@@ -62,8 +62,7 @@ class SessionManager:
         if not self.store.exists(session_id):
             self.create_session(title=self.generate_title(first_input or ""),
                                 session_id=session_id, workspace_id=workspace_id)
-        _, existing = self.store.read(session_id)
-        seq = len(existing)
+        seq = self.store.next_seq(session_id)
         for msg in turn_messages:
             record: dict = {"seq": seq, "role": msg["role"], "content": msg.get("content")}
             if msg.get("tool_calls"):
@@ -73,7 +72,13 @@ class SessionManager:
             self.store.append(session_id, record)
             seq += 1
 
+    def load_messages(self, session_id: str) -> list[dict]:
+        """返回带 seq 的活跃消息列表（供 agent 打 _seq 标记）。"""
+        _, records = self.store.read(session_id)
+        return records  # 每条已含 seq 字段
+
     def load_history(self, session_id: str) -> list[dict]:
+        """返回不含 seq 的消息列表（兼容外部调用方）。"""
         _, records = self.store.read(session_id)
         result = []
         for r in records:
@@ -84,6 +89,22 @@ class SessionManager:
                 msg["tool_call_id"] = r["tool_call_id"]
             result.append(msg)
         return result
+
+    def load_full_history(self, session_id: str) -> list[dict]:
+        """完整视图（active + compacted），审计/回溯用。"""
+        return self.store.read_full(session_id)
+
+    def archive_and_compact(
+        self,
+        session_id: str,
+        compacted_seqs: set,
+        summary_rows: list[dict],
+        new_active_msgs: list[dict],
+    ) -> None:
+        """原子压缩落库，透传 store。"""
+        self.store.archive_and_compact(
+            session_id, compacted_seqs, summary_rows, new_active_msgs
+        )
 
     def get_session_state(self, session_id: str) -> dict:
         """读取会话的压缩状态（compressed_once / last_prompt_tokens）。"""
