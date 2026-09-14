@@ -475,11 +475,11 @@ class KittyAgent(Agent):
                 workspace_id=effective_workspace_id,
             )
             # 14.7 — 持久化压缩状态供下轮/重启后种入
+            # 14.7/14.8 — 持久化压缩状态 + 实际已用 token（总窗口读取时按 cfg 现算）
             self.session_manager.save_session_state(
                 session_id,
                 compressed_once=compressor._compressed_once,
                 last_prompt_tokens=tracker._last_prompt_tokens,
-                context_ratio=min(tracker.ratio(messages), 1.0),
             )
 
     # ── 后台任务 ──────────────────────────────────────────────────

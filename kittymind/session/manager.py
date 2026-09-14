@@ -45,6 +45,12 @@ class SessionManager:
         header, records = self.store.read(session_id)
         if header is None:
             return None
+        # 上下文占用：已用 token 来自持久化，总窗口按当前 cfg 现算
+        # （改窗口/换模型后占用比自动跟随，不会用到过期快照）
+        header["used_tokens"]  = header.get("last_prompt_tokens") or 0
+        header["total_tokens"] = max(
+            1, cfg.LLM_CONTEXT_WINDOW - cfg.LLM_RESERVED_OUTPUT_TOKENS
+        )
         return {"header": header, "messages": records}
 
     def delete_session(self, session_id: str) -> None:
@@ -80,7 +86,7 @@ class SessionManager:
         return result
 
     def get_session_state(self, session_id: str) -> dict:
-        """读取会话的压缩状态（compressed_once / last_prompt_tokens / context_ratio）。"""
+        """读取会话的压缩状态（compressed_once / last_prompt_tokens）。"""
         return self.store.get_state(session_id)
 
     def save_session_state(self, session_id: str, **fields) -> None:

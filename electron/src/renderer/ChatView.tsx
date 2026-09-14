@@ -13,12 +13,19 @@ interface Props {
 // 预览辅助：?loading 初始即处于"思考中"状态，便于截图验证取消按钮（生产环境无参数，恒为 false）
 const INIT_LOADING = new URLSearchParams(window.location.search).has('loading')
 
+const fmtK = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
+  : n >= 1_000   ? `${Math.round(n / 1_000)}k`
+  : String(n)
+
 export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
   const [messages,            setMessages]            = useState<Message[]>([])
   const [input,               setInput]               = useState('')
   const [isLoading,           setIsLoading]           = useState(INIT_LOADING)
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null)
   const [ctxRatio,            setCtxRatio]            = useState(0)
+  const [ctxUsed,             setCtxUsed]             = useState(0)
+  const [ctxTotal,            setCtxTotal]            = useState(0)
   const [permRequest, setPermRequest] = useState<{
     request_id: string
     tool: string
@@ -40,13 +47,18 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
     setIsLoading(INIT_LOADING)
     setSelectedWorkspaceId(null)
     setCtxRatio(0)   // 切换时先归零，loadHistory 完成后若有持久化值会覆盖
+    setCtxUsed(0)
+    setCtxTotal(0)
 
     async function loadHistory() {
       const data = await window.kitty?.getSession(sessionId)
-      // 14.8 — 从持久化的 context_ratio 恢复圆环（即使没有消息历史）
-      const savedRatio = data?.header?.context_ratio
-      if (typeof savedRatio === 'number' && savedRatio > 0) {
-        setCtxRatio(savedRatio)
+      // 14.8 — 从持久化的 token 数恢复圆环（比例现算，换模型后不失效）
+      const savedUsed  = data?.header?.used_tokens  as number | undefined
+      const savedTotal = data?.header?.total_tokens as number | undefined
+      if (savedTotal && savedTotal > 0) {
+        setCtxUsed(savedUsed ?? 0)
+        setCtxTotal(savedTotal)
+        setCtxRatio(Math.min((savedUsed ?? 0) / savedTotal, 1.0))
       }
       if (!data?.messages?.length) return
 
@@ -118,9 +130,11 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
       setIsLoading(false)
     }
 
-    const onContextUsage = (d: { session_id: string; ratio: number }) => {
+    const onContextUsage = (d: { session_id: string; ratio: number; used_tokens: number; total_tokens: number }) => {
       if (d.session_id !== sessionId) return
       setCtxRatio(d.ratio)
+      setCtxUsed(d.used_tokens)
+      setCtxTotal(d.total_tokens)
     }
 
     const unsubs = [
@@ -279,7 +293,10 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
                     strokeDasharray={`${arc} ${gap}`}
                     style={{ stroke }} />
                 </svg>
-                <span className="ctx-tip">上下文已用 <b>{pct}%</b></span>
+                <span className="ctx-tip">
+                  上下文已用 <b>{pct}%</b>
+                  {ctxTotal > 0 && <> · {fmtK(ctxUsed)} / {fmtK(ctxTotal)}</>}
+                </span>
               </div>
             )
           })()}

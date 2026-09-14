@@ -3,11 +3,15 @@
 单连接 + threading.Lock 保证线程安全。
 WAL 模式（失败则降级 DELETE）。
 
-schema 版本 1（PRAGMA user_version=1）:
+schema 版本 3（PRAGMA user_version=3）:
   sessions(id, title, workspace_id, created_at, updated_at,
-           compressed_once, last_prompt_tokens, context_ratio)
+           compressed_once, last_prompt_tokens)
   messages(id, session_id, seq, role, content, tool_calls, tool_call_id, ts,
            active, compacted)  ← active/compacted 为阶段二预留
+
+上下文占用只存 last_prompt_tokens（实际已用 token，内容相关）。
+总窗口大小是配置派生值，由读取方按当前 cfg 现算，故不落库——
+这样改动 LLM_CONTEXT_WINDOW / 换模型后，旧会话占用比自动跟随。
 
 升级方式：PRAGMA user_version 驱动迁移链（Phase 17.2）。
 """
@@ -28,10 +32,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     workspace_id    TEXT,
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
-    -- Phase 14.7: 压缩状态持久化
-    compressed_once INTEGER NOT NULL DEFAULT 0,
-    last_prompt_tokens INTEGER,
-    context_ratio   REAL    NOT NULL DEFAULT 0.0
+    compressed_once    INTEGER NOT NULL DEFAULT 0,
+    last_prompt_tokens INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -51,6 +53,9 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_session_seq ON messages(session_id, seq);
 """
 
+# v1/v2 遗留的上下文占用列，现由 cfg 现算，best-effort 清理（SQLite 3.35+ 支持 DROP COLUMN）
+_LEGACY_COLS = ("used_tokens", "total_tokens", "context_ratio")
+
 
 class SqliteSessionStore:
     """SQLite 会话存储。线程安全（Lock + check_same_thread=False）。"""
@@ -67,13 +72,22 @@ class SqliteSessionStore:
 
     def _init_db(self) -> None:
         with self._lock:
-            # WAL 模式（网络盘/只读挂载时静默降级）
             try:
                 self._conn.execute("PRAGMA journal_mode=WAL")
             except Exception:
                 pass
-            self._conn.executescript(_DDL)
-            self._conn.execute("PRAGMA user_version=1")
+            ver = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            if ver == 0:
+                self._conn.executescript(_DDL)
+                self._conn.execute("PRAGMA user_version=3")
+            elif ver < 3:
+                # 旧库：清理不再使用的占用列（last_prompt_tokens/compressed_once 自 v1 起已存在）
+                for col in _LEGACY_COLS:
+                    try:
+                        self._conn.execute(f"ALTER TABLE sessions DROP COLUMN {col}")
+                    except Exception:
+                        pass  # 列不存在或 SQLite 版本过低时忽略
+                self._conn.execute("PRAGMA user_version=3")
 
     # ── 内部辅助 ──────────────────────────────────────────────────
 
@@ -123,7 +137,7 @@ class SqliteSessionStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT id, title, workspace_id, created_at, compressed_once,"
-                "last_prompt_tokens, context_ratio"
+                "last_prompt_tokens"
                 " FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
@@ -138,7 +152,6 @@ class SqliteSessionStore:
             "created_at":         row[3],
             "compressed_once":    bool(row[4]),
             "last_prompt_tokens": row[5],
-            "context_ratio":      float(row[6] or 0.0),
         }
 
         with self._lock:
@@ -159,7 +172,6 @@ class SqliteSessionStore:
         return header, records
 
     def update_header(self, session_id: str, updates: dict) -> None:
-        """更新 sessions 表的可更新字段（title / workspace_id 等）。"""
         allowed = {"title", "workspace_id"}
         cols = {k: v for k, v in updates.items() if k in allowed}
         if not cols:
@@ -180,7 +192,6 @@ class SqliteSessionStore:
 
     def delete(self, session_id: str) -> None:
         with self._lock:
-            # ON DELETE CASCADE 会同步删 messages
             self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
 
     def list_ids(self) -> list[str]:
@@ -191,10 +202,9 @@ class SqliteSessionStore:
         return [r[0] for r in rows]
 
     def get_state(self, session_id: str) -> dict:
-        """读取会话的压缩状态字段。"""
         with self._lock:
             row = self._conn.execute(
-                "SELECT compressed_once, last_prompt_tokens, context_ratio"
+                "SELECT compressed_once, last_prompt_tokens"
                 " FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
@@ -203,16 +213,13 @@ class SqliteSessionStore:
         return {
             "compressed_once":    bool(row[0]),
             "last_prompt_tokens": row[1],
-            "context_ratio":      float(row[2] or 0.0),
         }
 
     def save_state(self, session_id: str, **fields) -> None:
-        """将压缩状态持久化到 sessions 表。"""
-        allowed = {"compressed_once", "last_prompt_tokens", "context_ratio"}
+        allowed = {"compressed_once", "last_prompt_tokens"}
         cols = {k: v for k, v in fields.items() if k in allowed}
         if not cols:
             return
-        # 布尔 → int
         if "compressed_once" in cols:
             cols["compressed_once"] = int(bool(cols["compressed_once"]))
         set_clause = ", ".join(f"{k}=?" for k in cols)

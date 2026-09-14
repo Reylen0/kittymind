@@ -57,16 +57,14 @@ def test_store_get_and_save_state(store):
                                "created_at": "2026-01-01T00:00:00+00:00"})
     state = store.get_state("s1")
     assert bool(state.get("compressed_once")) is False
-    assert state.get("context_ratio", 0.0) == 0.0
+    assert state.get("last_prompt_tokens") is None
 
     store.save_state("s1",
                      compressed_once=True,
-                     last_prompt_tokens=5000,
-                     context_ratio=0.42)
+                     last_prompt_tokens=5000)
     state2 = store.get_state("s1")
     assert bool(state2["compressed_once"]) is True
     assert state2["last_prompt_tokens"] == 5000
-    assert abs(state2["context_ratio"] - 0.42) < 1e-6
 
 
 def test_store_tool_calls_roundtrip(store):
@@ -166,16 +164,18 @@ def test_manager_session_state_roundtrip(mgr):
     sid = mgr.create_session()
     mgr.save_session_state(sid,
                            compressed_once=True,
-                           last_prompt_tokens=8192,
-                           context_ratio=0.73)
+                           last_prompt_tokens=8192)
     state = mgr.get_session_state(sid)
     assert bool(state["compressed_once"]) is True
     assert state["last_prompt_tokens"] == 8192
-    assert abs(state["context_ratio"] - 0.73) < 1e-6
 
 
-def test_manager_get_session_includes_context_ratio(mgr):
+def test_manager_get_session_derives_token_counts(mgr):
+    from kittymind.config import cfg
     sid = mgr.create_session()
-    mgr.save_session_state(sid, context_ratio=0.55)
+    mgr.save_session_state(sid, last_prompt_tokens=50000)
     session = mgr.get_session(sid)
-    assert abs(session["header"]["context_ratio"] - 0.55) < 1e-6
+    # used 来自持久化，total 按当前 cfg 现算（换窗口后自动跟随）
+    assert session["header"]["used_tokens"] == 50000
+    assert session["header"]["total_tokens"] == \
+        max(1, cfg.LLM_CONTEXT_WINDOW - cfg.LLM_RESERVED_OUTPUT_TOKENS)
