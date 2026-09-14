@@ -2,22 +2,58 @@
 
 子 Agent 拥有全新的 messages[]，干完活只把最终文字返回给父 Agent。
 父 Agent 的 context 里不会出现子任务的中间工具调用结果。
+
+Phase 11 升级：
+  - 深度/总数守护（DelegationBudget）
+  - orchestrator / leaf 角色（depth < max_depth 则追加 task 工具）
+  - allowed_tools 约束子 Agent 可用工具集
+  - 用量回传（工具数/耗时/估算 tokens）
+  - subagent.start / subagent.done 生命周期事件
 """
+
+import asyncio
+import time
+from asyncio import AbstractEventLoop
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from ...prompts import build_system_prompt
-
+from ...callbacks.base import BaseCallBack
+from ...config import cfg
+from ...context import estimate_tokens
+from ...events.types import SUBAGENT_DONE, SUBAGENT_START
+from ...prompts import build_subtask_prompt
+from ...agent.delegation import (
+    DelegationLimit,
+    _root_session_id,
+    can_delegate,
+    child_scope,
+    current_budget,
+)
 from ..base import BaseTool
 
 
 class TaskInput(BaseModel):
     prompt: str = Field(description="交给子 Agent 的任务描述，需完整说明目标和上下文")
+    allowed_tools: Optional[list[str]] = Field(
+        default=None,
+        description="（可选）限制子 Agent 可用的工具名称列表；不填则使用全部工具。",
+    )
+
+
+class _ToolCallCounter(BaseCallBack):
+    """统计子 Agent 的工具调用次数，挂入 callbacks 无侵入地计数。"""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def on_tool_start(self, name: str, args) -> None:
+        self.count += 1
 
 
 class TaskTool(BaseTool):
     """
-    在独立对话上下文中运行子任务，只返回最终结论文字。
+    在独立上下文中运行子任务，只返回最终结论文字。
 
     适用场景：
     - 需要大量读文件的调查性任务（避免污染父 context）
@@ -25,48 +61,130 @@ class TaskTool(BaseTool):
     - 父 Agent 想保持 context 整洁时
 
     注意：子 Agent 与父 Agent 共享同一工作目录，文件修改对双方可见。
-    子 Agent 不含 task 工具本身，防止递归嵌套。
     """
 
     name: str = "task"
     description: str = (
         "在独立上下文中运行子任务，只返回最终结论文字。"
         "适合调查性或独立性较强的子任务，防止大量中间步骤污染父 Agent 的上下文。"
-        "子 Agent 拥有完整工具集（不含 task 工具本身），与父 Agent 共享工作目录。"
+        "子 Agent 拥有完整工具集（深度未达上限时含 task 工具），与父 Agent 共享工作目录。"
     )
     param_class = TaskInput
 
-    def __init__(self, llm, sub_tools: list[BaseTool], ask_fn=None):
+    def __init__(
+        self,
+        llm,
+        sub_tools: list[BaseTool],
+        ask_fn=None,
+        event_bus=None,
+        loop: Optional[AbstractEventLoop] = None,
+    ):
         self._llm = llm
         self._sub_tools = sub_tools
-        self._system_prompt = build_system_prompt(sub_tools)
         self._ask_fn = ask_fn
+        self._event_bus = event_bus
+        self._loop = loop
+
+    # ── 线程安全事件发送 ──────────────────────────────────────────
+
+    def _emit_safe(self, event: str, data: dict) -> None:
+        """在 worker 线程里将事件提交到 asyncio 主循环；loop/bus 为 None 时静默降级。"""
+        if not self._loop or not self._event_bus:
+            return
+        data.setdefault("session_id", _root_session_id.get())
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._event_bus.emit(event, data), self._loop
+            )
+        except RuntimeError:
+            pass  # loop 已关闭
+
+    # ── 执行入口 ──────────────────────────────────────────────────
 
     def execute(self, parameters: TaskInput) -> str:
-        from ...agent.tool_agent import ToolAgent
-        from ..permission import PermissionToolExecutor
+        from ...agent.kitty_agent import KittyAgent
+        from ...tools.permission import PermissionToolExecutor
 
-        sub_agent = ToolAgent(
-            name="kitty-sub",
-            llm=self._llm,
-            system_prompt=self._system_prompt,
-            tools=self._sub_tools,
-        )
-        if self._ask_fn is not None:
-            sub_agent.tool_executor = PermissionToolExecutor(
-                sub_agent.tool_registry,
-                ask_fn=self._ask_fn,
+        budget = current_budget()
+        if not can_delegate(budget):
+            b = budget
+            return (
+                f"委派已达上限（深度 {b.max_depth} / 总数 {b.max_total}），"
+                "请直接完成任务或将子任务拆得更小。"
             )
 
-        print(
-            f"\n[task] 子任务开始: "
-            f"{parameters.prompt[:80]}{'…' if len(parameters.prompt) > 80 else ''}",
-            flush=True,
-        )
-        try:
-            result = sub_agent.run(session_id=None, input_text=parameters.prompt)
-        except Exception as e:
-            result = f"子任务执行失败: {e}"
+        # 按 allowed_tools 过滤；过滤后为空则回退全量（防止无工具空转）
+        if parameters.allowed_tools:
+            allowed = set(parameters.allowed_tools)
+            child_tools: list[BaseTool] = [
+                t for t in self._sub_tools if t.name in allowed
+            ] or list(self._sub_tools)
+        else:
+            child_tools = list(self._sub_tools)
 
-        print("[task] 子任务完成", flush=True)
-        return result
+        try:
+            with child_scope(budget) as active:
+                # orchestrator：深度还没到上限，给子 Agent 追加 task 工具
+                if active.depth < active.max_depth:
+                    child_tools = child_tools + [
+                        TaskTool(
+                            llm=self._llm,
+                            sub_tools=child_tools,
+                            ask_fn=self._ask_fn,
+                            event_bus=self._event_bus,
+                            loop=self._loop,
+                        )
+                    ]
+                # leaf：不加 task 工具，提示词也不提 task
+
+                system_prompt = build_subtask_prompt(child_tools)
+                counter = _ToolCallCounter()
+                sub_agent = KittyAgent(
+                    name="kitty-sub",
+                    llm=self._llm,
+                    system_prompt=system_prompt,
+                    tools=child_tools,
+                    callbacks=[counter],
+                    max_iterations=cfg.SUBAGENT_MAX_ITERATIONS,
+                )
+                if self._ask_fn is not None:
+                    sub_agent.tool_executor = PermissionToolExecutor(
+                        sub_agent.tool_registry,
+                        ask_fn=self._ask_fn,
+                    )
+
+                depth = active.depth
+                t0 = time.monotonic()
+                self._emit_safe(SUBAGENT_START, {
+                    "depth": depth,
+                    "prompt_preview": parameters.prompt[:120],
+                })
+
+                ok = True
+                result = ""
+                try:
+                    result = sub_agent.run(
+                        session_id=None, input_text=parameters.prompt
+                    )
+                except Exception as e:
+                    ok = False
+                    result = f"子任务执行失败: {e}"
+                finally:
+                    elapsed = time.monotonic() - t0
+                    tokens = estimate_tokens(sub_agent.last_messages)
+                    self._emit_safe(SUBAGENT_DONE, {
+                        "depth": depth,
+                        "ok": ok,
+                        "tool_calls": counter.count,
+                        "tokens": tokens,
+                        "elapsed": round(elapsed, 2),
+                    })
+
+                footnote = (
+                    f"\n\n[子任务完成 · {counter.count} 工具 · "
+                    f"~{tokens} tokens · {elapsed:.1f}s]"
+                )
+                return result + footnote
+
+        except DelegationLimit as e:
+            return str(e)

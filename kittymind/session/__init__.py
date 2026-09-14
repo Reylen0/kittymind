@@ -1,4 +1,4 @@
-from .store import SessionStore
+from .store import SqliteSessionStore
 from .manager import SessionManager
 
-__all__ = ["SessionStore", "SessionManager"]
+__all__ = ["SqliteSessionStore", "SessionManager"]

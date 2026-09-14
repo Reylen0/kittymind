@@ -12,6 +12,7 @@ from kittymind.events.types import (
     AGENT_CHUNK, AGENT_THINKING,
     AGENT_TOOL_CALL, AGENT_TOOL_RESULT,
     AGENT_DONE, AGENT_ERROR, AGENT_CONTEXT_USAGE,
+    SUBAGENT_START, SUBAGENT_DONE,
 )
 from kittymind.agent import KittyAgent
 
@@ -129,6 +130,14 @@ class RpcHandler:
             if data.get("session_id") == session_id:
                 await self._push("agent.context_usage", data)
 
+        async def fwd_subagent_start(et, data):
+            if data.get("session_id") == session_id:
+                await self._push("subagent.start", data)
+
+        async def fwd_subagent_done(et, data):
+            if data.get("session_id") == session_id:
+                await self._push("subagent.done", data)
+
         bus.subscribe(AGENT_CHUNK,         fwd_chunk)
         bus.subscribe(AGENT_THINKING,      fwd_thinking)
         bus.subscribe(AGENT_TOOL_CALL,     fwd_tool_call)
@@ -136,6 +145,8 @@ class RpcHandler:
         bus.subscribe(AGENT_DONE,          fwd_done)
         bus.subscribe(AGENT_ERROR,         fwd_error)
         bus.subscribe(AGENT_CONTEXT_USAGE, fwd_context_usage)
+        bus.subscribe(SUBAGENT_START,      fwd_subagent_start)
+        bus.subscribe(SUBAGENT_DONE,       fwd_subagent_done)
 
         # 立即 ack，事件通过 server push 异步推送
         await self._result(req_id, {"status": "started"})
@@ -162,6 +173,8 @@ class RpcHandler:
                 bus.unsubscribe(AGENT_DONE,          fwd_done)
                 bus.unsubscribe(AGENT_ERROR,         fwd_error)
                 bus.unsubscribe(AGENT_CONTEXT_USAGE, fwd_context_usage)
+                bus.unsubscribe(SUBAGENT_START,      fwd_subagent_start)
+                bus.unsubscribe(SUBAGENT_DONE,       fwd_subagent_done)
                 self._tasks.pop(session_id, None)
 
         task = asyncio.create_task(_run())

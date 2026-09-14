@@ -1,7 +1,19 @@
+"""KittyMind 主 Agent。
+
+直接继承 Agent，包含：
+  - 工具 ReAct 引擎（同步 run / 同步流式 stream_run / 异步流式 async_stream_run）
+  - 上下文压缩（三条路径均可触发，压缩状态跨轮持久化到 SessionManager）
+  - 桌面集成（EventBus / SessionManager / WorkspaceManager / MemoryStore）
+  - 委派守护（DelegationBudget 根预算）
+
+子 Agent 调 run(session_id=None)，不触发任何集成层副作用。
+"""
+
 import asyncio
 import time
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Iterator, Optional
 
+from ..callbacks.base import BaseCallBack
 from ..config import cfg
 from ..context import ContextCompressor, TokenTracker, prune_tool_outputs
 from ..core.exceptions import AgentException, LLMException
@@ -9,9 +21,8 @@ from ..core.llm import BaseAgentLLM
 from ..core.message import Message
 from ..events.bus import EventBus
 from ..events.types import (
-    AGENT_START, AGENT_THINKING, AGENT_CHUNK,
-    AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE, AGENT_ERROR,
-    AGENT_CONTEXT_USAGE,
+    AGENT_CHUNK, AGENT_CONTEXT_USAGE, AGENT_DONE, AGENT_ERROR,
+    AGENT_START, AGENT_THINKING, AGENT_TOOL_CALL, AGENT_TOOL_RESULT,
 )
 from ..memory.extract import extract_memories
 from ..memory.recall import MemoryRecall
@@ -19,21 +30,19 @@ from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
 from ..tools.base import BaseTool
 from ..tools.builtin.bash_tool import bash_cwd
+from ..tools.executor import ToolExecutor
 from ..tools.permission import PermissionToolExecutor
-from .tool_agent import ToolAgent
+from ..tools.registry import ToolRegistry
+from ..workspace.manager import WorkspaceManager
+from .base import Agent
+from .delegation import (
+    reset_root_budget, reset_root_session,
+    set_root_budget, set_root_session,
+)
 
 
-class KittyAgent(ToolAgent):
-    """KittyMind 主 Agent。
-
-    在 ToolAgent 全程流式 ReAct 基础上，通过 EventBus 广播状态事件：
-      - agent.start / agent.thinking / agent.chunk
-      - agent.tool_call / agent.tool_result
-      - agent.done / agent.error
-
-    可选注入 SessionManager 实现跨重启的会话持久化。
-    可选注入 WorkspaceManager 实现工作区 cwd 绑定。
-    """
+class KittyAgent(Agent):
+    """KittyMind 统一 Agent。"""
 
     def __init__(
         self,
@@ -42,22 +51,28 @@ class KittyAgent(ToolAgent):
         system_prompt: Optional[str] = None,
         tools: Optional[list[BaseTool]] = None,
         description: Optional[str] = None,
+        callbacks: Optional[list[BaseCallBack]] = None,
+        max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
+        # 集成层（子 Agent 不传）
         event_bus: Optional[EventBus] = None,
         session_manager: Optional[SessionManager] = None,
         workspace_manager=None,
         memory: Optional[MemoryStore] = None,
-        max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
         ask_fn=None,
     ):
-        super().__init__(
-            name=name, llm=llm, system_prompt=system_prompt,
-            tools=tools, description=description,
-            max_iterations=max_iterations,
+        super().__init__(name, llm, system_prompt, description, callbacks)
+        self.max_iterations = max_iterations
+        self.tools = tools or []
+        self.tool_registry = ToolRegistry()
+        for tool in self.tools:
+            self.tool_registry.register(tool)
+        self.tool_executor: ToolExecutor = (
+            PermissionToolExecutor(self.tool_registry, ask_fn=ask_fn)
+            if ask_fn is not None
+            else ToolExecutor(self.tool_registry)
         )
-        if ask_fn is not None:
-            self.tool_executor = PermissionToolExecutor(
-                self.tool_registry, ask_fn=ask_fn
-            )
+        self.last_messages: list[dict] = []
+
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager
@@ -67,7 +82,127 @@ class KittyAgent(ToolAgent):
         )
         self._loaded_sessions: set[str] = set()
 
-    # ── 主循环 ────────────────────────────────────────────────────
+    # ── 同步 ReAct（子 Agent 使用，支持压缩）────────────────────
+
+    def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
+        try:
+            self._emit("on_agent_start", self.name, input_text)
+            messages = self._build_messages(session_id, input_text)
+            tools_schema = self.tool_registry.get_schemas() or None
+            final_text: str | None = None
+
+            tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
+            compressor = ContextCompressor(self.llm)
+
+            for _ in range(self.max_iterations):
+                messages, tracker, _ = self._maybe_compress(
+                    messages, tracker, compressor, 0.0
+                )
+                self._emit("on_llm_start", messages)
+                try:
+                    response = self.llm.invoke(messages=messages, tools=tools_schema, **kwargs)
+                except Exception as e:
+                    self._emit("on_llm_error", e)
+                    raise LLMException(f"LLM调用失败: {e}")
+                self._emit("on_llm_end", response)
+
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content,
+                    "tool_calls": response.tool_calls or None,
+                })
+
+                if response.is_tool_call():
+                    for tool_call in response.tool_calls:
+                        name = tool_call["function"]["name"]
+                        self._emit("on_tool_start", name, tool_call)
+                        result = self.tool_executor.execute(tool_call=tool_call)
+                        self._emit("on_tool_end", name, result)
+                        messages.append(result)
+                else:
+                    final_text = response.content
+                    break
+
+            if final_text is None:
+                raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
+
+            self.last_messages = messages
+            if session_id is not None:
+                self._save_turn(session_id, input_text, messages, final_text)
+            self._emit("on_agent_end", self.name, final_text)
+            return final_text
+
+        except Exception as e:
+            self._emit("on_agent_error", self.name, e)
+            raise
+
+    # ── 同步流式 ReAct（CLI 使用）────────────────────────────────
+
+    def stream_run(
+        self, session_id: str | None, input_text: str, **kwargs
+    ) -> Iterator[str]:
+        try:
+            self._emit("on_agent_start", self.name, input_text)
+            messages = self._build_messages(session_id, input_text)
+            tools_schema = self.tool_registry.get_schemas() or None
+            final_text: str | None = None
+
+            tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
+            compressor = ContextCompressor(self.llm)
+
+            for _ in range(self.max_iterations):
+                messages, tracker, _ = self._maybe_compress(
+                    messages, tracker, compressor, 0.0
+                )
+                self._emit("on_llm_start", messages)
+                text_chunks: list[str] = []
+                tool_calls: list[dict] = []
+
+                try:
+                    for event in self.llm.stream_with_tools(
+                        messages=messages, tools=tools_schema, **kwargs
+                    ):
+                        if event.type == "text_delta":
+                            text_chunks.append(event.delta)
+                            yield event.delta
+                        elif event.type == "tool_calls_done":
+                            tool_calls = event.tool_calls
+                except Exception as e:
+                    self._emit("on_llm_error", e)
+                    raise LLMException(f"LLM流式调用失败: {e}")
+
+                self._emit("on_llm_end", None)
+                step_text = "".join(text_chunks)
+
+                if not tool_calls:
+                    final_text = step_text
+                    break
+
+                messages.append({
+                    "role": "assistant",
+                    "content": step_text or None,
+                    "tool_calls": tool_calls,
+                })
+                for tool_call in tool_calls:
+                    name = tool_call["function"]["name"]
+                    self._emit("on_tool_start", name, tool_call)
+                    result = self.tool_executor.execute(tool_call=tool_call)
+                    self._emit("on_tool_end", name, result)
+                    messages.append(result)
+
+            if final_text is None:
+                raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
+
+            self.last_messages = messages
+            if session_id is not None:
+                self._save_turn(session_id, input_text, messages, final_text)
+            self._emit("on_agent_end", self.name, final_text)
+
+        except Exception as e:
+            self._emit("on_agent_error", self.name, e)
+            raise
+
+    # ── 异步流式 ReAct（生产路径，含所有集成层）─────────────────
 
     async def async_stream_run(
         self, session_id: str | None, input_text: str,
@@ -77,7 +212,9 @@ class KittyAgent(ToolAgent):
         self._load_session_history(session_id)
         effective_workspace_id, cwd_path = self._resolve_workspace(session_id, workspace_id)
 
-        cwd_token = bash_cwd.set(cwd_path)
+        cwd_token    = bash_cwd.set(cwd_path)
+        budget_token = set_root_budget(cfg.SUBAGENT_MAX_DEPTH, cfg.SUBAGENT_MAX_TOTAL)
+        session_token = set_root_session(session_id)
         try:
             await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
@@ -92,6 +229,14 @@ class KittyAgent(ToolAgent):
             compressor = ContextCompressor(self.llm)
             cooldown_until = 0.0
             ineffective_count = 0
+
+            # 14.7 — 从持久化状态种入压缩校准基线
+            if session_id and self.session_manager:
+                state = self.session_manager.get_session_state(session_id)
+                if state.get("compressed_once"):
+                    compressor._compressed_once = True
+                if state.get("last_prompt_tokens") is not None:
+                    tracker._last_prompt_tokens = state["last_prompt_tokens"]
 
             try:
                 for _ in range(self.max_iterations):
@@ -119,10 +264,10 @@ class KittyAgent(ToolAgent):
                             elif event.type == "usage" and event.usage:
                                 tracker.update_from_usage(event.usage)
                                 await self.event_bus.emit(AGENT_CONTEXT_USAGE, {
-                                    "session_id":  session_id,
-                                    "used_tokens": tracker.used_tokens(messages),
+                                    "session_id":   session_id,
+                                    "used_tokens":  tracker.used_tokens(messages),
                                     "total_tokens": tracker._effective,
-                                    "ratio":       min(tracker.ratio(messages), 1.0),
+                                    "ratio":        min(tracker.ratio(messages), 1.0),
                                 })
                                 if did_compress:
                                     cooldown_until, ineffective_count = self._check_anti_thrash(
@@ -172,7 +317,7 @@ class KittyAgent(ToolAgent):
                 if session_id is not None:
                     self._commit_turn(
                         session_id, messages, turn_messages,
-                        compressor, effective_workspace_id, input_text,
+                        compressor, tracker, effective_workspace_id, input_text,
                     )
 
                 await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
@@ -186,11 +331,12 @@ class KittyAgent(ToolAgent):
 
         finally:
             bash_cwd.reset(cwd_token)
+            reset_root_budget(budget_token)
+            reset_root_session(session_token)
 
     # ── 会话 / 工作区准备 ─────────────────────────────────────────
 
     def _load_session_history(self, session_id: str | None) -> None:
-        """首次访问 session 时从 JSONL 恢复历史到内存。"""
         if not (self.session_manager and session_id and session_id not in self._loaded_sessions):
             return
         self._loaded_sessions.add(session_id)
@@ -205,7 +351,6 @@ class KittyAgent(ToolAgent):
     def _resolve_workspace(
         self, session_id: str | None, workspace_id: str | None
     ) -> tuple[str | None, str]:
-        """解析生效的 workspace_id 和对应 cwd 路径。"""
         effective = workspace_id
         if not effective and self.session_manager and session_id:
             session_data = self.session_manager.get_session(session_id)
@@ -218,7 +363,6 @@ class KittyAgent(ToolAgent):
         return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
 
     async def _inject_memory_recall(self, messages: list[dict], input_text: str) -> None:
-        """召回相关长期记忆，追加到 messages[0] system prompt 末尾。"""
         if not self._memory_recall:
             return
         try:
@@ -261,7 +405,6 @@ class KittyAgent(ToolAgent):
         cooldown_until: float,
         ineffective_count: int,
     ) -> tuple[float, int]:
-        """压缩后收到真实 usage 时检查是否无效，更新反抖动状态。"""
         pt = usage.get("prompt_tokens", 0)
         threshold = int(cfg.LLM_CONTEXT_WINDOW * cfg.COMPRESS_THRESHOLD_RATIO)
         if pt >= threshold:
@@ -275,21 +418,46 @@ class KittyAgent(ToolAgent):
 
     # ── 结果落库 ──────────────────────────────────────────────────
 
+    def _build_messages(self, session_id: str | None, input_text: str) -> list[dict]:
+        messages: list[dict] = []
+        if self.system_prompt:
+            messages.append({"role": "system", "content": self.system_prompt})
+        if session_id is not None:
+            messages.extend(self.get_context(session_id))
+        messages.append({"role": "user", "content": input_text})
+        return messages
+
+    def _save_turn(
+        self, session_id: str, input_text: str,
+        messages: list[dict], final_text: str
+    ) -> None:
+        self.add_message(session_id, Message(input_text, "user"))
+        for msg in messages:
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                self.add_message(session_id, Message(
+                    content=msg.get("content"), role="assistant",
+                    tool_calls=msg.get("tool_calls"),
+                ))
+            elif role == "tool":
+                self.add_message(session_id, Message(
+                    content=msg.get("content", ""), role="tool",
+                    tool_call_id=msg.get("tool_call_id"),
+                ))
+        self.add_message(session_id, Message(final_text, "assistant"))
+
     def _commit_turn(
         self,
         session_id: str,
         messages: list[dict],
         turn_messages: list[dict],
         compressor: ContextCompressor,
+        tracker: TokenTracker,
         effective_workspace_id: str | None,
         input_text: str,
     ) -> None:
-        """将本轮结果写回 _history 和 session_manager。"""
+        """将本轮结果写回 _history 和 session_manager，持久化压缩状态。"""
         if compressor._compressed_once:
-            # messages   = [system?, ...压缩后历史..., user_curr, ...中间工具轮...]
-            # turn_messages = [user_curr, ...中间工具轮..., final_assistant]
-            # final_assistant 已追加到 turn_messages 但未追加到 messages，
-            # 所以当前轮在 messages 里的条数 = len(turn_messages) - 1
             start = 1 if messages and messages[0].get("role") == "system" else 0
             end = len(messages) - (len(turn_messages) - 1)
             if end > start:
@@ -306,11 +474,17 @@ class KittyAgent(ToolAgent):
                 session_id, turn_messages, input_text,
                 workspace_id=effective_workspace_id,
             )
+            # 14.7 — 持久化压缩状态供下轮/重启后种入
+            self.session_manager.save_session_state(
+                session_id,
+                compressed_once=compressor._compressed_once,
+                last_prompt_tokens=tracker._last_prompt_tokens,
+                context_ratio=min(tracker.ratio(messages), 1.0),
+            )
 
     # ── 后台任务 ──────────────────────────────────────────────────
 
     async def _extract_memories_bg(self, turn_messages: list[dict]) -> None:
-        """在后台线程中运行记忆提取，不阻塞当前对话。"""
         try:
             await asyncio.to_thread(
                 extract_memories, turn_messages, self.llm, self.memory
@@ -319,7 +493,6 @@ class KittyAgent(ToolAgent):
             print(f"[memory] background extraction error: {e}", flush=True)
 
     async def _stream_with_tools_async(self, messages, tools, **kwargs):
-        """直接调用 AsyncOpenAI 流式接口的异步生成器。"""
         async for event in self.llm.async_stream_with_tools(
             messages=messages, tools=tools, **kwargs
         ):

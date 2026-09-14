@@ -58,10 +58,15 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         BashTool(),
         WriteMemoryTool(memory_store),
     ]
+    # bus 必须先建，再同时传给 TaskTool 和 KittyAgent——子事件要发到同一个总线
+    bus  = EventBus()
+    loop = asyncio.get_running_loop()
     task_tool = TaskTool(
         llm=llm,
         sub_tools=base_tools,
         ask_fn=bridge.ask,
+        event_bus=bus,
+        loop=loop,
     )
     all_tools = base_tools + [task_tool]
     agent = KittyAgent(
@@ -69,7 +74,7 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         llm=llm,
         tools=all_tools,
         system_prompt=build_system_prompt(all_tools),
-        event_bus=EventBus(),
+        event_bus=bus,
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
         memory=memory_store,

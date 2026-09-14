@@ -1,3 +1,3 @@
-from .agent import KittyAgent, ToolAgent
+from .agent import KittyAgent
 
-__all__ = ["KittyAgent", "ToolAgent"]
+__all__ = ["KittyAgent"]

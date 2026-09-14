@@ -41,6 +41,32 @@ def build_system_prompt(tools: list[BaseTool]) -> str:
     return _BASE_PROMPT.format(tool_list="\n".join(lines) + "\n\n")
 
 
+# ── 子任务 Agent System Prompt ─────────────────────────────────────
+
+_SUBTASK_PROMPT = """\
+你是 KittyMind 子任务代理。你的目标是：完成分配给你的具体子任务，只返回最终结论文字。
+
+## 可用工具
+
+{tool_list}
+## 行为规范
+
+1. **聚焦目标**：只完成交给你的任务，不要扩大范围
+2. **先读后改**：修改文件前先用 file_read 确认当前内容
+3. **精确替换**：file_edit 的 old_string 要包含足够上下文
+4. **只输出结论**：完成后用简洁文字总结结果，不要输出中间过程\
+"""
+
+
+def build_subtask_prompt(tools: list[BaseTool]) -> str:
+    """为子 Agent 生成专用系统提示词。工具列表按传入的实际工具自洽生成。"""
+    lines = []
+    for t in tools:
+        first_sentence = t.description.replace("\n", "").split("。")[0]
+        lines.append(f"- **{t.name}**：{first_sentence}")
+    return _SUBTASK_PROMPT.format(tool_list="\n".join(lines) + "\n\n")
+
+
 # ── 上下文压缩 ────────────────────────────────────────────────────
 
 COMPRESS_SUMMARY_SYSTEM = (

@@ -1,5 +1,4 @@
-"""Agent 抽象基类"""
-from abc import ABC, abstractmethod
+"""Agent 基类"""
 from typing import TYPE_CHECKING, Optional
 
 from ..core.message import Message
@@ -9,7 +8,7 @@ if TYPE_CHECKING:
     from ..callbacks.base import BaseCallBack
 
 
-class Agent(ABC):
+class Agent:
     def __init__(
         self,
         name: str,
@@ -24,10 +23,6 @@ class Agent(ABC):
         self.description = description
         self.callbacks = callbacks or []
         self._history: dict[str, list[Message]] = {}
-
-    @abstractmethod
-    def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
-        pass
 
     def add_message(self, session_id: str, message: Message):
         if session_id not in self._history:

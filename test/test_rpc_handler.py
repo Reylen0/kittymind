@@ -19,7 +19,7 @@ def make_mock_agent(tmp_path):
     agent.llm = MagicMock()
     agent.llm.model = "test-model"
     agent.event_bus = EventBus()
-    agent.session_manager = SessionManager(data_dir=tmp_path)
+    agent.session_manager = SessionManager(db_path=tmp_path / "test.db")
 
     # async_stream_run yields nothing (instant done)
     async def _noop_stream(*args, **kwargs):

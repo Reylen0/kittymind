@@ -9,6 +9,9 @@ AGENT_DONE = "agent.done"
 AGENT_ERROR = "agent.error"
 AGENT_CONTEXT_USAGE = "agent.context_usage"
 
+SUBAGENT_START = "subagent.start"
+SUBAGENT_DONE  = "subagent.done"
+
 
 @dataclass
 class AgentEvent:

@@ -39,10 +39,15 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
     setMessages([])
     setIsLoading(INIT_LOADING)
     setSelectedWorkspaceId(null)
-    setCtxRatio(0)
+    setCtxRatio(0)   // 切换时先归零，loadHistory 完成后若有持久化值会覆盖
 
     async function loadHistory() {
       const data = await window.kitty?.getSession(sessionId)
+      // 14.8 — 从持久化的 context_ratio 恢复圆环（即使没有消息历史）
+      const savedRatio = data?.header?.context_ratio
+      if (typeof savedRatio === 'number' && savedRatio > 0) {
+        setCtxRatio(savedRatio)
+      }
       if (!data?.messages?.length) return
 
       const msgs: Message[] = []

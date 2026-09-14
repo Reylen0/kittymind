@@ -3,14 +3,14 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from kittymind.agent import ToolAgent
+from kittymind.agent import KittyAgent
 from kittymind.core import BaseAgentLLM
 from kittymind.tools import GetCurrentTimeTool
 
 
 def main():
     llm = BaseAgentLLM()
-    agent = ToolAgent(
+    agent = KittyAgent(
         name="chat_agent",
         llm=llm,
         tools=[GetCurrentTimeTool()],

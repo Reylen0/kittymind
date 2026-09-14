@@ -24,7 +24,7 @@ from typing import Any
 
 # ── 数据目录 ─────────────────────────────────────────────────────
 KITTYMIND_DIR   = Path.home() / ".kittymind"
-SESSIONS_DIR    = KITTYMIND_DIR / "sessions"
+SESSIONS_DB     = KITTYMIND_DIR / "sessions.db"
 MEMORY_DIR      = KITTYMIND_DIR / "memory"
 WORKSPACES_FILE  = KITTYMIND_DIR / "workspaces.json"
 SCREENSHOTS_DIR  = KITTYMIND_DIR / "screenshots"
@@ -74,6 +74,11 @@ MEMORY_RECALL_MAX_BODY_CHARS = 800
 # ── Agent ────────────────────────────────────────────────────────
 AGENT_MAX_ITERATIONS = 30
 
+# ── 子 Agent 委派 ─────────────────────────────────────────────────
+SUBAGENT_MAX_DEPTH      = 3   # 子 Agent 嵌套层数（不含 root）
+SUBAGENT_MAX_TOTAL      = 8   # 单个 root turn 全树委派总数上限
+SUBAGENT_MAX_ITERATIONS = 20  # 子 Agent ReAct 循环上限
+
 # ── WebSocket 服务器 ─────────────────────────────────────────────
 WS_HOST          = "127.0.0.1"
 WS_PORT          = 8765
@@ -107,6 +112,7 @@ _OVERRIDABLE = {
     "MEMORY_CONSOLIDATE_THRESHOLD", "MEMORY_MAX_HISTORY_CHARS",
     "MEMORY_RECALL_MAX_RELEVANT", "MEMORY_RECALL_MAX_BODY_CHARS",
     "AGENT_MAX_ITERATIONS",
+    "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT",
     "LLM_TEMPERATURE",
     "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",

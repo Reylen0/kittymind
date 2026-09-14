@@ -2,17 +2,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .store import SessionStore
+from .store import SqliteSessionStore
 from ..config import cfg
 
 UTC = timezone.utc
 
 
 class SessionManager:
-    DEFAULT_DIR = cfg.SESSIONS_DIR
-
-    def __init__(self, data_dir: Path | None = None) -> None:
-        self.store = SessionStore(data_dir or self.DEFAULT_DIR)
+    def __init__(self, db_path: Path | None = None) -> None:
+        self.store = SqliteSessionStore(db_path or cfg.SESSIONS_DB)
 
     def create_session(self, title: str | None = None, session_id: str | None = None,
                        workspace_id: str | None = None) -> str:
@@ -80,6 +78,14 @@ class SessionManager:
                 msg["tool_call_id"] = r["tool_call_id"]
             result.append(msg)
         return result
+
+    def get_session_state(self, session_id: str) -> dict:
+        """读取会话的压缩状态（compressed_once / last_prompt_tokens / context_ratio）。"""
+        return self.store.get_state(session_id)
+
+    def save_session_state(self, session_id: str, **fields) -> None:
+        """持久化会话的压缩状态。"""
+        self.store.save_state(session_id, **fields)
 
     def generate_title(self, text: str) -> str:
         text = text.strip()
