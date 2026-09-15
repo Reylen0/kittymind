@@ -8,8 +8,7 @@
 
 子 Agent 调 run(session_id=None)，不触发任何集成层副作用。
 
-Phase 14 阶段二：
-  - 删除 _history 内存镜像，每轮从 SQLite active 视图重建上下文。
+  - 每轮从 SQLite active 视图重建上下文。
   - _build_messages 返回 (messages, loaded_seqs)；历史消息带瞬态 _seq 标记。
   - LLM 调用前剥离 _seq / _compressed_summary（_strip_internal）。
   - _commit_turn：有压缩时走 archive_and_compact 落库，否则 append_turn。
@@ -39,7 +38,6 @@ from ..tools.builtin.bash_tool import bash_cwd
 from ..tools.executor import ToolExecutor
 from ..tools.permission import PermissionToolExecutor
 from ..tools.registry import ToolRegistry
-from ..workspace.manager import WorkspaceManager
 from .base import Agent
 from .delegation import (
     reset_root_budget, reset_root_session,
@@ -90,25 +88,22 @@ class KittyAgent(Agent):
             MemoryRecall(memory, llm) if memory else None
         )
 
-    # ── 同步 ReAct（子 Agent 使用，支持压缩）────────────────────
+    # ── 同步 ReAct（子 Agent 使用，纯内存，支持压缩不落库）──────
 
     def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
         try:
             self._emit("on_agent_start", self.name, input_text)
-            messages, loaded_seqs = self._build_messages(session_id, input_text)
+            messages, _ = self._build_messages(session_id, input_text)
             tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
 
             tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
             compressor = ContextCompressor(self.llm)
-            compressed_this_turn = False
 
             for _ in range(self.max_iterations):
-                messages, tracker, did_compress = self._maybe_compress(
+                messages, tracker, _ = self._maybe_compress(
                     messages, tracker, compressor, 0.0
                 )
-                if did_compress:
-                    compressed_this_turn = True
                 self._emit("on_llm_start", messages)
                 try:
                     response = self.llm.invoke(
@@ -141,13 +136,6 @@ class KittyAgent(Agent):
                 raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
 
             self.last_messages = messages
-            if session_id is not None and self.session_manager:
-                turn_messages = self._extract_turn_messages(messages, loaded_seqs, input_text, final_text)
-                self._commit_turn(
-                    session_id, messages, turn_messages,
-                    compressor, tracker, None, input_text,
-                    compressed_this_turn, loaded_seqs,
-                )
             self._emit("on_agent_end", self.name, final_text)
             return final_text
 
@@ -162,20 +150,17 @@ class KittyAgent(Agent):
     ) -> Iterator[str]:
         try:
             self._emit("on_agent_start", self.name, input_text)
-            messages, loaded_seqs = self._build_messages(session_id, input_text)
+            messages, _ = self._build_messages(session_id, input_text)
             tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
-            compressed_this_turn = False
 
             tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
             compressor = ContextCompressor(self.llm)
 
             for _ in range(self.max_iterations):
-                messages, tracker, did_compress = self._maybe_compress(
+                messages, tracker, _ = self._maybe_compress(
                     messages, tracker, compressor, 0.0
                 )
-                if did_compress:
-                    compressed_this_turn = True
                 self._emit("on_llm_start", messages)
                 text_chunks: list[str] = []
                 tool_calls: list[dict] = []
@@ -217,13 +202,6 @@ class KittyAgent(Agent):
                 raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
 
             self.last_messages = messages
-            if session_id is not None and self.session_manager:
-                turn_messages = self._extract_turn_messages(messages, loaded_seqs, input_text, final_text)
-                self._commit_turn(
-                    session_id, messages, turn_messages,
-                    compressor, tracker, None, input_text,
-                    compressed_this_turn, loaded_seqs,
-                )
             self._emit("on_agent_end", self.name, final_text)
 
         except Exception as e:
@@ -258,7 +236,6 @@ class KittyAgent(Agent):
             cooldown_until = 0.0
             ineffective_count = 0
 
-            # 14.7 — 从持久化状态种入压缩校准基线
             if session_id and self.session_manager:
                 state = self.session_manager.get_session_state(session_id)
                 if state.get("compressed_once"):
@@ -280,8 +257,9 @@ class KittyAgent(Agent):
                     tool_calls: list[dict] = []
 
                     try:
-                        async for event in self._stream_with_tools_async(
-                            self._strip_internal(messages), tools_schema, **kwargs
+                        async for event in self.llm.async_stream_with_tools(
+                            messages=self._strip_internal(messages),
+                            tools=tools_schema, **kwargs,
                         ):
                             if event.type == "text_delta":
                                 text_chunks.append(event.delta)
@@ -440,20 +418,6 @@ class KittyAgent(Agent):
             result.append(m)
         return result
 
-    @staticmethod
-    def _extract_turn_messages(
-        messages: list[dict],
-        loaded_seqs: list,
-        input_text: str,
-        final_text: str,
-    ) -> list[dict]:
-        """从完整工作集中提取本轮新增消息（无 _seq 标记的部分）。"""
-        # 跳过最后的 user 输入消息（由调用方负责加入）
-        new_msgs = [m for m in messages if "_seq" not in m and m.get("role") != "system"]
-        # 去掉尾部的 final_text assistant 消息（调用方会单独追加）
-        # 其实我们直接返回全部新消息（含 user+tool+assistant），外部再加 final assistant
-        return new_msgs
-
     # ── 压缩 ──────────────────────────────────────────────────────
 
     def _maybe_compress(
@@ -528,10 +492,8 @@ class KittyAgent(Agent):
                 # 找相邻的 _seq 来计算插入位置
                 prev_seq = self._find_prev_seq(messages, i)
                 next_seq = self._find_next_seq(messages, i)
-                mid_seq = (prev_seq + next_seq) / 2.0 if prev_seq is not None and next_seq is not None \
-                    else (next_seq - 0.5 if next_seq is not None else (prev_seq + 0.5 if prev_seq is not None else 0.5))
                 summary_rows.append({
-                    "seq":  mid_seq,
+                    "seq":  self._midpoint_seq(prev_seq, next_seq),
                     "role": m["role"],
                     "content": m.get("content"),
                 })
@@ -556,7 +518,7 @@ class KittyAgent(Agent):
                 workspace_id=effective_workspace_id,
             )
 
-        # 14.7 — 持久化压缩状态
+        # 持久化压缩状态
         # last_prompt_tokens 只在有实际值时更新：Bedrock 代理可能返回 0，
         # 写入 0 会导致下轮误判上下文占用为 0，保留旧值更安全。
         state_fields: dict = {"compressed_once": compressor._compressed_once}
@@ -580,6 +542,20 @@ class KittyAgent(Agent):
                 return messages[i]["_seq"]
         return None
 
+    @staticmethod
+    def _midpoint_seq(prev_seq: float | None, next_seq: float | None) -> float:
+        """摘要行插入序号：夹在相邻两条 _seq 之间取中点。
+
+        缺一侧时向存在的一侧偏移 0.5；两侧皆无（异常）落在开头 0.5。
+        """
+        if prev_seq is not None and next_seq is not None:
+            return (prev_seq + next_seq) / 2.0
+        if next_seq is not None:
+            return next_seq - 0.5
+        if prev_seq is not None:
+            return prev_seq + 0.5
+        return 0.5
+
     # ── 后台任务 ──────────────────────────────────────────────────
 
     async def _extract_memories_bg(self, turn_messages: list[dict]) -> None:
@@ -589,9 +565,3 @@ class KittyAgent(Agent):
             )
         except Exception as e:
             print(f"[memory] background extraction error: {e}", flush=True)
-
-    async def _stream_with_tools_async(self, messages, tools, **kwargs):
-        async for event in self.llm.async_stream_with_tools(
-            messages=messages, tools=tools, **kwargs
-        ):
-            yield event

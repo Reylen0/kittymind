@@ -3,7 +3,6 @@
 子 Agent 拥有全新的 messages[]，干完活只把最终文字返回给父 Agent。
 父 Agent 的 context 里不会出现子任务的中间工具调用结果。
 
-Phase 11 升级：
   - 深度/总数守护（DelegationBudget）
   - orchestrator / leaf 角色（depth < max_depth 则追加 task 工具）
   - allowed_tools 约束子 Agent 可用工具集
