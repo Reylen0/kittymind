@@ -118,6 +118,13 @@ TOOL_AUDIT_ENABLED        = True   # 是否记录工具调用审计（SQLite + J
 TOOL_REDACT_ENABLED       = True   # 是否对工具输出/审计参数做敏感信息脱敏
 TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出截断）
 
+# ── 自我验证（Phase 13，verify 工具） ──────────────────
+VERIFY_TIMEOUT        = 120     # command 验证器默认超时（测试/build 比普通命令更久）
+VERIFY_MAX_TIMEOUT    = 600     # command 验证器超时硬上限
+VERIFY_PROBE_RETRIES  = 5       # probe 验证器默认重试次数
+VERIFY_PROBE_INTERVAL = 1.0     # probe 验证器重试间隔（秒）
+VERIFY_MAX_OUTPUT     = 20_000  # command 验证器证据截断长度
+
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -146,6 +153,8 @@ _OVERRIDABLE = {
     "GUARD_NO_PROGRESS_WARN", "GUARD_NO_PROGRESS_BLOCK",
     "GUARD_IDENTICAL_STREAK_BLOCK",
     "TOOL_AUDIT_ENABLED", "TOOL_REDACT_ENABLED", "TOOL_AUDIT_ARGS_MAX_CHARS",
+    "VERIFY_TIMEOUT", "VERIFY_MAX_TIMEOUT", "VERIFY_PROBE_RETRIES",
+    "VERIFY_PROBE_INTERVAL", "VERIFY_MAX_OUTPUT",
 }
 
 

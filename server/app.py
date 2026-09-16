@@ -22,6 +22,7 @@ from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
 from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.builtin.task_tool import TaskTool
+from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.memory.store import MemoryStore
 from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
@@ -57,6 +58,7 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         FileWriteTool(),
         BashTool(),
         WriteMemoryTool(memory_store),
+        VerifyTool(),
     ]
     # bus 必须先建，再同时传给 TaskTool 和 KittyAgent——子事件要发到同一个总线
     bus  = EventBus()
