@@ -1,20 +1,20 @@
-"""权限管线 —— 工具执行前的三道闸门。
+"""权限检查纯函数模块。
 
-闸门 1：硬拒绝列表   命中 → 直接拒绝
-闸门 2：规则匹配     命中 → 进入闸门 3
-闸门 3：用户审批     由 ask_fn 决定允许或拒绝（默认 CLI input，GUI 场景可注入替换）
+check_permission(name, args, ask_fn) -> str | None
+  返回 None 表示放行；返回拒绝原因字符串表示阻止。
 
-三道都未命中 → 放行。
+闸门顺序：
+  1. 硬拒绝（始终生效，含 ask_fn=None 的 CLI / 子 Agent 路径）
+  2. 规则匹配（路径越界、删除操作、系统路径写入、chmod 777）
+  3. 用户审批（ask_fn=None 时跳过，直接放行；避免在 worker 线程误触发终端 input）
 """
 
-import json
 import os
 from pathlib import Path
 from typing import Callable, Optional
 
 from .builtin.bash_tool import bash_cwd
-from .executor import ToolExecutor
-from .registry import ToolRegistry
+
 
 # ── 闸门 1：硬拒绝（bash 专用） ────────────────────────────────
 _BASH_HARD_DENY: list[tuple[str, str]] = [
@@ -28,15 +28,14 @@ _BASH_HARD_DENY: list[tuple[str, str]] = [
     ("del /f /s /q c:\\", "递归删除 C 盘文件"),
 ]
 
+
 # ── 闸门 2：软规则 ─────────────────────────────────────────────
-# 注意：路径规则用 bash_cwd.get() 作为工作目录参考，与 FileWriteTool/FileReadTool
-# 实际解析路径的基准保持一致（均为当前会话的工作区路径）。
 def _check_path_outside(args: dict) -> bool:
     cwd = bash_cwd.get()
     raw = args.get("path", ".")
-    # 对齐 FileWriteTool/FileReadTool 的解析逻辑
     resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
     return not _inside_workdir(resolved, cwd)
+
 
 _RULES: list[tuple[set, object, str]] = [
     (
@@ -90,11 +89,7 @@ def _short(val: object, limit: int = 80) -> str:
     return s[:limit] + "…" if len(s) > limit else s
 
 
-# ─────────────────────────────────────────────────────────────
-# PermissionToolExecutor
-# ─────────────────────────────────────────────────────────────
-
-# 默认 ask_fn：CLI 交互（适合终端使用）
+# ── 默认 ask_fn：CLI 交互 ──────────────────────────────────────
 def _cli_ask(tool_name: str, args: dict, reason: str) -> bool:
     display = {k: (_short(v, 100) if k != "content" else f"<{len(str(v))} chars>") for k, v in args.items()}
     print(f"\n[WARN] {reason}")
@@ -107,67 +102,40 @@ def _cli_ask(tool_name: str, args: dict, reason: str) -> bool:
         return False
 
 
-class PermissionToolExecutor(ToolExecutor):
-    """在工具执行前插入三道权限闸门。
+# ── 公共接口 ─────────────────────────────────────────────────
 
-    ask_fn 签名：(tool_name: str, args: dict, reason: str) -> bool
-    默认使用 CLI input；桌面 GUI 场景注入一个基于 WebSocket 的异步版本。
+def check_permission(
+    name: str,
+    args: dict,
+    ask_fn: Optional[Callable[[str, dict, str], bool]] = None,
+) -> Optional[str]:
+    """检查工具调用权限。返回 None 表示放行；返回字符串表示拒绝原因。
+
+    闸门1（硬拒绝）始终生效，含 ask_fn=None 的路径。
+    闸门2/3 仅当名称匹配规则时触发；ask_fn=None 时跳过用户审批直接放行。
     """
+    # 闸门 1：硬拒绝
+    if name == "bash":
+        cmd = args.get("command", "").lower()
+        for pattern, reason in _BASH_HARD_DENY:
+            if pattern.lower() in cmd:
+                return f"硬拒绝: {reason}"
 
-    def __init__(
-        self,
-        registry: ToolRegistry,
-        ask_fn: Optional[Callable[[str, dict, str], bool]] = None,
-    ):
-        super().__init__(registry)
-        self._ask_fn = ask_fn or _cli_ask
-        self._last_call_key: Optional[str] = None
-
-    def begin_turn(self) -> None:
-        """每轮对话开始前重置重复调用检测。"""
-        self._last_call_key = None
-
-    def execute(self, tool_call: dict) -> dict:
-        tool_call_id = tool_call.get("id", "")
-        function = tool_call.get("function", {})
-        name = function.get("name", "")
+    # 闸门 2 + 3：规则 → 用户审批
+    for tool_names, check_fn, reason in _RULES:
+        if name not in tool_names:
+            continue
         try:
-            args = json.loads(function.get("arguments", "{}") or "{}")
+            triggered = check_fn(args)
         except Exception:
-            args = {}
-
-        # ── 闸门 0：重复调用检测 ────────────────────────────────
-        call_key = f"{name}:{json.dumps(args, sort_keys=True)}"
-        if call_key == self._last_call_key:
-            return self._denied(
-                tool_call_id,
-                f"重复调用拦截：工具 '{name}' 以完全相同的参数被连续调用两次。",
-            )
-        self._last_call_key = call_key
-
-        # ── 闸门 1：硬拒绝 ──────────────────────────────────────
-        if name == "bash":
-            cmd = args.get("command", "").lower()
-            for pattern, reason in _BASH_HARD_DENY:
-                if pattern.lower() in cmd:
-                    return self._denied(tool_call_id, f"硬拒绝: {reason}")
-
-        # ── 闸门 2 + 3：规则 → 用户审批 ─────────────────────────
-        for tool_names, check_fn, reason in _RULES:
-            if name not in tool_names:
-                continue
-            try:
-                triggered = check_fn(args)
-            except Exception:
-                triggered = False
-            if not triggered:
-                continue
-            if not self._ask_fn(name, args, reason):
-                return self._denied(tool_call_id, "用户拒绝执行")
+            triggered = False
+        if not triggered:
+            continue
+        # ask_fn=None → 跳过审批直接放行（不阻断，但也不触发终端 input）
+        if ask_fn is None:
             break
+        if not ask_fn(name, args, reason):
+            return "用户拒绝执行"
+        break
 
-        return super().execute(tool_call)
-
-    @staticmethod
-    def _denied(tool_call_id: str, reason: str) -> dict:
-        return {"role": "tool", "tool_call_id": tool_call_id, "content": f"Permission denied: {reason}"}
+    return None

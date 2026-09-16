@@ -1,7 +1,6 @@
 from .base import BaseTool
 from .registry import ToolRegistry
 from .executor import ToolExecutor
-from .permission import PermissionToolExecutor
 from .builtin import (
     GetCurrentTimeTool,
     BashTool, FileReadTool, FileWriteTool, FileEditTool,
@@ -11,7 +10,7 @@ from .builtin import (
 )
 
 __all__ = [
-    "BaseTool", "ToolRegistry", "ToolExecutor", "PermissionToolExecutor",
+    "BaseTool", "ToolRegistry", "ToolExecutor",
     "GetCurrentTimeTool",
     "BashTool", "FileReadTool", "FileWriteTool", "FileEditTool",
     "GlobTool", "GrepTool", "LsTool", "GitTool",

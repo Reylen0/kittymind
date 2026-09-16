@@ -1,7 +1,15 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Dict, Any
 
 from pydantic import BaseModel
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    """工具执行结果：ok 由工具自己显式声明，不再靠下游猜文本。"""
+    ok: bool
+    content: str
 
 
 class BaseTool(ABC):
@@ -14,11 +22,11 @@ class BaseTool(ABC):
         if description is not None: self.description = description
         if param_class is not None: self.param_class = param_class
 
-    def run(self, parameters: dict[str, Any]) -> Any:
+    def run(self, parameters: dict[str, Any]) -> ToolResult:
         return self.execute(self.param_class(**parameters))
 
     @abstractmethod
-    def execute(self, parameters: BaseModel) -> Any:
+    def execute(self, parameters: BaseModel) -> ToolResult:
         pass
 
     def to_schema(self) -> Dict[str, Any]:

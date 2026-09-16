@@ -2,7 +2,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 _MAX_FILE_SIZE = cfg.FILE_EDIT_MAX_SIZE
@@ -24,27 +24,27 @@ class FileEditTool(BaseTool):
     )
     param_class = FileEditToolParam
 
-    def execute(self, parameters: FileEditToolParam) -> str:
+    def execute(self, parameters: FileEditToolParam) -> ToolResult:
         path = os.path.abspath(parameters.path)
-        if not os.path.exists(path): return f"错误: 文件不存在 — {path}"
-        if os.path.getsize(path) > _MAX_FILE_SIZE: return "错误: 文件超过 2MB，请使用 file_write 整体替换"
+        if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
+        if os.path.getsize(path) > _MAX_FILE_SIZE: return ToolResult(False, "错误: 文件超过 2MB，请使用 file_write 整体替换")
         try:
             with open(path, "r", encoding=parameters.encoding, errors="replace") as f:
                 content = f.read()
         except Exception as e:
-            return f"错误: 读取失败 — {e}"
+            return ToolResult(False, f"错误: 读取失败 — {e}")
         count = content.count(parameters.old_string)
         if count == 0:
-            return (f"错误: 未找到 old_string（文件 {os.path.basename(path)}）\n"
+            return ToolResult(False, f"错误: 未找到 old_string（文件 {os.path.basename(path)}）\n"
                     f"  首行: {repr(parameters.old_string.split(chr(10))[0][:60])}")
         if count > 1:
-            return f"错误: old_string 在文件中出现了 {count} 次，请添加更多上下文使其唯一"
+            return ToolResult(False, f"错误: old_string 在文件中出现了 {count} 次，请添加更多上下文使其唯一")
         new_content = content.replace(parameters.old_string, parameters.new_string, 1)
         try:
             with open(path, "w", encoding=parameters.encoding, errors="replace") as f:
                 f.write(new_content)
         except Exception as e:
-            return f"错误: 写入失败 — {e}"
+            return ToolResult(False, f"错误: 写入失败 — {e}")
         delta = parameters.new_string.count("\n") - parameters.old_string.count("\n")
         sign = f"+{delta}" if delta >= 0 else str(delta)
-        return f"已编辑: {path}  ({sign} 行)"
+        return ToolResult(True, f"已编辑: {path}  ({sign} 行)")

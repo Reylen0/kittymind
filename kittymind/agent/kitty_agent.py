@@ -36,7 +36,8 @@ from ..session.manager import SessionManager
 from ..tools.base import BaseTool
 from ..tools.builtin.bash_tool import bash_cwd
 from ..tools.executor import ToolExecutor
-from ..tools.permission import PermissionToolExecutor
+from ..tools.audit import get_tool_audit_log
+from ..tools.guardrails import GuardrailController
 from ..tools.registry import ToolRegistry
 from .base import Agent
 from .delegation import (
@@ -66,6 +67,7 @@ class KittyAgent(Agent):
         workspace_manager=None,
         memory: Optional[MemoryStore] = None,
         ask_fn=None,
+        interactive: bool = True,
     ):
         super().__init__(name, llm, system_prompt, description, callbacks)
         self.max_iterations = max_iterations
@@ -73,10 +75,10 @@ class KittyAgent(Agent):
         self.tool_registry = ToolRegistry()
         for tool in self.tools:
             self.tool_registry.register(tool)
-        self.tool_executor: ToolExecutor = (
-            PermissionToolExecutor(self.tool_registry, ask_fn=ask_fn)
-            if ask_fn is not None
-            else ToolExecutor(self.tool_registry)
+        guardrail = GuardrailController(interactive) if cfg.TOOL_GUARDRAIL_ENABLED else None
+        audit = get_tool_audit_log() if cfg.TOOL_AUDIT_ENABLED else None
+        self.tool_executor = ToolExecutor(
+            self.tool_registry, ask_fn=ask_fn, guardrail=guardrail, audit=audit
         )
         self.last_messages: list[dict] = []
 
@@ -99,6 +101,7 @@ class KittyAgent(Agent):
 
             tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
             compressor = ContextCompressor(self.llm)
+            self.tool_executor.begin_turn(session_id)
 
             for _ in range(self.max_iterations):
                 messages, tracker, _ = self._maybe_compress(
@@ -156,6 +159,7 @@ class KittyAgent(Agent):
 
             tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
             compressor = ContextCompressor(self.llm)
+            self.tool_executor.begin_turn(session_id)
 
             for _ in range(self.max_iterations):
                 messages, tracker, _ = self._maybe_compress(
@@ -244,6 +248,7 @@ class KittyAgent(Agent):
                     tracker._last_prompt_tokens = state["last_prompt_tokens"]
 
             try:
+                self.tool_executor.begin_turn(session_id)
                 for _ in range(self.max_iterations):
                     messages, tracker, did_compress = self._maybe_compress(
                         messages, tracker, compressor, cooldown_until

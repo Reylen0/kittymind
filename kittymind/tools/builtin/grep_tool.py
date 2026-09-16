@@ -4,7 +4,7 @@ import re
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 _SKIP_DIRS     = cfg.SKIP_DIRS
@@ -29,12 +29,12 @@ class GrepTool(BaseTool):
     )
     param_class = GrepToolParam
 
-    def execute(self, parameters: GrepToolParam) -> str:
+    def execute(self, parameters: GrepToolParam) -> ToolResult:
         flags = 0 if parameters.case_sensitive.lower() == "true" else re.IGNORECASE
         try:
             regex = re.compile(parameters.pattern, flags)
         except re.error as e:
-            return f"错误: 无效的正则表达式 — {e}"
+            return ToolResult(False, f"错误: 无效的正则表达式 — {e}")
         target = os.path.abspath(parameters.path)
         if os.path.isfile(target):
             files, base_dir = [target], os.path.dirname(target)
@@ -42,7 +42,7 @@ class GrepTool(BaseTool):
             base_dir = target
             files = self._collect_files(target, parameters.file_pattern)
         else:
-            return f"错误: 路径不存在 — {target}"
+            return ToolResult(False, f"错误: 路径不存在 — {target}")
         results = []
         for filepath in files:
             if len(results) >= _MAX_RESULTS:
@@ -50,9 +50,9 @@ class GrepTool(BaseTool):
                 break
             results.extend(self._search_file(filepath, regex, base_dir, parameters.context_lines))
         if not results:
-            return f"未找到匹配 '{parameters.pattern}' 的内容"
+            return ToolResult(True, f"未找到匹配 '{parameters.pattern}' 的内容")
         total = sum(1 for r in results if not r.startswith("..."))
-        return "\n\n".join(results) + f"\n\n共 {total} 处匹配"
+        return ToolResult(True, "\n\n".join(results) + f"\n\n共 {total} 处匹配")
 
     def _collect_files(self, root: str, file_pattern: str) -> list[str]:
         files = []

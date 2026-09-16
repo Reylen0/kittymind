@@ -6,7 +6,7 @@ from contextvars import ContextVar
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 # 由 KittyAgent 在每次 async_stream_run 开始前设置
@@ -28,8 +28,10 @@ _DANGEROUS_RE = re.compile("|".join(_DANGEROUS_PATTERNS), re.IGNORECASE)
 
 class BashToolParam(BaseModel):
     command: str = Field(description="要执行的 shell 命令")
-    timeout: int = Field(default=cfg.BASH_TIMEOUT, description="超时秒数，默认 30")
-    run_in_background: bool = Field(default=False, description="设为 true 时在后台线程执行")
+    timeout: int = Field(
+        default=cfg.BASH_TIMEOUT,
+        description=f"超时秒数，默认 {cfg.BASH_TIMEOUT}，上限 {cfg.BASH_MAX_TIMEOUT}",
+    )
 
 
 class BashTool(BaseTool):
@@ -37,14 +39,17 @@ class BashTool(BaseTool):
     name: str = "bash"
     description: str = (
         "在本地执行 shell 命令并返回标准输出和标准错误。"
-        "耗时命令可设 run_in_background=true 在后台执行，不阻塞 Agent。"
+        "命令同步执行并有超时上限，请勿运行不会自行退出的长驻进程（如开发服务器、watch）。"
     )
     param_class = BashToolParam
 
-    def execute(self, parameters: BashToolParam) -> str:
+    def execute(self, parameters: BashToolParam) -> ToolResult:
         command = parameters.command.strip()
         if _DANGEROUS_RE.search(command):
-            return "Error: Dangerous command blocked"
+            return ToolResult(False, "Error: Dangerous command blocked")
+
+        # 夹住超时：防止模型传入过大值导致长时间阻塞
+        timeout = max(1, min(parameters.timeout, cfg.BASH_MAX_TIMEOUT))
 
         cwd = bash_cwd.get()
 
@@ -56,17 +61,18 @@ class BashTool(BaseTool):
         try:
             proc = subprocess.run(
                 shell_args, shell=use_shell, capture_output=True,
-                text=True, timeout=parameters.timeout,
+                text=True, timeout=timeout,
                 encoding=_SYS_ENCODING, errors="replace",
                 cwd=cwd,
             )
         except subprocess.TimeoutExpired:
-            return f"错误: 命令执行超时 ({parameters.timeout}s)"
+            return ToolResult(False, f"错误: 命令执行超时 ({timeout}s)")
         except Exception as e:
-            return f"错误: {e}"
+            return ToolResult(False, f"错误: {e}")
 
         parts = [f"[工作目录: {cwd}]"]
         if proc.stdout: parts.append(proc.stdout[:cfg.BASH_MAX_OUTPUT])
         if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:cfg.BASH_MAX_OUTPUT]}")
         if proc.returncode != 0: parts.append(f"[退出码: {proc.returncode}]")
-        return "\n".join(parts) if len(parts) > 1 else parts[0] + "\n(无输出)"
+        content = "\n".join(parts) if len(parts) > 1 else parts[0] + "\n(无输出)"
+        return ToolResult(proc.returncode == 0, content)

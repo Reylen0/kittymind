@@ -28,11 +28,14 @@ SESSIONS_DB     = KITTYMIND_DIR / "sessions.db"
 MEMORY_DIR      = KITTYMIND_DIR / "memory"
 WORKSPACES_FILE  = KITTYMIND_DIR / "workspaces.json"
 SCREENSHOTS_DIR  = KITTYMIND_DIR / "screenshots"
+TOOL_AUDIT_DB    = KITTYMIND_DIR / "tool_audit.db"      # 工具审计 SQLite
+TOOL_AUDIT_JSONL = KITTYMIND_DIR / "tool_audit.jsonl"   # 工具审计 JSONL（同内容双写）
 DEFAULT_WORKSPACE_DIR = Path.home()   # 未选工作区时的默认 cwd
 
 # ── 超时（秒） ───────────────────────────────────────────────────
-BASH_TIMEOUT = 30
-GIT_TIMEOUT  = 30
+BASH_TIMEOUT     = 30
+BASH_MAX_TIMEOUT = 300   # bash 单次超时硬上限（模型传入的 timeout 会被夹到此值）
+GIT_TIMEOUT      = 30
 
 # ── 文件操作限制 ─────────────────────────────────────────────────
 FILE_READ_MAX_LINES  = 2_000
@@ -98,6 +101,23 @@ COMPRESS_TAIL_MIN_MSGS     = 6        # 尾部最少保留消息条数
 COMPRESS_MICRO_TOOL_CHARS  = 5_000    # 单条 tool 结果超此字符数则微压缩修剪
 COMPRESS_COOLDOWN_SECONDS  = 300      # 反抖动冷却秒数（内存态 monotonic）
 
+# ── 工具守护栏 ────────────────────────────────────────
+TOOL_GUARDRAIL_ENABLED       = True   # 是否启用守护栏（False 则完全跳过）
+TOOL_GUARDRAIL_WARN_ENABLED  = True   # 是否输出 warn 提示（False 则仅 block 不提示）
+TOOL_GUARDRAIL_HARD_STOP     = False  # 交互态默认不硬停；非交互态由 interactive=False 强制开
+GUARD_EXACT_FAIL_WARN        = 2      # 同工具同参失败：warn 阈值
+GUARD_EXACT_FAIL_BLOCK       = 5      # 同工具同参失败：block 阈值（hard_stop 态）
+GUARD_SAME_TOOL_FAIL_WARN    = 3      # 同工具不同参失败：warn 阈值
+GUARD_SAME_TOOL_FAIL_BLOCK   = 8      # 同工具不同参失败：block 阈值（hard_stop 态）
+GUARD_NO_PROGRESS_WARN       = 2      # 幂等工具无进展：warn 阈值
+GUARD_NO_PROGRESS_BLOCK      = 5      # 幂等工具无进展：block 阈值（hard_stop 态）
+GUARD_IDENTICAL_STREAK_BLOCK = 3      # 连续完全相同调用：block 阈值（两态均生效，取代 gate-0）
+
+# ── 工具审计与脱敏 ────────────────────────────────────
+TOOL_AUDIT_ENABLED        = True   # 是否记录工具调用审计（SQLite + JSONL 双写）
+TOOL_REDACT_ENABLED       = True   # 是否对工具输出/审计参数做敏感信息脱敏
+TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出截断）
+
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -105,7 +125,7 @@ _SETTINGS_FILE = KITTYMIND_DIR / "settings.json"
 
 # 哪些 key 可从 settings.json 覆盖（Path 类型的 key 不允许，避免意外破坏目录结构）
 _OVERRIDABLE = {
-    "BASH_TIMEOUT", "GIT_TIMEOUT",
+    "BASH_TIMEOUT", "BASH_MAX_TIMEOUT", "GIT_TIMEOUT",
     "FILE_READ_MAX_LINES", "FILE_READ_MAX_BYTES",
     "FILE_EDIT_MAX_SIZE", "FILE_WRITE_MAX_BYTES", "BASH_MAX_OUTPUT",
     "GREP_MAX_RESULTS", "GREP_MAX_FILE_SIZE", "LS_MAX_ENTRIES",
@@ -120,6 +140,12 @@ _OVERRIDABLE = {
     "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",
     "COMPRESS_PROTECT_FIRST_N", "COMPRESS_TAIL_MIN_MSGS",
     "COMPRESS_MICRO_TOOL_CHARS", "COMPRESS_COOLDOWN_SECONDS",
+    "TOOL_GUARDRAIL_ENABLED", "TOOL_GUARDRAIL_WARN_ENABLED", "TOOL_GUARDRAIL_HARD_STOP",
+    "GUARD_EXACT_FAIL_WARN", "GUARD_EXACT_FAIL_BLOCK",
+    "GUARD_SAME_TOOL_FAIL_WARN", "GUARD_SAME_TOOL_FAIL_BLOCK",
+    "GUARD_NO_PROGRESS_WARN", "GUARD_NO_PROGRESS_BLOCK",
+    "GUARD_IDENTICAL_STREAK_BLOCK",
+    "TOOL_AUDIT_ENABLED", "TOOL_REDACT_ENABLED", "TOOL_AUDIT_ARGS_MAX_CHARS",
 }
 
 

@@ -5,7 +5,7 @@ import sys
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 _TIMEOUT = cfg.GIT_TIMEOUT
@@ -33,12 +33,12 @@ class GitTool(BaseTool):
     description: str = "执行常用 git 操作：查看状态、查看 diff、暂存文件、提交、查看日志。"
     param_class = GitToolParam
 
-    def execute(self, parameters: GitToolParam) -> str:
+    def execute(self, parameters: GitToolParam) -> ToolResult:
         action = parameters.action.lower().strip()
         if action not in _ALLOWED_ACTIONS:
-            return f"错误: 不支持的操作 '{action}'，可用: {', '.join(sorted(_ALLOWED_ACTIONS))}"
+            return ToolResult(False, f"错误: 不支持的操作 '{action}'，可用: {', '.join(sorted(_ALLOWED_ACTIONS))}")
         workdir = os.path.abspath(parameters.workdir)
-        if not os.path.isdir(workdir): return f"错误: 工作目录不存在 — {workdir}"
+        if not os.path.isdir(workdir): return ToolResult(False, f"错误: 工作目录不存在 — {workdir}")
         cmd = self._build(action, parameters)
         try:
             proc = subprocess.run(
@@ -46,16 +46,17 @@ class GitTool(BaseTool):
                 timeout=_TIMEOUT, encoding=_SYS_ENCODING, errors="replace",
             )
         except FileNotFoundError:
-            return "错误: 未找到 git 命令"
+            return ToolResult(False, "错误: 未找到 git 命令")
         except subprocess.TimeoutExpired:
-            return f"错误: git 命令超时（{_TIMEOUT}s）"
+            return ToolResult(False, f"错误: git 命令超时（{_TIMEOUT}s）")
         except Exception as e:
-            return f"错误: {e}"
+            return ToolResult(False, f"错误: {e}")
         parts = []
         if proc.stdout.strip(): parts.append(proc.stdout.rstrip())
         if proc.stderr.strip(): parts.append(f"[stderr]\n{proc.stderr.rstrip()}")
         if proc.returncode != 0 and not parts: parts.append(f"[退出码: {proc.returncode}]")
-        return "\n".join(parts) if parts else "(无输出)"
+        content = "\n".join(parts) if parts else "(无输出)"
+        return ToolResult(proc.returncode == 0, content)
 
     def _build(self, action: str, p: GitToolParam) -> list[str]:
         base = ["git"]

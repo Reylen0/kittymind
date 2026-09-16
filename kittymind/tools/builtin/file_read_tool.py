@@ -2,7 +2,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from .bash_tool import bash_cwd
 from ...config import cfg
 
@@ -25,26 +25,26 @@ class FileReadTool(BaseTool):
     )
     param_class = FileReadToolParam
 
-    def execute(self, parameters: FileReadToolParam) -> str:
+    def execute(self, parameters: FileReadToolParam) -> ToolResult:
         raw = parameters.path
         if os.path.isabs(raw):
             path = os.path.normpath(raw)
         else:
             path = os.path.normpath(os.path.join(bash_cwd.get(), raw))
-        if not os.path.exists(path): return f"错误: 文件不存在 — {path}"
-        if not os.path.isfile(path): return f"错误: 路径不是文件 — {path}"
+        if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
+        if not os.path.isfile(path): return ToolResult(False, f"错误: 路径不是文件 — {path}")
         size = os.path.getsize(path)
         if size > _MAX_BYTES:
-            return f"错误: 文件过大 ({size/1024:.0f}KB > 800KB)，请用 start_line/end_line 分段读取"
+            return ToolResult(False, f"错误: 文件过大 ({size/1024:.0f}KB > 800KB)，请用 start_line/end_line 分段读取")
         try:
             with open(path, "r", encoding=parameters.encoding, errors="replace") as f:
                 all_lines = f.readlines()
         except Exception as e:
-            return f"错误: 读取失败 — {e}"
+            return ToolResult(False, f"错误: 读取失败 — {e}")
         total = len(all_lines)
         start = max(1, parameters.start_line)
         end = total if parameters.end_line <= 0 else min(parameters.end_line, total)
-        if start > total: return f"错误: start_line={start} 超出文件总行数 {total}"
+        if start > total: return ToolResult(False, f"错误: start_line={start} 超出文件总行数 {total}")
         selected = all_lines[start - 1: end]
         truncated = len(selected) > _MAX_LINES
         if truncated: selected = selected[:_MAX_LINES]
@@ -53,4 +53,4 @@ class FileReadTool(BaseTool):
         header = f"[{path}  {total} 行  {size} 字节"
         if start != 1 or end != total: header += f"  显示 {start}-{start+len(selected)-1} 行"
         if truncated: header += f"  (已截断至 {_MAX_LINES} 行)"
-        return header + "]\n" + numbered
+        return ToolResult(True, header + "]\n" + numbered)

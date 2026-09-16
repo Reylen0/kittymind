@@ -4,7 +4,7 @@ import time
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 
@@ -26,12 +26,12 @@ class ScreenshotTool(BaseTool):
     )
     param_class = ScreenshotToolParam
 
-    def execute(self, parameters: ScreenshotToolParam) -> str:
+    def execute(self, parameters: ScreenshotToolParam) -> ToolResult:
         try:
             import mss
             import mss.tools
         except ImportError:
-            return "错误: 请先安装 mss 库：uv add mss"
+            return ToolResult(False, "错误: 请先安装 mss 库：uv add mss")
 
         with mss.mss() as sct:
             monitors = sct.monitors
@@ -48,7 +48,7 @@ class ScreenshotTool(BaseTool):
             try:
                 screenshot = sct.grab(region)
             except Exception as e:
-                return f"错误: 截图失败 — {e}"
+                return ToolResult(False, f"错误: 截图失败 — {e}")
 
             png_bytes = mss.tools.to_png(screenshot.rgb, screenshot.size)
 
@@ -59,7 +59,7 @@ class ScreenshotTool(BaseTool):
 
         w, h = screenshot.size
         size_kb = len(png_bytes) / 1024
-        return (
+        return ToolResult(True, (
             f"截图已保存: {save_path}\n"
             f"尺寸: {w}×{h}  文件大小: {size_kb:.0f}KB"
-        )
+        ))

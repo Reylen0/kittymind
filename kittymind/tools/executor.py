@@ -1,24 +1,113 @@
+"""工具执行器 — 守护栏前置 → 权限闸门 → 执行 → 脱敏 → 守护栏后置 → 审计。
+
+单一 ToolExecutor 类涵盖全部场景：
+  - ask_fn=None：纯路径（CLI / 子 Agent），跳过用户审批（gate-2/3），保留硬拒绝（gate-1）
+  - ask_fn 有值：桌面 GUI 路径，完整三道权限闸门
+  - guardrail 有值：启用失败循环/无进展检测
+  - audit 有值：记录每次调用（脱敏后）到 SQLite + JSONL
+"""
+
+import time
+
 import json
 
 from ..config import cfg
+from .audit import ToolAuditLog
+from .guardrails import GuardrailController
+from .permission import check_permission
+from .redaction import redact, redact_args_for_audit
 from .registry import ToolRegistry
 
 
 class ToolExecutor:
-    def __init__(self, registry: ToolRegistry):
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        ask_fn=None,
+        guardrail: GuardrailController | None = None,
+        audit: ToolAuditLog | None = None,
+    ):
         self.registry = registry
+        self._ask_fn = ask_fn
+        self._guardrail = guardrail
+        self._audit = audit
+        self._session_id: str | None = None
+
+    def begin_turn(self, session_id: str | None = None) -> None:
+        """每轮对话开始前调用：记录会话 id（供审计）+ 重置守护栏每轮状态。"""
+        self._session_id = session_id
+        if self._guardrail is not None:
+            self._guardrail.reset_turn()
 
     def execute(self, tool_call: dict) -> dict:
+        t0 = time.monotonic()
+        tool_call_id = tool_call.get("id", "")
+        function = tool_call.get("function", {})
+        name = function.get("name", "")
         try:
-            tool_call_id = tool_call.get("id")
-            function = tool_call.get("function")
-            name = function.get("name")
-            args = json.loads(function.get("arguments") or "{}")
+            args = json.loads(function.get("arguments", "{}") or "{}")
+        except Exception:
+            args = {}
+
+        # ── 1. 守护栏前置：循环/无进展 block ──────────────────
+        if self._guardrail is not None:
+            decision = self._guardrail.before_call(name, args)
+            if decision.is_block:
+                self._record(name, args, "block", decision.message, False, t0)
+                return _tool_result(tool_call_id, decision.message)
+
+        # ── 2. 权限闸门（硬拒绝始终生效；ask_fn=None 跳过用户审批）──
+        reason = check_permission(name, args, self._ask_fn)
+        if reason is not None:
+            self._record(name, args, "denied", reason, False, t0)
+            return _tool_result(tool_call_id, f"Permission denied: {reason}")
+
+        # ── 3. 执行 ──────────────────────────────────────────
+        try:
             tool = self.registry.get(name=name)
-            result = tool.run(args)
-            content = str(result)
+            tool_result = tool.run(args)
+            ok, content = tool_result.ok, str(tool_result.content)
             if len(content) > cfg.BASH_MAX_OUTPUT:
                 content = content[:cfg.BASH_MAX_OUTPUT] + f"\n…[输出过长，已截断至 {cfg.BASH_MAX_OUTPUT} 字符]"
-            return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
         except Exception as e:
-            return {"role": "tool", "tool_call_id": tool_call_id, "content": str(e)}
+            content = str(e)
+            ok = False
+
+        # ── 4. 脱敏（进上下文/守护栏/审计之前统一替换敏感信息）──
+        if cfg.TOOL_REDACT_ENABLED:
+            content = redact(content)
+
+        # ── 5. 守护栏后置：更新计数，warn 则追加指导文字 ──────
+        failed = not ok
+        decision_str, audit_reason = "allow", ""
+        if self._guardrail is not None:
+            decision = self._guardrail.after_call(name, args, content, failed)
+            if decision.action == "warn" and decision.message:
+                content = content + f"\n\n[守护栏警告: {decision.message}]"
+                decision_str, audit_reason = "warn", decision.message
+
+        # ── 6. 审计 ──────────────────────────────────────────
+        self._record(name, args, decision_str, audit_reason, failed, t0)
+        return _tool_result(tool_call_id, content)
+
+    def _record(
+        self, name: str, args: dict, decision: str, reason: str, failed: bool, t0: float
+    ) -> None:
+        if self._audit is None:
+            return
+        try:
+            self._audit.record(
+                session_id=self._session_id,
+                tool=name,
+                args=redact_args_for_audit(args) if cfg.TOOL_REDACT_ENABLED else json.dumps(args, ensure_ascii=False, default=str)[:cfg.TOOL_AUDIT_ARGS_MAX_CHARS],
+                decision=decision,
+                reason=reason,
+                failed=failed,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+            )
+        except Exception:
+            pass
+
+
+def _tool_result(tool_call_id: str, content: str) -> dict:
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": content}

@@ -3,7 +3,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 _SKIP_DIRS = cfg.SKIP_DIRS
@@ -22,13 +22,13 @@ class GlobTool(BaseTool):
     )
     param_class = GlobToolParam
 
-    def execute(self, parameters: GlobToolParam) -> str:
+    def execute(self, parameters: GlobToolParam) -> ToolResult:
         root = os.path.abspath(parameters.path)
-        if not os.path.isdir(root): return f"错误: 目录不存在 — {root}"
+        if not os.path.isdir(root): return ToolResult(False, f"错误: 目录不存在 — {root}")
         try:
             raw = _glob.glob(os.path.join(root, parameters.pattern), recursive=True)
         except Exception as e:
-            return f"错误: glob 搜索失败 — {e}"
+            return ToolResult(False, f"错误: glob 搜索失败 — {e}")
         matches = []
         for m in sorted(raw):
             if not os.path.isfile(m): continue
@@ -36,5 +36,5 @@ class GlobTool(BaseTool):
             if any(p in _SKIP_DIRS for p in rel.split("/")): continue
             matches.append(rel)
         if not matches:
-            return f"未找到匹配 '{parameters.pattern}' 的文件（搜索于 {root}）"
-        return "\n".join(matches) + f"\n\n共 {len(matches)} 个文件"
+            return ToolResult(True, f"未找到匹配 '{parameters.pattern}' 的文件（搜索于 {root}）")
+        return ToolResult(True, "\n".join(matches) + f"\n\n共 {len(matches)} 个文件")

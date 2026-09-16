@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 
 
 class ClipboardToolParam(BaseModel):
@@ -20,29 +20,29 @@ class ClipboardTool(BaseTool):
     )
     param_class = ClipboardToolParam
 
-    def execute(self, parameters: ClipboardToolParam) -> str:
+    def execute(self, parameters: ClipboardToolParam) -> ToolResult:
         try:
             import pyperclip
         except ImportError:
-            return "错误: 请先安装 pyperclip 库：uv add pyperclip"
+            return ToolResult(False, "错误: 请先安装 pyperclip 库：uv add pyperclip")
 
         action = parameters.action.lower().strip()
 
         if action == "read":
             try:
                 text = pyperclip.paste()
-                return text if text else "(剪贴板为空)"
+                return ToolResult(True, text if text else "(剪贴板为空)")
             except Exception as e:
-                return f"错误: 读取剪贴板失败 — {e}"
+                return ToolResult(False, f"错误: 读取剪贴板失败 — {e}")
 
         elif action == "write":
             if not parameters.content:
-                return "错误: write 操作需要提供 content 参数"
+                return ToolResult(False, "错误: write 操作需要提供 content 参数")
             try:
                 pyperclip.copy(parameters.content)
-                return f"已复制到剪贴板（{len(parameters.content)} 个字符）"
+                return ToolResult(True, f"已复制到剪贴板（{len(parameters.content)} 个字符）")
             except Exception as e:
-                return f"错误: 写入剪贴板失败 — {e}"
+                return ToolResult(False, f"错误: 写入剪贴板失败 — {e}")
 
         else:
-            return f"错误: 不支持的操作 '{action}'，可用: read、write"
+            return ToolResult(False, f"错误: 不支持的操作 '{action}'，可用: read、write")

@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...memory.store import MemoryStore
 
 
@@ -48,7 +48,7 @@ class WriteMemoryTool(BaseTool):
     def __init__(self, memory_store: MemoryStore):
         self._store = memory_store
 
-    def execute(self, parameters: WriteMemoryToolParam) -> str:
+    def execute(self, parameters: WriteMemoryToolParam) -> ToolResult:
         path = self._store.write(
             name=parameters.name,
             mem_type=parameters.mem_type,
@@ -56,4 +56,4 @@ class WriteMemoryTool(BaseTool):
             body=parameters.body,
         )
         print(f"[memory] written: {path.name}", flush=True)
-        return f"Memory saved: {parameters.name} ({parameters.mem_type})"
+        return ToolResult(True, f"Memory saved: {parameters.name} ({parameters.mem_type})")

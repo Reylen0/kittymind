@@ -29,7 +29,7 @@ from ...agent.delegation import (
     child_scope,
     current_budget,
 )
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 
 
 class TaskInput(BaseModel):
@@ -100,17 +100,16 @@ class TaskTool(BaseTool):
 
     # ── 执行入口 ──────────────────────────────────────────────────
 
-    def execute(self, parameters: TaskInput) -> str:
+    def execute(self, parameters: TaskInput) -> ToolResult:
         from ...agent.kitty_agent import KittyAgent
-        from ...tools.permission import PermissionToolExecutor
 
         budget = current_budget()
         if not can_delegate(budget):
             b = budget
-            return (
+            return ToolResult(True, (
                 f"委派已达上限（深度 {b.max_depth} / 总数 {b.max_total}），"
                 "请直接完成任务或将子任务拆得更小。"
-            )
+            ))
 
         # 按 allowed_tools 过滤；过滤后为空则回退全量（防止无工具空转）
         if parameters.allowed_tools:
@@ -145,12 +144,8 @@ class TaskTool(BaseTool):
                     tools=child_tools,
                     callbacks=[counter],
                     max_iterations=cfg.SUBAGENT_MAX_ITERATIONS,
+                    ask_fn=self._ask_fn,
                 )
-                if self._ask_fn is not None:
-                    sub_agent.tool_executor = PermissionToolExecutor(
-                        sub_agent.tool_registry,
-                        ask_fn=self._ask_fn,
-                    )
 
                 depth = active.depth
                 t0 = time.monotonic()
@@ -183,7 +178,7 @@ class TaskTool(BaseTool):
                     f"\n\n[子任务完成 · {counter.count} 工具 · "
                     f"~{tokens} tokens · {elapsed:.1f}s]"
                 )
-                return result + footnote
+                return ToolResult(ok, result + footnote)
 
         except DelegationLimit as e:
-            return str(e)
+            return ToolResult(True, str(e))

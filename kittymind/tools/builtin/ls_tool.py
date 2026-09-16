@@ -2,7 +2,7 @@ import os
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 from ...config import cfg
 
 _SKIP_DIRS  = cfg.SKIP_DIRS
@@ -23,17 +23,17 @@ class LsTool(BaseTool):
     )
     param_class = LsToolParam
 
-    def execute(self, parameters: LsToolParam) -> str:
+    def execute(self, parameters: LsToolParam) -> ToolResult:
         root = os.path.abspath(parameters.path)
-        if not os.path.exists(root): return f"错误: 路径不存在 — {root}"
-        if os.path.isfile(root): return f"{root}  ({_fmt(os.path.getsize(root))})"
+        if not os.path.exists(root): return ToolResult(False, f"错误: 路径不存在 — {root}")
+        if os.path.isfile(root): return ToolResult(True, f"{root}  ({_fmt(os.path.getsize(root))})")
         show_hidden = parameters.show_hidden.lower() == "true"
         lines = [root + "/"]
         counter = [0]
         self._walk(root, root, parameters.depth, 0, show_hidden, lines, counter)
         if counter[0] >= _MAX_ENTRIES:
             lines.append(f"  ... (已截断至 {_MAX_ENTRIES} 项)")
-        return "\n".join(lines)
+        return ToolResult(True, "\n".join(lines))
 
     def _walk(self, root, current, max_depth, depth, show_hidden, lines, counter):
         if depth >= max_depth or counter[0] >= _MAX_ENTRIES: return

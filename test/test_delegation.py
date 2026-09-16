@@ -219,10 +219,10 @@ def test_task_tool_returns_footnote():
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()])
         from kittymind.tools.builtin.task_tool import TaskInput
         result = tool.execute(TaskInput(prompt="测试任务"))
-        assert "任务完成" in result
-        assert "子任务完成" in result  # 脚注
-        assert "工具" in result
-        assert "tokens" in result
+        assert "任务完成" in result.content
+        assert "子任务完成" in result.content  # 脚注
+        assert "工具" in result.content
+        assert "tokens" in result.content
     finally:
         reset_root_budget(token)
 
@@ -239,7 +239,7 @@ def test_task_tool_depth_limit_returns_text():
     try:
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()])
         result = tool.execute(TaskInput(prompt="超限任务"))
-        assert "上限" in result
+        assert "上限" in result.content
     finally:
         reset_root_budget(budget_token_inner)
 
@@ -279,10 +279,10 @@ def test_task_tool_allowed_tools_filter():
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[ToolA(), ToolB()])
         # 只允许 tool_a
         result = tool.execute(TaskInput(prompt="过滤测试", allowed_tools=["tool_a"]))
-        assert "任务完成" in result
+        assert "任务完成" in result.content
 
         # 指定不存在的工具 → 回退全量，不崩
         result2 = tool.execute(TaskInput(prompt="回退测试", allowed_tools=["nonexistent"]))
-        assert "任务完成" in result2
+        assert "任务完成" in result2.content
     finally:
         reset_root_budget(token)

@@ -3,7 +3,7 @@ import zoneinfo
 
 from pydantic import BaseModel, Field
 
-from ..base import BaseTool
+from ..base import BaseTool, ToolResult
 
 
 class GetCurrentTimeParam(BaseModel):
@@ -24,12 +24,12 @@ class GetCurrentTimeTool(BaseTool):
 
     WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
-    def execute(self, parameters: GetCurrentTimeParam) -> str:
+    def execute(self, parameters: GetCurrentTimeParam) -> ToolResult:
         if parameters.timezone:
             try:
                 tz = zoneinfo.ZoneInfo(parameters.timezone)
             except zoneinfo.ZoneInfoNotFoundError:
-                return f"未知时区: {parameters.timezone}"
+                return ToolResult(False, f"未知时区: {parameters.timezone}")
             now = datetime.now(tz)
             tz_label = parameters.timezone
         else:
@@ -37,8 +37,8 @@ class GetCurrentTimeTool(BaseTool):
             offset = now.strftime("%z")
             tz_label = f"UTC{offset[:3]}:{offset[3:]}"
 
-        return (
+        return ToolResult(True, (
             f"当前时间: {now.strftime('%Y-%m-%d %H:%M:%S')} "
             f"({self.WEEKDAYS[now.weekday()]})\n"
             f"时区: {tz_label}"
-        )
+        ))
