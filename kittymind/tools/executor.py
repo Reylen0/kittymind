@@ -11,12 +11,21 @@ import time
 
 import json
 
+from dataclasses import dataclass, field
+
 from ..config import cfg
 from .audit import ToolAuditLog
-from .guardrails import GuardrailController
+from .guardrails import GuardrailController, GuardrailTurnState
 from .permission import check_permission
 from .redaction import redact, redact_args_for_audit
 from .registry import ToolRegistry
+
+
+@dataclass
+class TurnContext:
+    """一轮工具调用期间的运行态，随调用显式传递；轮结束即弹，不需要任何隔离机制。"""
+    session_id: str | None = None
+    guardrail_state: GuardrailTurnState = field(default_factory=GuardrailTurnState)
 
 
 class ToolExecutor:
@@ -31,15 +40,8 @@ class ToolExecutor:
         self._ask_fn = ask_fn
         self._guardrail = guardrail
         self._audit = audit
-        self._session_id: str | None = None
 
-    def begin_turn(self, session_id: str | None = None) -> None:
-        """每轮对话开始前调用：记录会话 id（供审计）+ 重置守护栏每轮状态。"""
-        self._session_id = session_id
-        if self._guardrail is not None:
-            self._guardrail.reset_turn()
-
-    def execute(self, tool_call: dict) -> dict:
+    def execute(self, tool_call: dict, ctx: TurnContext) -> dict:
         t0 = time.monotonic()
         tool_call_id = tool_call.get("id", "")
         function = tool_call.get("function", {})
@@ -51,15 +53,15 @@ class ToolExecutor:
 
         # ── 1. 守护栏前置：循环/无进展 block ──────────────────
         if self._guardrail is not None:
-            decision = self._guardrail.before_call(name, args)
+            decision = self._guardrail.before_call(ctx.guardrail_state, name, args)
             if decision.is_block:
-                self._record(name, args, "block", decision.message, False, t0)
+                self._record(ctx.session_id, name, args, "block", decision.message, False, t0)
                 return _tool_result(tool_call_id, decision.message)
 
         # ── 2. 权限闸门（硬拒绝始终生效；ask_fn=None 跳过用户审批）──
         reason = check_permission(name, args, self._ask_fn)
         if reason is not None:
-            self._record(name, args, "denied", reason, False, t0)
+            self._record(ctx.session_id, name, args, "denied", reason, False, t0)
             return _tool_result(tool_call_id, f"Permission denied: {reason}")
 
         # ── 3. 执行 ──────────────────────────────────────────
@@ -81,23 +83,24 @@ class ToolExecutor:
         failed = not ok
         decision_str, audit_reason = "allow", ""
         if self._guardrail is not None:
-            decision = self._guardrail.after_call(name, args, content, failed)
+            decision = self._guardrail.after_call(ctx.guardrail_state, name, args, content, failed)
             if decision.action == "warn" and decision.message:
                 content = content + f"\n\n[守护栏警告: {decision.message}]"
                 decision_str, audit_reason = "warn", decision.message
 
         # ── 6. 审计 ──────────────────────────────────────────
-        self._record(name, args, decision_str, audit_reason, failed, t0)
+        self._record(ctx.session_id, name, args, decision_str, audit_reason, failed, t0)
         return _tool_result(tool_call_id, content)
 
     def _record(
-        self, name: str, args: dict, decision: str, reason: str, failed: bool, t0: float
+        self, session_id: str | None, name: str, args: dict,
+        decision: str, reason: str, failed: bool, t0: float,
     ) -> None:
         if self._audit is None:
             return
         try:
             self._audit.record(
-                session_id=self._session_id,
+                session_id=session_id,
                 tool=name,
                 args=redact_args_for_audit(args) if cfg.TOOL_REDACT_ENABLED else json.dumps(args, ensure_ascii=False, default=str)[:cfg.TOOL_AUDIT_ARGS_MAX_CHARS],
                 decision=decision,

@@ -7,7 +7,7 @@ import pytest
 
 from kittymind.tools.redaction import redact, redact_args_for_audit
 from kittymind.tools.audit import ToolAuditLog
-from kittymind.tools.executor import ToolExecutor
+from kittymind.tools.executor import ToolExecutor, TurnContext
 from kittymind.tools.base import BaseTool, ToolResult
 
 
@@ -136,7 +136,7 @@ def test_executor_redacts_tool_output():
     """工具输出里的密钥进入上下文前被脱敏。"""
     tool = _FakeTool("your key is sk-abcdefghijklmnopqrstuvwxyz0123456789 done")
     executor = ToolExecutor(_FakeRegistry(tool))
-    result = executor.execute(_call())
+    result = executor.execute(_call(), ctx=TurnContext())
     assert "sk-abcdefghij" not in result["content"]
     assert "[REDACTED]" in result["content"]
 
@@ -145,8 +145,8 @@ def test_executor_audit_records_allow():
     tool = _FakeTool("ok")
     audit = _FakeAudit()
     executor = ToolExecutor(_FakeRegistry(tool), audit=audit)
-    executor.begin_turn("sess-1")
-    executor.execute(_call(args={"command": "echo hi"}))
+    ctx = TurnContext(session_id="sess-1")
+    executor.execute(_call(args={"command": "echo hi"}), ctx=ctx)
     assert len(audit.records) == 1
     rec = audit.records[0]
     assert rec["tool"] == "fake"
@@ -162,7 +162,7 @@ def test_executor_audit_records_denied():
     # 用真实 registry 无所谓——bash 硬拒绝在权限层，不到执行
     executor = ToolExecutor(_FakeRegistry(tool), audit=audit)
     call = {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": "rm -rf /"})}}
-    result = executor.execute(call)
+    result = executor.execute(call, ctx=TurnContext())
     assert "Permission denied" in result["content"]
     assert audit.records[-1]["decision"] == "denied"
 
@@ -172,5 +172,19 @@ def test_executor_audit_args_redacted():
     tool = _FakeTool("ok")
     audit = _FakeAudit()
     executor = ToolExecutor(_FakeRegistry(tool), audit=audit)
-    executor.execute(_call(args={"command": "curl -H 'token=supersecretvalue999'"}))
+    executor.execute(_call(args={"command": "curl -H 'token=supersecretvalue999'"}), ctx=TurnContext())
     assert "supersecretvalue" not in audit.records[0]["args"]
+
+
+def test_executor_session_id_passed_explicitly():
+    """session_id 由调用方通过 TurnContext 显式传入，不同 TurnContext 互不影响。"""
+    tool = _FakeTool("ok")
+    audit = _FakeAudit()
+    executor = ToolExecutor(_FakeRegistry(tool), audit=audit)
+
+    executor.execute(_call(), ctx=TurnContext(session_id="session-A"))
+    executor.execute(_call(), ctx=TurnContext(session_id="session-B"))
+
+    assert audit.records[0]["session_id"] == "session-A"
+    assert audit.records[1]["session_id"] == "session-B"
+

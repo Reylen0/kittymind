@@ -35,7 +35,7 @@ from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
 from ..tools.base import BaseTool
 from ..tools.builtin.bash_tool import bash_cwd
-from ..tools.executor import ToolExecutor
+from ..tools.executor import ToolExecutor, TurnContext
 from ..tools.audit import get_tool_audit_log
 from ..tools.guardrails import GuardrailController
 from ..tools.registry import ToolRegistry
@@ -90,6 +90,20 @@ class KittyAgent(Agent):
             MemoryRecall(memory, llm) if memory else None
         )
 
+    # ── 每轮初始化（run/stream_run/async_stream_run 共用）──────────
+
+    def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
+        """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
+        tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
+        compressor = ContextCompressor(self.llm)
+        if session_id and self.session_manager:
+            state = self.session_manager.get_session_state(session_id)
+            if state.get("compressed_once"):
+                compressor._compressed_once = True
+            if state.get("last_prompt_tokens") is not None:
+                tracker._last_prompt_tokens = state["last_prompt_tokens"]
+        return tracker, compressor, TurnContext(session_id=session_id)
+
     # ── 同步 ReAct（子 Agent 使用，纯内存，支持压缩不落库）──────
 
     def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
@@ -99,9 +113,7 @@ class KittyAgent(Agent):
             tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
 
-            tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
-            compressor = ContextCompressor(self.llm)
-            self.tool_executor.begin_turn(session_id)
+            tracker, compressor, ctx = self._new_turn(session_id)
 
             for _ in range(self.max_iterations):
                 messages, tracker, _ = self._maybe_compress(
@@ -128,7 +140,7 @@ class KittyAgent(Agent):
                     for tool_call in response.tool_calls:
                         name = tool_call["function"]["name"]
                         self._emit("on_tool_start", name, tool_call)
-                        result = self.tool_executor.execute(tool_call=tool_call)
+                        result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
                         self._emit("on_tool_end", name, result)
                         messages.append(result)
                 else:
@@ -157,9 +169,7 @@ class KittyAgent(Agent):
             tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
 
-            tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
-            compressor = ContextCompressor(self.llm)
-            self.tool_executor.begin_turn(session_id)
+            tracker, compressor, ctx = self._new_turn(session_id)
 
             for _ in range(self.max_iterations):
                 messages, tracker, _ = self._maybe_compress(
@@ -198,7 +208,7 @@ class KittyAgent(Agent):
                 for tool_call in tool_calls:
                     name = tool_call["function"]["name"]
                     self._emit("on_tool_start", name, tool_call)
-                    result = self.tool_executor.execute(tool_call=tool_call)
+                    result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
                     self._emit("on_tool_end", name, result)
                     messages.append(result)
 
@@ -235,20 +245,11 @@ class KittyAgent(Agent):
             turn_messages: list[dict] = [{"role": "user", "content": input_text}]
             compressed_this_turn = False
 
-            tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
-            compressor = ContextCompressor(self.llm)
+            tracker, compressor, ctx = self._new_turn(session_id)
             cooldown_until = 0.0
             ineffective_count = 0
 
-            if session_id and self.session_manager:
-                state = self.session_manager.get_session_state(session_id)
-                if state.get("compressed_once"):
-                    compressor._compressed_once = True
-                if state.get("last_prompt_tokens") is not None:
-                    tracker._last_prompt_tokens = state["last_prompt_tokens"]
-
             try:
-                self.tool_executor.begin_turn(session_id)
                 for _ in range(self.max_iterations):
                     messages, tracker, did_compress = self._maybe_compress(
                         messages, tracker, compressor, cooldown_until
@@ -312,7 +313,7 @@ class KittyAgent(Agent):
                             "session_id": session_id,
                         })
                         result = await asyncio.to_thread(
-                            self.tool_executor.execute, tool_call=tool_call
+                            self.tool_executor.execute, tool_call=tool_call, ctx=ctx
                         )
                         await self.event_bus.emit(AGENT_TOOL_RESULT, {
                             "name": name,
