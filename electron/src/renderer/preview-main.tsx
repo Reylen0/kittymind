@@ -66,6 +66,12 @@ if (themeParam === 'dark') document.documentElement.dataset.theme = 'dark'
 if (new URLSearchParams(window.location.search).has('tip')) {
   document.documentElement.dataset.forceTip = '1'
 }
+// 预览用：自动打开第一个演示会话（含 mock 消息），如 preview.html?chat
+if (new URLSearchParams(window.location.search).has('chat')) {
+  setTimeout(() => {
+    document.querySelector<HTMLElement>('.session-item')?.click()
+  }, 60)
+}
 
 const w = window as any
 w.kitty = {
