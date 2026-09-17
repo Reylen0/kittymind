@@ -17,7 +17,8 @@ class ToolRegistry:
         try:
             return self._tools[name]
         except KeyError:
-            raise ToolException(f"工具 {name} 不存在")
+            # 查表未命中不是「处理异常时出错」，用 from None 掐断无信息的 KeyError 链
+            raise ToolException(f"工具 {name} 不存在") from None
 
     def get_schemas(self) -> list[dict[str, Any]]:
         return [tool.to_schema() for tool in self._tools.values()]

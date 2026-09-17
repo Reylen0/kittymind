@@ -13,7 +13,6 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from ..config import cfg
 
@@ -48,7 +47,7 @@ class ToolAuditLog:
     def record(
         self,
         *,
-        session_id: Optional[str],
+        session_id: str | None,
         tool: str,
         args: str,
         decision: str,
@@ -88,7 +87,7 @@ class ToolAuditLog:
 
 # ── 进程级单例（所有 Agent / 子 Agent 共享一个连接 + 一份日志） ──
 
-_instance: Optional[ToolAuditLog] = None
+_instance: ToolAuditLog | None = None
 _instance_lock = threading.Lock()
 
 

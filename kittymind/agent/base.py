@@ -1,5 +1,5 @@
 """Agent 基类"""
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from ..core.llm import BaseAgentLLM
 
@@ -12,9 +12,9 @@ class Agent:
         self,
         name: str,
         llm: BaseAgentLLM,
-        system_prompt: Optional[str] = None,
-        description: Optional[str] = None,
-        callbacks: Optional[list["BaseCallBack"]] = None,
+        system_prompt: str | None = None,
+        description: str | None = None,
+        callbacks: list["BaseCallBack"] | None = None,
     ):
         self.name = name
         self.llm = llm

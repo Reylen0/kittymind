@@ -22,14 +22,14 @@ class VerifyToolParam(BaseModel):
         default="", description="type=probe 时的探测目标：HTTP URL（http://...）或 host:port",
     )
     timeout: int = Field(
-        default=cfg.VERIFY_TIMEOUT,
-        description=f"command 超时秒数，默认 {cfg.VERIFY_TIMEOUT}，上限 {cfg.VERIFY_MAX_TIMEOUT}",
+        default_factory=lambda: cfg.VERIFY_TIMEOUT,
+        description="command 超时秒数（默认取 cfg.VERIFY_TIMEOUT，上限 cfg.VERIFY_MAX_TIMEOUT）",
     )
     retries: int = Field(
-        default=cfg.VERIFY_PROBE_RETRIES, description="probe 重试次数",
+        default_factory=lambda: cfg.VERIFY_PROBE_RETRIES, description="probe 重试次数",
     )
     interval: float = Field(
-        default=cfg.VERIFY_PROBE_INTERVAL, description="probe 重试间隔秒数",
+        default_factory=lambda: cfg.VERIFY_PROBE_INTERVAL, description="probe 重试间隔秒数",
     )
 
 

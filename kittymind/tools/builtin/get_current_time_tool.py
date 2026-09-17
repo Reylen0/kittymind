@@ -1,5 +1,6 @@
-from datetime import datetime
 import zoneinfo
+from datetime import datetime
+from typing import ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +23,7 @@ class GetCurrentTimeTool(BaseTool):
     )
     param_class = GetCurrentTimeParam
 
-    WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    WEEKDAYS: ClassVar[list[str]] = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
     def execute(self, parameters: GetCurrentTimeParam) -> ToolResult:
         if parameters.timezone:

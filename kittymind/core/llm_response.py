@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -14,11 +13,11 @@ class StreamEvent:
     type: str
     delta: str = ''
     tool_calls: list = field(default_factory=list)
-    usage: Optional[dict] = None
+    usage: dict | None = None
 
 
 class LLMResponse:
-    def __init__(self, content: Optional[str] = None, tool_calls: Optional[list[dict]] = None):
+    def __init__(self, content: str | None = None, tool_calls: list[dict] | None = None):
         self.content = content
         self.tool_calls = tool_calls or []
 

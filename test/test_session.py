@@ -264,8 +264,7 @@ def test_store_archive_and_compact_marks_mid(store):
         new_active_msgs=[{"role": "user", "content": "new msg"}],     # 本轮新消息
     )
 
-    header, active = store.read("s1")
-    active_roles = [(r["role"], r["content"]) for r in active]
+    _header, active = store.read("s1")
 
     # active 视图：seq 0(user), 1.5(summary), 4(user), 5(user), 6(new msg)
     assert any(r["content"] == "summary of 1-3" for r in active)

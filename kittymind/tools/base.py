@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -29,7 +29,7 @@ class BaseTool(ABC):
     def execute(self, parameters: BaseModel) -> ToolResult:
         pass
 
-    def to_schema(self) -> Dict[str, Any]:
+    def to_schema(self) -> dict[str, Any]:
         schema = self.param_class.model_json_schema()
         schema.pop("title", None)
         return {

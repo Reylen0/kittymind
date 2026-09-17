@@ -19,7 +19,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
+from collections.abc import Mapping
 
 from ..config import cfg
 
@@ -78,7 +79,7 @@ class ToolCallSignature:
     args_hash: str
 
     @classmethod
-    def from_call(cls, tool_name: str, args: Mapping[str, Any]) -> "ToolCallSignature":
+    def from_call(cls, tool_name: str, args: Mapping[str, Any]) -> ToolCallSignature:
         return cls(tool_name=tool_name, args_hash=_sha256(_canonical_json(args or {})))
 
 
@@ -181,8 +182,7 @@ class GuardrailController:
 
         if failed:
             return self._handle_failure(state, sig, name)
-        else:
-            return self._handle_success(state, sig, name, result_hash)
+        return self._handle_success(state, sig, name, result_hash)
 
     # ── 内部 ────────────────────────────────────────────────
 

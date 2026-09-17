@@ -3,7 +3,6 @@
 import json
 import sqlite3
 
-import pytest
 
 from kittymind.tools.redaction import redact, redact_args_for_audit
 from kittymind.tools.audit import ToolAuditLog

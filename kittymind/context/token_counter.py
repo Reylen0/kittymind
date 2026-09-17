@@ -1,6 +1,5 @@
 """Token 计量：字符估算 + 真实 usage 校准。"""
 
-import json
 import re
 
 # CJK Unicode 范围：CJK 统一汉字 + 扩展 A/B + 兼容

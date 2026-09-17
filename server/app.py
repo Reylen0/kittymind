@@ -11,6 +11,8 @@ Electron 通过监听 stdout 中的 "[ready] ws://..." 行确认 server 就绪�
 """
 
 import asyncio
+import contextlib
+import logging
 import os
 import sys
 from pathlib import Path
@@ -32,6 +34,7 @@ from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.memory.store import MemoryStore
+from kittymind.logging_setup import setup_logging
 from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
 
@@ -54,6 +57,8 @@ from kittymind.workspace.manager import WorkspaceManager
 from kittymind.agent import KittyAgent
 from kittymind.prompts import build_system_prompt
 from server.ws_server import start_server
+
+logger = logging.getLogger(__name__)
 
 
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
@@ -97,7 +102,8 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         memory=memory_store,
         ask_fn=bridge.ask,
     )
-    # 辅助模型启动自检：配了 LLM_AUX_MODEL_ID 却没生效（凭据缺失等）时能一眼看出
+    # 启动横幅，刻意留在 stdout（与 [ready] 同类）：配了 LLM_AUX_MODEL_ID 却没生效
+    # （凭据缺失等）时要能一眼看出。业务日志走 logging → stderr。
     print(
         "[aux] 压缩摘要 / 记忆任务使用: "
         + (agent.aux_llm.model if agent.aux_llm else "未配置（回退主模型）"),
@@ -107,6 +113,7 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
 
 
 async def main() -> None:
+    setup_logging()  # 诊断日志走 stderr；stdout 只留 [ready] / [aux] 两行启动横幅
     host = os.getenv("WS_HOST", cfg.WS_HOST)
     base_port = int(os.getenv("WS_PORT", cfg.WS_PORT))
     bridge = PermissionBridge()
@@ -119,17 +126,15 @@ async def main() -> None:
             return
         except OSError as e:
             if e.errno in (10048, 98):
-                print(f"[warn] port {port} in use, trying {port + 1}", flush=True)
+                logger.warning("端口 %d 被占用，尝试 %d", port, port + 1)
                 port += 1
             else:
                 raise
 
-    print(f"[error] no available port in range {base_port}-{port - 1}", flush=True)
+    logger.error("端口 %d-%d 全部不可用，退出", base_port, port - 1)
     sys.exit(1)
 
 
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass

@@ -2,9 +2,8 @@
 
 import asyncio
 import json
-import pytest
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 from server.rpc_handler import RpcHandler
 
 

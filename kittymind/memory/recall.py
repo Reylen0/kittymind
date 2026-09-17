@@ -12,10 +12,19 @@ from ..prompts import MEMORY_RECALL_SECTION_HEADER, build_memory_recall_select_p
 
 
 class MemoryRecall:
-    """按需召回相关记忆，注入 system prompt 末尾。"""
+    """按需召回相关记忆，注入 system prompt 末尾。
 
-    MAX_RELEVANT   = cfg.MEMORY_RECALL_MAX_RELEVANT
-    MAX_BODY_CHARS = cfg.MEMORY_RECALL_MAX_BODY_CHARS
+    MAX_RELEVANT / MAX_BODY_CHARS 走 property 而非类属性：类属性在 import 期求值，
+    会把 cfg 的值钉死——设置面板保存后调 cfg.reload() 也改不动。
+    """
+
+    @property
+    def MAX_RELEVANT(self) -> int:
+        return cfg.MEMORY_RECALL_MAX_RELEVANT
+
+    @property
+    def MAX_BODY_CHARS(self) -> int:
+        return cfg.MEMORY_RECALL_MAX_BODY_CHARS
 
     def __init__(self, memory_store, llm):
         self._store = memory_store

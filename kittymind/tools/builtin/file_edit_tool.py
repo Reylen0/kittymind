@@ -3,10 +3,9 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._fmt import human_size
 from ._paths import resolve_path
 from ...config import cfg
-
-_MAX_FILE_SIZE = cfg.FILE_EDIT_MAX_SIZE
 
 
 class FileEditToolParam(BaseModel):
@@ -28,16 +27,17 @@ class FileEditTool(BaseTool):
     def execute(self, parameters: FileEditToolParam) -> ToolResult:
         path = resolve_path(parameters.path)
         if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
-        if os.path.getsize(path) > _MAX_FILE_SIZE: return ToolResult(False, "错误: 文件超过 2MB，请使用 file_write 整体替换")
+        if os.path.getsize(path) > cfg.FILE_EDIT_MAX_SIZE:
+            return ToolResult(False, f"错误: 文件超过 {human_size(cfg.FILE_EDIT_MAX_SIZE)}，请使用 file_write 整体替换")
         try:
-            with open(path, "r", encoding=parameters.encoding, errors="replace") as f:
+            with open(path, encoding=parameters.encoding, errors="replace") as f:
                 content = f.read()
         except Exception as e:
             return ToolResult(False, f"错误: 读取失败 — {e}")
         count = content.count(parameters.old_string)
         if count == 0:
             return ToolResult(False, f"错误: 未找到 old_string（文件 {os.path.basename(path)}）\n"
-                    f"  首行: {repr(parameters.old_string.split(chr(10))[0][:60])}")
+                    f"  首行: {parameters.old_string.split(chr(10))[0][:60]!r}")
         if count > 1:
             return ToolResult(False, f"错误: old_string 在文件中出现了 {count} 次，请添加更多上下文使其唯一")
         new_content = content.replace(parameters.old_string, parameters.new_string, 1)

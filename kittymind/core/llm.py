@@ -1,7 +1,7 @@
 """BaseAgent统一LLM接口"""
 
 import os
-from typing import Optional, Iterator
+from collections.abc import Iterator
 
 from .llm_adapters import create_adapter
 from .llm_response import LLMResponse, StreamEvent
@@ -14,19 +14,20 @@ class BaseAgentLLM:
 
     def __init__(
         self,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        temperature: float = cfg.LLM_TEMPERATURE,
-        max_tokens: Optional[int] = None,
-        timeout: Optional[int] = None,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        timeout: int | None = None,
         **kwargs
     ):
         self.model = model or os.getenv("LLM_MODEL_ID")
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.base_url = base_url or os.getenv("LLM_BASE_URL")
         self.timeout = timeout or int(os.getenv("LLM_TIMEOUT", "60"))
-        self.temperature = temperature
+        # 默认值在调用时求值；用 is None 判空以保留显式传入的 0.0
+        self.temperature = cfg.LLM_TEMPERATURE if temperature is None else temperature
         self.max_tokens = max_tokens
         self.kwargs = kwargs
 
@@ -51,7 +52,7 @@ class BaseAgentLLM:
         try:
             return self._client.invoke(messages=messages, **call_kwargs)
         except Exception as e:
-            raise LLMException(f"LLM调用失败: {e}")
+            raise LLMException(f"LLM调用失败: {e}") from e
 
     def stream_with_tools(
         self,
@@ -63,7 +64,7 @@ class BaseAgentLLM:
         try:
             yield from self._client.stream_with_tools(messages=messages, tools=tools, **call_kwargs)
         except Exception as e:
-            raise LLMException(f"LLM流式调用失败: {e}")
+            raise LLMException(f"LLM流式调用失败: {e}") from e
 
     async def async_stream_with_tools(
         self,
@@ -78,7 +79,7 @@ class BaseAgentLLM:
             ):
                 yield event
         except Exception as e:
-            raise LLMException(f"LLM流式调用失败: {e}")
+            raise LLMException(f"LLM流式调用失败: {e}") from e
 
 
 # ── 辅助小模型 ────────────────────────────────────────────────────
@@ -88,7 +89,7 @@ class BaseAgentLLM:
 _AUX_CACHE: dict[tuple, "BaseAgentLLM"] = {}
 
 
-def get_aux_llm() -> Optional[BaseAgentLLM]:
+def get_aux_llm() -> BaseAgentLLM | None:
     """返回辅助小模型客户端；未配置或构造失败时返回 None（调用方回退主模型）。
 
     模型名解析优先级：环境变量 LLM_AUX_MODEL_ID > settings.json 的

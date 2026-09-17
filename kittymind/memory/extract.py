@@ -11,13 +11,13 @@
 """
 
 import json
+import logging
 
 from .store import MEMORY_TYPES
 from ..config import cfg
 from ..prompts import build_memory_extract_prompt, build_memory_consolidate_prompt
 
-_CONSOLIDATE_THRESHOLD = cfg.MEMORY_CONSOLIDATE_THRESHOLD
-_MAX_HISTORY_CHARS     = cfg.MEMORY_MAX_HISTORY_CHARS
+logger = logging.getLogger(__name__)
 
 
 def extract_memories(messages: list[dict], llm, memory_store) -> bool:
@@ -46,12 +46,12 @@ def extract_memories(messages: list[dict], llm, memory_store) -> bool:
                 description=candidate["description"],
                 body=candidate["body"],
             )
-            print(f"[memory] extracted: {candidate['name']}", flush=True)
+            logger.info("提取记忆: %s", candidate["name"])
             wrote_any = True
         except Exception as e:
-            print(f"[memory] write failed: {e}", flush=True)
+            logger.warning("记忆写入失败: %s", e)
 
-    if wrote_any and memory_store.count() >= _CONSOLIDATE_THRESHOLD:
+    if wrote_any and memory_store.count() >= cfg.MEMORY_CONSOLIDATE_THRESHOLD:
         _consolidate(llm, memory_store)
 
     return wrote_any
@@ -94,10 +94,10 @@ def _consolidate(llm, memory_store) -> None:
                 record["description"], record["body"],
             )
             wrote += 1
-        print(f"[memory] consolidated: {len(memories)} → {wrote} records", flush=True)
+        logger.info("记忆整合: %d → %d 条", len(memories), wrote)
 
     except Exception as e:
-        print(f"[memory] consolidation failed, restoring: {e}", flush=True)
+        logger.warning("记忆整合失败，已回滚到快照: %s", e)
         if snap:
             memory_store.restore(snap)
 
@@ -141,4 +141,4 @@ def _format_conversation(messages: list[dict]) -> str:
             lines.append(f"Agent：{content[:500]}")
         elif role == "tool":
             lines.append(f"工具结果：{content[:200]}")
-    return "\n".join(lines)[:_MAX_HISTORY_CHARS]
+    return "\n".join(lines)[:cfg.MEMORY_MAX_HISTORY_CHARS]

@@ -7,10 +7,9 @@
   - audit 有值：记录每次调用（脱敏后）到 SQLite + JSONL
 """
 
-import time
-
+import contextlib
 import json
-
+import time
 from dataclasses import dataclass, field
 
 from ..config import cfg
@@ -98,18 +97,22 @@ class ToolExecutor:
     ) -> None:
         if self._audit is None:
             return
-        try:
+        # 审计失败不能影响工具本身的返回；求值与写入一起纳入抑制范围
+        with contextlib.suppress(Exception):
+            args_blob = (
+                redact_args_for_audit(args)
+                if cfg.TOOL_REDACT_ENABLED
+                else json.dumps(args, ensure_ascii=False, default=str)[:cfg.TOOL_AUDIT_ARGS_MAX_CHARS]
+            )
             self._audit.record(
                 session_id=session_id,
                 tool=name,
-                args=redact_args_for_audit(args) if cfg.TOOL_REDACT_ENABLED else json.dumps(args, ensure_ascii=False, default=str)[:cfg.TOOL_AUDIT_ARGS_MAX_CHARS],
+                args=args_blob,
                 decision=decision,
                 reason=reason,
                 failed=failed,
                 duration_ms=int((time.monotonic() - t0) * 1000),
             )
-        except Exception:
-            pass
 
 
 def _tool_result(tool_call_id: str, content: str) -> dict:

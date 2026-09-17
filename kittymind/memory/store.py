@@ -9,7 +9,6 @@
     ...
 """
 
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -88,7 +87,7 @@ class MemoryStore:
         if self._index.is_file():
             try:
                 lines = self._index.read_text(encoding="utf-8").splitlines()
-                entries = [l[2:] for l in lines if l.startswith("- [")]
+                entries = [ln[2:] for ln in lines if ln.startswith("- [")]
                 if entries:
                     return "\n".join(f"{i}. {e}" for i, e in enumerate(entries))
             except Exception:

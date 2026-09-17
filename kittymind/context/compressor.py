@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 from ..config import cfg
@@ -35,14 +34,14 @@ _FALLBACK_PLACEHOLDER = "[历史过长已截断，中间段已丢弃以保证对
 class ContextCompressor:
     """单会话上下文压缩器（内存态，无持久化）。"""
 
-    def __init__(self, llm: "BaseAgentLLM"):
+    def __init__(self, llm: BaseAgentLLM):
         self._llm = llm
         self._compressed_once = False  # 首次压缩后 protect_first_n 衰减
 
     def compress(
         self,
         messages: list[dict],
-        tracker: "TokenTracker",
+        tracker: TokenTracker,
     ) -> list[dict]:
         """压缩 messages，返回新列表。失败则返回原列表（含降级逻辑）。"""
         if len(messages) < 4:
@@ -97,7 +96,7 @@ class ContextCompressor:
         return start + protect_first_n
 
     def _find_tail_start(
-        self, messages: list[dict], head_end: int, tracker: "TokenTracker"
+        self, messages: list[dict], head_end: int, tracker: TokenTracker
     ) -> int:
         """从末尾按 token 预算确定 tail_start，floor 为 COMPRESS_TAIL_MIN_MSGS。"""
         target_tokens = int(tracker.effective_window * cfg.COMPRESS_TARGET_RATIO)

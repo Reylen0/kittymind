@@ -60,6 +60,7 @@ class CommandVerifier(Verifier):
                 text=True, timeout=self._timeout,
                 encoding=_SYS_ENCODING, errors="replace",
                 cwd=str(workdir),
+                check=False,  # 非零退出码是验证结果本身，由 VerifyResult 表达
             )
         except subprocess.TimeoutExpired:
             return VerifyResult(False, f"验证超时（{self._timeout}s）：{self._command}")

@@ -3,11 +3,9 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._fmt import human_size
 from ._paths import resolve_path
 from ...config import cfg
-
-_MAX_LINES = cfg.FILE_READ_MAX_LINES
-_MAX_BYTES = cfg.FILE_READ_MAX_BYTES
 
 
 class FileReadToolParam(BaseModel):
@@ -21,7 +19,7 @@ class FileReadTool(BaseTool):
     name: str = "file_read"
     description: str = (
         "读取文件内容并显示行号，支持指定行范围。"
-        "单次最多返回 2000 行；大文件请用 start_line/end_line 分段读取。"
+        "单次返回行数有上限；大文件请用 start_line/end_line 分段读取。"
     )
     param_class = FileReadToolParam
 
@@ -30,10 +28,14 @@ class FileReadTool(BaseTool):
         if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
         if not os.path.isfile(path): return ToolResult(False, f"错误: 路径不是文件 — {path}")
         size = os.path.getsize(path)
-        if size > _MAX_BYTES:
-            return ToolResult(False, f"错误: 文件过大 ({size/1024:.0f}KB > 800KB)，请用 start_line/end_line 分段读取")
+        if size > cfg.FILE_READ_MAX_BYTES:
+            return ToolResult(
+                False,
+                f"错误: 文件过大 ({human_size(size)} > "
+                f"{human_size(cfg.FILE_READ_MAX_BYTES)})，请用 start_line/end_line 分段读取",
+            )
         try:
-            with open(path, "r", encoding=parameters.encoding, errors="replace") as f:
+            with open(path, encoding=parameters.encoding, errors="replace") as f:
                 all_lines = f.readlines()
         except Exception as e:
             return ToolResult(False, f"错误: 读取失败 — {e}")
@@ -42,11 +44,12 @@ class FileReadTool(BaseTool):
         end = total if parameters.end_line <= 0 else min(parameters.end_line, total)
         if start > total: return ToolResult(False, f"错误: start_line={start} 超出文件总行数 {total}")
         selected = all_lines[start - 1: end]
-        truncated = len(selected) > _MAX_LINES
-        if truncated: selected = selected[:_MAX_LINES]
+        max_lines = cfg.FILE_READ_MAX_LINES
+        truncated = len(selected) > max_lines
+        if truncated: selected = selected[:max_lines]
         width = len(str(end))
         numbered = "".join(f"{start+i:{width}d}  {line}" for i, line in enumerate(selected))
         header = f"[{path}  {total} 行  {size} 字节"
         if start != 1 or end != total: header += f"  显示 {start}-{start+len(selected)-1} 行"
-        if truncated: header += f"  (已截断至 {_MAX_LINES} 行)"
+        if truncated: header += f"  (已截断至 {max_lines} 行)"
         return ToolResult(True, header + "]\n" + numbered)

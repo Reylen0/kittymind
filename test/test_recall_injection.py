@@ -7,7 +7,6 @@
   3. 适配层 —— Anthropic 合并多条 system 消息（旧行为只取第一条、其余静默丢弃）
 """
 
-import pytest
 
 from unittest.mock import MagicMock
 

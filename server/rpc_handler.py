@@ -5,6 +5,7 @@ turn/run 产生的 agent 事件通过 EventBus 订阅后实时 push 给客户端
 """
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -23,8 +24,10 @@ class RpcHandler:
         self.ws = ws
         self._tasks: dict[str, asyncio.Task] = {}
         self._bridge = bridge
+        # 本连接的审批通道 id：bridge 是进程级单例，靠它区分多连接
+        self.conn_id: str | None = None
         if bridge is not None and loop is not None:
-            bridge.set_connection(loop, self._push)
+            self.conn_id = bridge.set_connection(loop, self._push)
 
     # ──────────────────────────────────────────────────────────────
     # 消息收发
@@ -65,10 +68,9 @@ class RpcHandler:
         self._tasks.clear()
 
     async def _send(self, data: dict) -> None:
-        try:
+        # 连接已关闭时 send 会抛异常，静默忽略
+        with contextlib.suppress(Exception):
             await self.ws.send(json.dumps(data, ensure_ascii=False))
-        except Exception:
-            pass  # 连接已关闭
 
     async def _result(self, req_id: Any, result: Any) -> None:
         await self._send({"id": req_id, "result": result})
@@ -154,6 +156,14 @@ class RpcHandler:
         workspace_id = params.get("workspace_id")
 
         async def _run() -> None:
+            # 标记本 turn 归属的连接：工具经 asyncio.to_thread 执行，
+            # context 会复制进 worker 线程，PermissionBridge.ask() 据此找到
+            # 正确的推送目标（多连接并存时不会互相劫持审批）。
+            conn_token = (
+                self._bridge.bind(self.conn_id)
+                if self._bridge is not None and self.conn_id is not None
+                else None
+            )
             try:
                 async for _ in self.agent.async_stream_run(
                     session_id, text, workspace_id=workspace_id
@@ -166,6 +176,8 @@ class RpcHandler:
             except Exception:
                 pass  # agent.error 已由 KittyAgent 通过 EventBus 推送
             finally:
+                if conn_token is not None:
+                    self._bridge.unbind(conn_token)
                 bus.unsubscribe(AGENT_CHUNK,         fwd_chunk)
                 bus.unsubscribe(AGENT_THINKING,      fwd_thinking)
                 bus.unsubscribe(AGENT_TOOL_CALL,     fwd_tool_call)
@@ -282,6 +294,9 @@ class RpcHandler:
     async def _permission_response(self, req_id: Any, params: dict) -> None:
         request_id = params.get("request_id", "")
         approved = bool(params.get("approved", False))
+        hit = False
         if self._bridge is not None:
-            self._bridge.respond(request_id, approved)
-        await self._result(req_id, {"ok": True})
+            # 显式带 conn_id：审批只在本连接的挂起请求里查找，
+            # 避免两个连接同时弹窗时 request_id 撞车或跨连接误批
+            hit = self._bridge.respond(request_id, approved, conn_id=self.conn_id)
+        await self._result(req_id, {"ok": True, "matched": hit})

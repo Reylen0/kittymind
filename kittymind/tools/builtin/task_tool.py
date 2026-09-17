@@ -11,9 +11,9 @@
 """
 
 import asyncio
+import contextlib
 import time
 from asyncio import AbstractEventLoop
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,7 +34,7 @@ from ..base import BaseTool, ToolResult
 
 class TaskInput(BaseModel):
     prompt: str = Field(description="交给子 Agent 的任务描述，需完整说明目标和上下文")
-    allowed_tools: Optional[list[str]] = Field(
+    allowed_tools: list[str] | None = Field(
         default=None,
         description="（可选）限制子 Agent 可用的工具名称列表；不填则使用全部工具。",
     )
@@ -76,7 +76,7 @@ class TaskTool(BaseTool):
         sub_tools: list[BaseTool],
         ask_fn=None,
         event_bus=None,
-        loop: Optional[AbstractEventLoop] = None,
+        loop: AbstractEventLoop | None = None,
     ):
         self._llm = llm
         self._sub_tools = sub_tools
@@ -91,12 +91,11 @@ class TaskTool(BaseTool):
         if not self._loop or not self._event_bus:
             return
         data.setdefault("session_id", _root_session_id.get())
-        try:
+        # loop 已关闭时 run_coroutine_threadsafe 抛 RuntimeError，按降级处理
+        with contextlib.suppress(RuntimeError):
             asyncio.run_coroutine_threadsafe(
                 self._event_bus.emit(event, data), self._loop
             )
-        except RuntimeError:
-            pass  # loop 已关闭
 
     # ── 执行入口 ──────────────────────────────────────────────────
 

@@ -3,10 +3,9 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._fmt import human_size
 from ._paths import resolve_path
 from ...config import cfg
-
-_MAX_WRITE_BYTES = cfg.FILE_WRITE_MAX_BYTES
 
 
 class FileWriteToolParam(BaseModel):
@@ -25,8 +24,9 @@ class FileWriteTool(BaseTool):
 
     def execute(self, parameters: FileWriteToolParam) -> ToolResult:
         path = resolve_path(parameters.path)
-        if len(parameters.content.encode(parameters.encoding, errors="replace")) > _MAX_WRITE_BYTES:
-            return ToolResult(False, "错误: 内容超过 1MB 限制，拒绝写入")
+        max_bytes = cfg.FILE_WRITE_MAX_BYTES
+        if len(parameters.content.encode(parameters.encoding, errors="replace")) > max_bytes:
+            return ToolResult(False, f"错误: 内容超过 {human_size(max_bytes)} 限制，拒绝写入")
         try:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         except Exception as e:

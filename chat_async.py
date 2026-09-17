@@ -13,6 +13,7 @@ load_dotenv()
 
 from kittymind.session import SessionManager
 from kittymind.core import BaseAgentLLM
+from kittymind.logging_setup import setup_logging
 from kittymind.events import EventBus, AGENT_THINKING, AGENT_TOOL_CALL, AGENT_TOOL_RESULT, AGENT_DONE
 from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
@@ -39,6 +40,7 @@ def pick_session(mgr: SessionManager) -> str:
 
 
 async def main():
+    setup_logging()  # 诊断日志走 stderr；对话输出与提示符继续走 stdout
     mgr = SessionManager()
     session_id = pick_session(mgr)
 
@@ -65,8 +67,8 @@ async def main():
         name="kitty",
         llm=llm,
         tools=[
-            GetCurrentTimeTool(), 
-            ClipboardTool(), 
+            GetCurrentTimeTool(),
+            ClipboardTool(),
             ScreenshotTool(),
             FileReadTool(),
             FileWriteTool(),

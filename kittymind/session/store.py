@@ -25,6 +25,7 @@ compacted=1 → 已被压缩掉的原始行（审计用，模型不可见）。
      会顺着 messages 的 ON DELETE CASCADE 把该会话的全部消息删掉。
 """
 
+import contextlib
 import json
 import sqlite3
 import threading
@@ -84,10 +85,8 @@ class SqliteSessionStore:
             # 每次打开连接都打开。写进 _DDL 只在首次建库生效，旧库会以"外键关闭"
             # 运行（级联删除失效、留下孤儿行）。
             self._conn.execute("PRAGMA foreign_keys = ON")
-            try:
+            with contextlib.suppress(Exception):
                 self._conn.execute("PRAGMA journal_mode=WAL")
-            except Exception:
-                pass
             ver = self._conn.execute("PRAGMA user_version").fetchone()[0]
             if ver == 0:
                 self._conn.executescript(_DDL)
@@ -108,12 +107,10 @@ class SqliteSessionStore:
         # v4 → v5：压缩摘要标记列
         self._ensure_column("messages", "is_summary", "INTEGER NOT NULL DEFAULT 0")
         # 外键开启前遗落的孤儿行（旧版本级联失效时留下的），清掉以免越积越多
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(
                 "DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)"
             )
-        except Exception:
-            pass
 
     def _columns(self, table: str) -> set:
         try:
@@ -125,18 +122,15 @@ class SqliteSessionStore:
     def _ensure_column(self, table: str, col: str, decl: str) -> None:
         if col in self._columns(table):
             return
-        try:
+        with contextlib.suppress(Exception):
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-        except Exception:
-            pass
 
     def _drop_column_if_exists(self, table: str, col: str) -> None:
         if col not in self._columns(table):
             return
-        try:
+        # SQLite < 3.35 不支持 DROP COLUMN，留着无害
+        with contextlib.suppress(Exception):
             self._conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
-        except Exception:
-            pass  # SQLite < 3.35 不支持 DROP COLUMN，留着无害
 
     # ── 内部辅助 ──────────────────────────────────────────────────
 

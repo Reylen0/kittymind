@@ -1,11 +1,14 @@
 """write_memory 工具 —— 让 Agent 主动写入一条持久化记忆。"""
 
+import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
 from ...memory.store import MemoryStore
+
+logger = logging.getLogger(__name__)
 
 
 class WriteMemoryToolParam(BaseModel):
@@ -55,5 +58,5 @@ class WriteMemoryTool(BaseTool):
             description=parameters.description,
             body=parameters.body,
         )
-        print(f"[memory] written: {path.name}", flush=True)
+        logger.info("写入记忆: %s", path.name)
         return ToolResult(True, f"Memory saved: {parameters.name} ({parameters.mem_type})")

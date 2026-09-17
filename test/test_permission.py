@@ -12,6 +12,9 @@ import pytest
 from kittymind.tools.builtin.bash_tool import bash_cwd
 from kittymind.tools.builtin.clipboard_tool import ClipboardTool
 from kittymind.tools.builtin.git_tool import GitTool
+from kittymind.tools.builtin.glob_tool import GlobTool
+from kittymind.tools.builtin.grep_tool import GrepTool
+from kittymind.tools.builtin.ls_tool import LsTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.tools.executor import ToolExecutor, TurnContext
 from kittymind.tools.permission import (
@@ -237,6 +240,51 @@ def test_executor_blocks_verify_when_denied():
     out = _run_tool(VerifyTool(), {"type": "command", "command": "echo hi"}, deny)
     assert "Permission denied" in out["content"]
     assert "任意命令" in deny.last_reason
+
+
+# ── 读类搜索工具：与 file_read 同级，越界即审批（P1-3 回归） ─────
+
+@pytest.mark.parametrize("tool", ["glob", "grep", "ls"])
+def test_search_tools_outside_ask(workdir, ask, tool):
+    """glob/grep/ls 都能指定 path，曾零规则 → 一条无审批的跨工作区读取通道。"""
+    outside = str(workdir.parent)
+    assert check_permission(tool, {"pattern": "*", "path": outside}, ask) is None
+    assert ask.asked, f"{tool} 越界未触发审批"
+    assert "工作目录之外" in ask.last_reason
+
+
+@pytest.mark.parametrize("tool", ["glob", "grep", "ls"])
+def test_search_tools_inside_not_asked(workdir, ask, tool):
+    assert check_permission(tool, {"pattern": "*", "path": "."}, ask) is None
+    assert not ask.asked
+
+
+@pytest.mark.parametrize("tool", ["glob", "grep", "ls"])
+def test_search_tools_default_path_not_asked(workdir, ask, tool):
+    """未传 path 时默认 '.'，属于工作区内，不应误触发审批。"""
+    assert check_permission(tool, {"pattern": "*"}, ask) is None
+    assert not ask.asked
+
+
+def test_search_tool_absolute_inside_not_asked(workdir, ask):
+    assert check_permission("glob", {"pattern": "*.py", "path": str(workdir)}, ask) is None
+    assert not ask.asked
+
+
+def test_search_tool_outside_denied(workdir):
+    deny = Recorder(allow=False)
+    outside = str(workdir.parent / "secret")
+    result = check_permission("grep", {"pattern": "password", "path": outside}, deny)
+    assert result == "用户拒绝执行"
+
+
+@pytest.mark.parametrize("tool_cls", [GlobTool, GrepTool, LsTool])
+def test_executor_blocks_search_tool_outside_when_denied(workdir, tool_cls):
+    """经执行器跑完整闸门，确认规则真的接在调用链上。"""
+    deny = Recorder(allow=False)
+    out = _run_tool(tool_cls(), {"path": str(workdir.parent)}, deny)
+    assert "Permission denied" in out["content"]
+    assert "工作目录之外" in deny.last_reason
 
 
 # ── _has_flag 精度 ───────────────────────────────────────────────

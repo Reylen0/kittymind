@@ -29,8 +29,8 @@ _DANGEROUS_RE = re.compile("|".join(_DANGEROUS_PATTERNS), re.IGNORECASE)
 class BashToolParam(BaseModel):
     command: str = Field(description="要执行的 shell 命令")
     timeout: int = Field(
-        default=cfg.BASH_TIMEOUT,
-        description=f"超时秒数，默认 {cfg.BASH_TIMEOUT}，上限 {cfg.BASH_MAX_TIMEOUT}",
+        default_factory=lambda: cfg.BASH_TIMEOUT,
+        description="超时秒数（默认取 cfg.BASH_TIMEOUT，上限 cfg.BASH_MAX_TIMEOUT）",
     )
 
 
@@ -64,6 +64,7 @@ class BashTool(BaseTool):
                 text=True, timeout=timeout,
                 encoding=_SYS_ENCODING, errors="replace",
                 cwd=cwd,
+                check=False,  # 非零退出码是正常结果，由 ToolResult 表达
             )
         except subprocess.TimeoutExpired:
             return ToolResult(False, f"错误: 命令执行超时 ({timeout}s)")

@@ -8,17 +8,19 @@ from ..base import BaseTool, ToolResult
 from ._paths import resolve_path
 from ...config import cfg
 
+# SKIP_DIRS / BINARY_EXTS 不在 _OVERRIDABLE 里，是常量而非可覆盖配置，故模块级捕获无害。
 _SKIP_DIRS     = cfg.SKIP_DIRS
 _BINARY_EXTS   = cfg.BINARY_EXTS
-_MAX_RESULTS   = cfg.GREP_MAX_RESULTS
-_MAX_FILE_SIZE = cfg.GREP_MAX_FILE_SIZE
 
 
 class GrepToolParam(BaseModel):
     pattern: str = Field(description="搜索的正则表达式或普通字符串")
     path: str = Field(default=".", description="搜索目录或单个文件路径，默认当前工作目录")
     file_pattern: str = Field(default="*", description="文件名过滤 glob 模式，如 *.py")
-    context_lines: int = Field(default=cfg.GREP_CONTEXT_LINES, description="匹配行前后各显示的上下文行数")
+    context_lines: int = Field(
+        default_factory=lambda: cfg.GREP_CONTEXT_LINES,
+        description="匹配行前后各显示的上下文行数",
+    )
     case_sensitive: str = Field(default="true", description="是否区分大小写，true 或 false")
 
 
@@ -45,9 +47,10 @@ class GrepTool(BaseTool):
         else:
             return ToolResult(False, f"错误: 路径不存在 — {target}")
         results = []
+        max_results = cfg.GREP_MAX_RESULTS
         for filepath in files:
-            if len(results) >= _MAX_RESULTS:
-                results.append(f"... 结果超过 {_MAX_RESULTS} 条，已截断")
+            if len(results) >= max_results:
+                results.append(f"... 结果超过 {max_results} 条，已截断")
                 break
             results.extend(self._search_file(filepath, regex, base_dir, parameters.context_lines))
         if not results:
@@ -60,15 +63,17 @@ class GrepTool(BaseTool):
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
             for fn in sorted(filenames):
-                if fnmatch.fnmatch(fn, file_pattern):
-                    if os.path.splitext(fn)[1].lower() not in _BINARY_EXTS:
-                        files.append(os.path.join(dirpath, fn))
+                if not fnmatch.fnmatch(fn, file_pattern):
+                    continue
+                if os.path.splitext(fn)[1].lower() in _BINARY_EXTS:
+                    continue
+                files.append(os.path.join(dirpath, fn))
         return files
 
     def _search_file(self, filepath: str, regex, base_dir: str, ctx: int) -> list[str]:
-        if os.path.getsize(filepath) > _MAX_FILE_SIZE: return []
+        if os.path.getsize(filepath) > cfg.GREP_MAX_FILE_SIZE: return []
         try:
-            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
         except Exception:
             return []

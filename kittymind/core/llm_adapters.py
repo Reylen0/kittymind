@@ -1,5 +1,6 @@
 import json
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 from .llm_response import LLMResponse, StreamEvent
 from ..config import cfg
@@ -44,7 +45,7 @@ class OpenAIAdapter(BaseLLMAdapter):
         from openai import AsyncOpenAI
         return AsyncOpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
 
-    def invoke(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> LLMResponse:
+    def invoke(self, messages: list[dict], tools: list[dict] | None = None, **kwargs) -> LLMResponse:
         if not self._client:
             self._client = self._create_client()
         resp = self._client.chat.completions.create(
@@ -212,7 +213,8 @@ class AnthropicAdapter(BaseLLMAdapter):
     #   messages 最后一条（标准的多轮对话增量缓存写法：本轮标记的前缀，
     #   下一轮连同新增内容一起复用）。三处共 3 个断点，未超过 API 上限 4。
 
-    _CACHE_CONTROL = {"type": "ephemeral"}
+    # 类级共享常量：只读，永不 mutate（ClassVar 同时表达该意图）
+    _CACHE_CONTROL: ClassVar[dict] = {"type": "ephemeral"}
 
     @classmethod
     def _mark_cache_breakpoint(cls, block: dict) -> dict:
@@ -359,7 +361,7 @@ class AnthropicAdapter(BaseLLMAdapter):
 
     # ── 公共接口 ───────────────────────────────────────────────────
 
-    def invoke(self, messages: list[dict], tools: list[dict] = None, **kwargs) -> LLMResponse:
+    def invoke(self, messages: list[dict], tools: list[dict] | None = None, **kwargs) -> LLMResponse:
         if not self._client:
             self._client = self._create_client()
         params = self._make_params(messages, tools, kwargs)

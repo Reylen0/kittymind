@@ -13,7 +13,7 @@ check_permission(name, args, ask_fn) -> str | None
 _SHELL_TOOLS——漏一个（例如曾经的 verify）就等于给 bash 开了个无防护镜像。
 """
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .builtin._paths import is_inside, resolve_path
 from .builtin.bash_tool import bash_cwd
@@ -73,13 +73,21 @@ def _is_action(name: str):
 _RULES: list[tuple[set, object, str]] = [
     (
         {"file_write", "file_edit"},
-        lambda args: _check_path_outside(args),
+        _check_path_outside,  # 唯一参数就是 args，无需 lambda 包装
         "写入路径在工作目录之外",
     ),
     (
         {"file_read"},
-        lambda args: _check_path_outside(args),
+        _check_path_outside,  # 唯一参数就是 args，无需 lambda 包装
         "读取路径在工作目录之外",
+    ),
+    # 读类搜索工具：同样是「把文件内容送到模型」，与 file_read 同级对待。
+    # 曾遗漏 glob/grep/ls——三者都能指定 path，等于给了一条无审批的跨工作区读取通道。
+    # （glob 的 pattern 另可带 ../ 逃逸，已在 glob_tool 内部按 root 做 containment 过滤。）
+    (
+        {"glob", "grep", "ls"},
+        _check_path_outside,  # 唯一参数就是 args，无需 lambda 包装
+        "搜索路径在工作目录之外",
     ),
     (
         _SHELL_TOOLS,
@@ -185,8 +193,8 @@ def _cli_ask(tool_name: str, args: dict, reason: str) -> bool:
 def check_permission(
     name: str,
     args: dict,
-    ask_fn: Optional[Callable[[str, dict, str], bool]] = None,
-) -> Optional[str]:
+    ask_fn: Callable[[str, dict, str], bool] | None = None,
+) -> str | None:
     """检查工具调用权限。返回 None 表示放行；返回字符串表示拒绝原因。
 
     闸门1（硬拒绝）始终生效，含 ask_fn=None 的路径。

@@ -5,10 +5,12 @@ load_dotenv()
 
 from kittymind.agent import KittyAgent
 from kittymind.core import BaseAgentLLM
+from kittymind.logging_setup import setup_logging
 from kittymind.tools import GetCurrentTimeTool
 
 
 def main():
+    setup_logging()  # 诊断日志走 stderr；CLI 对话输出继续走 stdout
     llm = BaseAgentLLM()
     agent = KittyAgent(
         name="chat_agent",

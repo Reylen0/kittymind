@@ -18,10 +18,75 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.6.2",
     "pyinstaller>=6.22.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.8",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.ruff]
+# 与 requires-python 对齐（UP 规则按此推断可用的新语法）
+target-version = "py310"
+line-length = 120
+extend-exclude = [".venv", "build", "dist", "electron", ".ruff_cache"]
+
+[tool.ruff.lint]
+# 只开高信号规则集。刻意不含 bandit（S）—— 本项目大量 subprocess / exec 是设计意图，
+# 开了会淹没在 noqa 里。
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes：未使用导入/变量、未定义名
+    "W",   # pycodestyle warnings
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RET", # flake8-return
+    "PIE", # flake8-pie
+    "ISC", # 隐式字符串拼接
+    "ICN", # import 命名约定
+    "PGH", # pygrep-hooks
+    "PL",  # pylint
+    "RUF", # ruff 自有规则
+]
+ignore = [
+    # 中文正文里的全角标点会被判为"歧义 Unicode"，本项目注释/文案全中文，整体关闭
+    "RUF001", "RUF002", "RUF003",
+    # 魔法数字：阈值类常量已统一收敛到 config.py，剩下的多是 0/1/2 之类的结构判断
+    "PLR2004",
+    # 复杂度：E 层 ReAct 循环与 dispatch 天然偏长，拆分属架构批（报告 §3.2），
+    # 现在压下去只会逼出无意义的 noqa
+    "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+    # 未使用参数：BaseCallBack 的 9 个回调钩子、EventBus handler 的 (event_type, data)
+    # 等均为固定接口签名，参数必须在但不一定被用
+    "ARG001", "ARG002", "ARG005",
+    # 函数内 import：本项目用它打破循环导入（见报告 §3.6 #10），是刻意为之
+    "PLC0415",
+    # 单行守卫子句（`if not x: return`）：工具函数的入参校验大量使用这种紧凑写法，
+    # 统一展开成三行反而更难扫读。属刻意风格，与本项目既有代码保持一致。
+    "E701",
+    # 列表拼接：git_tool 的 action→argv 表用 `base + [...]` 表达"公共前缀 + 本次动作"，
+    # 比 `[*base, ...]` 更直观。两种写法等价，不作强制。
+    "RUF005",
+    # 位置参数过多：KittyAgent.__init__ / llm 适配器等宽接口，改关键字参数属架构批改动
+    "PLR0917",
+    # 可改三元表达式：_paths.py 那处改完是嵌套三元（a if x else b if y else c），
+    # 可读性反而下降。显式 if/else 更清楚。
+    "SIM108",
+    # 守卫子句链末尾改 `return not cond` 会破坏整条链的对称性，收益为负
+    "SIM103",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 这三个入口刻意在 load_dotenv() 之后再 import —— 被导入的模块会在 import 期读环境变量，
+# 顺序反了凭据就读不到。E402 在这里是"设计要求"，不是散落的 import。
+"chat.py" = ["E402"]
+"chat_async.py" = ["E402"]
+"server/app.py" = ["E402"]
+"test/*" = ["ARG001", "ARG002"]
+# 进程级单例载体：模块级 double-checked locking 是标准写法，global 在这里就是刻意选择
+"kittymind/tools/audit.py" = ["PLW0603"]

@@ -112,7 +112,7 @@ def test_aux_success_cached(monkeypatch):
 
 def test_compressor_uses_aux_model():
     aux = MagicMock()
-    agent, main = make_agent(aux=aux)
+    agent, _main = make_agent(aux=aux)
     assert agent.aux_model is aux
     _, compressor, _ = agent._new_turn(None)
     assert compressor._llm is aux
@@ -157,7 +157,7 @@ def test_fallback_to_main_when_aux_not_configured():
 def test_auto_resolution_picks_env_model(monkeypatch):
     """默认自动解析路径：配置了 aux 就应真正用上。"""
     _set_env(monkeypatch, LLM_AUX_MODEL_ID="qwen-turbo", LLM_API_KEY="k", LLM_BASE_URL="http://x/v1")
-    agent, main = make_agent()
+    agent, _main = make_agent()
     assert agent.aux_llm is not None
     assert agent.aux_llm.model == "qwen-turbo"
     _, compressor, _ = agent._new_turn(None)

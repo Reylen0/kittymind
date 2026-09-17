@@ -8,8 +8,6 @@ from pydantic import BaseModel, Field
 from ..base import BaseTool, ToolResult
 from ...config import cfg
 
-_TIMEOUT = cfg.GIT_TIMEOUT
-
 if sys.platform == "win32":
     import ctypes
     _SYS_ENCODING = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
@@ -23,7 +21,9 @@ class GitToolParam(BaseModel):
     action: str = Field(description="git 操作: status、diff、add、commit、log、branch、show")
     files: str = Field(default="", description="add 操作的目标文件，空格分隔；留空暂存所有")
     message: str = Field(default="", description="commit 操作的提交信息")
-    count: int = Field(default=cfg.GIT_LOG_COUNT, description="log 显示的提交条数")
+    count: int = Field(
+        default_factory=lambda: cfg.GIT_LOG_COUNT, description="log 显示的提交条数",
+    )
     extra: str = Field(default="", description="附加给 git 命令的额外参数")
     workdir: str = Field(default=".", description="执行 git 命令的工作目录")
 
@@ -40,15 +40,17 @@ class GitTool(BaseTool):
         workdir = os.path.abspath(parameters.workdir)
         if not os.path.isdir(workdir): return ToolResult(False, f"错误: 工作目录不存在 — {workdir}")
         cmd = self._build(action, parameters)
+        timeout = cfg.GIT_TIMEOUT
         try:
             proc = subprocess.run(
                 cmd, cwd=workdir, capture_output=True, text=True,
-                timeout=_TIMEOUT, encoding=_SYS_ENCODING, errors="replace",
+                timeout=timeout, encoding=_SYS_ENCODING, errors="replace",
+                check=False,  # 非零退出码是正常结果（如 status 有改动），由返回值体现
             )
         except FileNotFoundError:
             return ToolResult(False, "错误: 未找到 git 命令")
         except subprocess.TimeoutExpired:
-            return ToolResult(False, f"错误: git 命令超时（{_TIMEOUT}s）")
+            return ToolResult(False, f"错误: git 命令超时（{timeout}s）")
         except Exception as e:
             return ToolResult(False, f"错误: {e}")
         parts = []

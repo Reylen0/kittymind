@@ -1,0 +1,21 @@
+# 提交前门禁：ruff 静态检查（含自动修复）。
+#
+# 只有一条 hook，且刻意如此：
+#
+# 1) 不启用 ruff-format。本项目是手写紧凑风格（工具函数大量单行守卫子句、
+#    git_tool 这类"参数表"式 argv 构建），formatter 会整体重排，与既有风格冲突
+#    且一次性产生数千行 diff。风格一致性由 [tool.ruff.lint] 的规则集约束（含
+#    E701/RUF005 等有意 ignore 并写明理由的项），不靠自动格式化。
+#
+# 2) 不把 pytest 挂进来。全量用例 10s+ 且依赖 .venv，属于"验证"环节而不是
+#    "提交"关键路径；由 verify 工具 / CI 执行，避免每次提交都被拖慢。
+#
+# --exit-non-zero-on-fix：hook 真的改了文件就返回非零，逼迫把修复结果重新
+# git add。否则会出现"hook 改了工作区但没进这次提交"的静默漂移。
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # 与 pyproject [dependency-groups] dev 里的 ruff 版本保持一致
+    rev: v0.16.8
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]

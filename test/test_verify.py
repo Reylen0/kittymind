@@ -4,7 +4,6 @@ import socket
 import sys
 import threading
 
-import pytest
 
 from kittymind.agent.verify.runner import CommandVerifier, ProbeVerifier
 from kittymind.tools.builtin.verify_tool import VerifyTool, VerifyToolParam

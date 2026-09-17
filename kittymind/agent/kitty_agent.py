@@ -15,9 +15,10 @@
 """
 
 import asyncio
+import logging
 import time
 from collections import OrderedDict
-from typing import AsyncIterator, Iterator, Optional
+from collections.abc import AsyncIterator, Iterator
 
 from ..callbacks.base import BaseCallBack
 from ..config import cfg
@@ -46,6 +47,8 @@ from .delegation import (
     set_root_budget, set_root_session,
 )
 
+logger = logging.getLogger(__name__)
+
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
 _INTERNAL_KEYS = ("_seq", _SUMMARY_MARKER)
 
@@ -64,23 +67,24 @@ class KittyAgent(Agent):
         self,
         name: str,
         llm: BaseAgentLLM,
-        system_prompt: Optional[str] = None,
-        tools: Optional[list[BaseTool]] = None,
-        description: Optional[str] = None,
-        callbacks: Optional[list[BaseCallBack]] = None,
-        max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
+        system_prompt: str | None = None,
+        tools: list[BaseTool] | None = None,
+        description: str | None = None,
+        callbacks: list[BaseCallBack] | None = None,
+        max_iterations: int | None = None,
         # 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）；默认按 LLM_AUX_* 配置自动解析
         aux_llm=_AUX_AUTO,
         # 集成层（子 Agent 不传）
-        event_bus: Optional[EventBus] = None,
-        session_manager: Optional[SessionManager] = None,
+        event_bus: EventBus | None = None,
+        session_manager: SessionManager | None = None,
         workspace_manager=None,
-        memory: Optional[MemoryStore] = None,
+        memory: MemoryStore | None = None,
         ask_fn=None,
         interactive: bool = True,
     ):
         super().__init__(name, llm, system_prompt, description, callbacks)
-        self.max_iterations = max_iterations
+        # 默认值在调用时求值，避免写成函数默认参数被 import 期钉死（cfg.reload() 会改不动）
+        self.max_iterations = cfg.AGENT_MAX_ITERATIONS if max_iterations is None else max_iterations
         self.tools = tools or []
         self.tool_registry = ToolRegistry()
         for tool in self.tools:
@@ -93,7 +97,7 @@ class KittyAgent(Agent):
         self.last_messages: list[dict] = []
 
         # 辅助小模型：未配置 LLM_AUX_MODEL_ID 时为 None，辅助任务自动回退主模型
-        self.aux_llm: Optional[BaseAgentLLM] = (
+        self.aux_llm: BaseAgentLLM | None = (
             get_aux_llm() if aux_llm is _AUX_AUTO else aux_llm
         )
 
@@ -105,10 +109,10 @@ class KittyAgent(Agent):
         self._bg_tasks: set[asyncio.Task] = set()
 
         self.event_bus: EventBus = event_bus or EventBus()
-        self.session_manager: Optional[SessionManager] = session_manager
+        self.session_manager: SessionManager | None = session_manager
         self.workspace_manager = workspace_manager
-        self.memory: Optional[MemoryStore] = memory
-        self._memory_recall: Optional[MemoryRecall] = (
+        self.memory: MemoryStore | None = memory
+        self._memory_recall: MemoryRecall | None = (
             MemoryRecall(memory, self.aux_model) if memory else None
         )
 
@@ -157,7 +161,7 @@ class KittyAgent(Agent):
                     )
                 except Exception as e:
                     self._emit("on_llm_error", e)
-                    raise LLMException(f"LLM调用失败: {e}")
+                    raise LLMException(f"LLM调用失败: {e}") from e
                 self._emit("on_llm_end", response)
 
                 messages.append({
@@ -221,7 +225,7 @@ class KittyAgent(Agent):
                             tool_calls = event.tool_calls
                 except Exception as e:
                     self._emit("on_llm_error", e)
-                    raise LLMException(f"LLM流式调用失败: {e}")
+                    raise LLMException(f"LLM流式调用失败: {e}") from e
 
                 self._emit("on_llm_end", None)
                 step_text = "".join(text_chunks)
@@ -321,7 +325,7 @@ class KittyAgent(Agent):
                                     )
                                     did_compress = False
                     except Exception as e:
-                        raise LLMException(f"LLM流式调用失败: {e}")
+                        raise LLMException(f"LLM流式调用失败: {e}") from e
 
                     step_text = "".join(text_chunks)
 
@@ -486,10 +490,14 @@ class KittyAgent(Agent):
         必须在每次 LLM 调用前执行，防止内部标记泄漏给 API。
         """
         result = []
-        for m in messages:
-            if any(k in m for k in _INTERNAL_KEYS):
-                m = {k: v for k, v in m.items() if k not in _INTERNAL_KEYS}
-            result.append(m)
+        for msg in messages:
+            # 含内部键才重建字典（浅拷贝），其余原样透传，避免无谓的 dict 复制
+            cleaned = (
+                {k: v for k, v in msg.items() if k not in _INTERNAL_KEYS}
+                if any(k in msg for k in _INTERNAL_KEYS)
+                else msg
+            )
+            result.append(cleaned)
         return result
 
     # ── 压缩 ──────────────────────────────────────────────────────
@@ -508,7 +516,7 @@ class KittyAgent(Agent):
         compressed = compressor.compress(messages, tracker)
         if compressed is messages:
             return messages, tracker, False
-        print(f"[compress] ratio={ratio:.2f}，{len(messages)} → {len(compressed)}", flush=True)
+        logger.info("压缩 %d → %d 条消息（占用比 %.2f）", len(messages), len(compressed), ratio)
         return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
 
     async def _maybe_compress_async(
@@ -530,7 +538,7 @@ class KittyAgent(Agent):
         compressed = await asyncio.to_thread(compressor.compress, messages, tracker)
         if compressed is messages:
             return messages, tracker, False
-        print(f"[compress] ratio={ratio:.2f}，{len(messages)} → {len(compressed)}", flush=True)
+        logger.info("压缩 %d → %d 条消息（占用比 %.2f）", len(messages), len(compressed), ratio)
         return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
 
     @staticmethod
@@ -561,7 +569,7 @@ class KittyAgent(Agent):
             ineffective_count += 1
             if ineffective_count >= 2:
                 cooldown_until = time.monotonic() + cfg.COMPRESS_COOLDOWN_SECONDS
-                print(f"[compress] 反抖动：冷却 {cfg.COMPRESS_COOLDOWN_SECONDS}s", flush=True)
+                logger.info("压缩反抖动：冷却 %.0fs（连续两次压缩未降占用）", cfg.COMPRESS_COOLDOWN_SECONDS)
         else:
             ineffective_count = 0
         return cooldown_until, ineffective_count
@@ -675,4 +683,4 @@ class KittyAgent(Agent):
                 extract_memories, turn_messages, self.aux_model, self.memory
             )
         except Exception as e:
-            print(f"[memory] background extraction error: {e}", flush=True)
+            logger.warning("后台记忆提取失败: %s", e)

@@ -95,3 +95,37 @@ def test_ls_and_grep_resolve_relative_to_workspace(ws):
     grep = GrepTool().execute(GrepToolParam(pattern="needle", path="sub"))
     assert grep.ok, grep.content
     assert "needle" in grep.content and "f.txt" in grep.content
+
+
+def test_grep_file_collection_skips_binary_and_skip_dirs(ws):
+    """grep 收集待搜文件时必须过滤二进制扩展名与 SKIP_DIRS。
+
+    这条锁住 `_collect_files` 的过滤语义：一旦被改动成"收了再筛"或漏掉某一层，
+    就会去二进制文件里瞎搜（把整个 .png/.pyc 读成文本），并且噪音直接进模型上下文。
+    """
+    (Path(ws) / "bin").mkdir()
+    (Path(ws) / "bin" / "blob.png").write_bytes(b"needle\x00needle")
+    (Path(ws) / "__pycache__").mkdir()
+    (Path(ws) / "__pycache__" / "cached.py").write_text("needle\n", encoding="utf-8")
+    (Path(ws) / "real.txt").write_text("needle\n", encoding="utf-8")
+
+    result = GrepTool().execute(GrepToolParam(pattern="needle", path="."))
+
+    assert result.ok, result.content
+    assert "real.txt" in result.content
+    assert "blob.png" not in result.content
+    assert "cached.py" not in result.content
+
+
+def test_grep_explicit_binary_file_is_still_searchable(ws):
+    """显式点名某个文件时不受扩展名过滤影响（过滤只作用于目录遍历）。
+
+    路径来自用户/模型明确指定，属性是"我要搜这个文件"，与"别在二进制里瞎搜"不冲突。
+    """
+    blob = Path(ws) / "blob.png"
+    blob.write_bytes(b"needle\x00needle")
+
+    result = GrepTool().execute(GrepToolParam(pattern="needle", path="blob.png"))
+
+    assert result.ok, result.content
+    assert "blob.png" in result.content

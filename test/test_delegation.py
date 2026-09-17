@@ -1,6 +1,5 @@
 """delegation.py 单元测试（无需 LLM）"""
 
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
@@ -79,25 +78,22 @@ def test_nested_depth():
 def test_depth_limit_raises():
     """depth 已到上限时 child_scope 抛 DelegationLimit。"""
     b = DelegationBudget(depth=3, spawned=0, max_depth=3, max_total=8)
-    with pytest.raises(DelegationLimit):
-        with child_scope(b):
-            pass
+    with pytest.raises(DelegationLimit), child_scope(b):
+        pass
 
 
 def test_total_limit_raises():
     """spawned 已到上限时 child_scope 抛 DelegationLimit。"""
     b = DelegationBudget(depth=0, spawned=8, max_depth=3, max_total=8)
-    with pytest.raises(DelegationLimit):
-        with child_scope(b):
-            pass
+    with pytest.raises(DelegationLimit), child_scope(b):
+        pass
 
 
 def test_depth_restored_on_limit():
     """超限抛异常后，depth 不会残留（但此处 depth 未被修改）。"""
     b = DelegationBudget(depth=3, spawned=0, max_depth=3, max_total=8)
-    with pytest.raises(DelegationLimit):
-        with child_scope(b):
-            pass
+    with pytest.raises(DelegationLimit), child_scope(b):
+        pass
     assert b.depth == 3  # 超限时未曾 +1，原值保持
 
 
@@ -182,9 +178,8 @@ def test_spawned_not_incremented_when_limit_exceeded():
     assert b.spawned == 8
 
     # 此时已达上限，再委派应抛 DelegationLimit 且 spawned 不变
-    with pytest.raises(DelegationLimit):
-        with child_scope(b):
-            pass
+    with pytest.raises(DelegationLimit), child_scope(b):
+        pass
     assert b.spawned == 8
 
 
@@ -265,14 +260,16 @@ def test_task_tool_allowed_tools_filter():
         description = "A"
         param_class = None
         def run(self, p): return "a"
-        def to_schema(self): return {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {}}}
+        def to_schema(self):
+            return {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {}}}
 
     class ToolB:
         name = "tool_b"
         description = "B"
         param_class = None
         def run(self, p): return "b"
-        def to_schema(self): return {"type": "function", "function": {"name": "tool_b", "description": "B", "parameters": {}}}
+        def to_schema(self):
+            return {"type": "function", "function": {"name": "tool_b", "description": "B", "parameters": {}}}
 
     token = set_root_budget(3, 8)
     try:
