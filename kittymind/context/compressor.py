@@ -1,6 +1,6 @@
 """轨迹压缩器：保护头尾、绝不分裂 tool_call/tool 配对、LLM 摘要中间段。
 
-设计原则（参考 hermes context_compressor）：
+设计原则：
 - head  = 前导 system 消息（主 system + 记忆召回段等）+ 前 protect_first_n 条历史（首次压缩后衰减为 0）
 - tail  = 最近若干条（token 预算 + floor）
 - mid   = head..tail 之间，整段调 LLM 摘要，失败则降级

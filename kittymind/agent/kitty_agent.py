@@ -100,6 +100,10 @@ class KittyAgent(Agent):
         # 冻结的记忆召回段（session_id -> 文本 | _RECALL_STALE）
         self._recall_cache: OrderedDict[str, object] = OrderedDict()
 
+        # 后台任务强引用：asyncio 只持弱引用，create_task 的返回值若不保存，
+        # 任务可能在执行途中被 GC 掉（且异常被静默吞掉）。
+        self._bg_tasks: set[asyncio.Task] = set()
+
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager
@@ -366,7 +370,9 @@ class KittyAgent(Agent):
                 await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
 
                 if self.memory is not None:
-                    asyncio.create_task(self._extract_memories_bg(turn_messages))
+                    task = asyncio.create_task(self._extract_memories_bg(turn_messages))
+                    self._bg_tasks.add(task)
+                    task.add_done_callback(self._bg_tasks.discard)
 
             except Exception as e:
                 await self.event_bus.emit(AGENT_ERROR, {"session_id": session_id, "error": str(e)})
@@ -398,10 +404,11 @@ class KittyAgent(Agent):
     ) -> None:
         """注入记忆召回段 —— 独立 system 消息，插在主 system 之后。
 
-        缓存关键设计（E1）：
-          - 不再改写 messages[0]，主 system prompt 跨轮字节级稳定；
-          - 召回内容按会话生命周期冻结（跨轮不变），保住前缀提示缓存——
-            旧实现每轮把召回追加进 system，长会话成本近似翻倍；
+        缓存关键设计：
+          - messages[0]（主 system prompt）跨轮字节级稳定，不做任何改写；
+          - 召回内容按会话生命周期冻结（跨轮不变）：若每轮都把新召回文本并入
+            system，system 内容逐轮变化会破坏提示缓存的前缀匹配，长会话成本
+            近似翻倍；
           - 仅在会话首次出现、或压缩之后（历史前缀反正已重写，缓存必失效）
             用当轮输入重算，重算时机零额外缓存损失。
         """

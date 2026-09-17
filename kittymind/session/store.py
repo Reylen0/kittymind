@@ -3,11 +3,11 @@
 单连接 + threading.Lock 保证线程安全。
 WAL 模式（失败则降级 DELETE）。
 
-schema 版本 4（PRAGMA user_version=4）:
+schema 版本 5（PRAGMA user_version=5）:
   sessions(id, title, workspace_id, created_at, updated_at,
            compressed_once, last_prompt_tokens)
   messages(id, session_id, seq REAL, role, content, tool_calls, tool_call_id, ts,
-           active, compacted)
+           active, compacted, is_summary)
 
 seq 用 REAL 支持压缩摘要行的小数序（被压中段末尾与首条保留行 seq 的中点）。
 active=1 → 模型视图（摘要+尾部，用于构建 LLM 上下文）。
@@ -16,7 +16,13 @@ compacted=1 → 已被压缩掉的原始行（审计用，模型不可见）。
 上下文占用只存 last_prompt_tokens（实际已用 token，内容相关）。
 总窗口大小是配置派生值，由读取方按当前 cfg 现算，故不落库。
 
-升级方式：PRAGMA user_version 驱动迁移链（Phase 17.2）。
+升级方式：逐级迁移（_migrate），任何入口版本都补到最新，与"从哪一版升上来"无关。
+
+两条踩过的坑（都曾真实致损）：
+  1. 外键是 per-connection 设置且 SQLite 默认 OFF，必须每次打开连接就开；
+     藏在 _DDL 里只在首次建库生效（executescript 还会隐式 COMMIT）。
+  2. 写 sessions 表不能用 INSERT OR REPLACE —— 它先 DELETE 冲突行再 INSERT，
+     会顺着 messages 的 ON DELETE CASCADE 把该会话的全部消息删掉。
 """
 
 import json
@@ -26,9 +32,9 @@ import time
 from pathlib import Path
 
 
-_DDL = """
-PRAGMA foreign_keys = ON;
+_SCHEMA_VERSION = 5
 
+_DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
     id              TEXT    PRIMARY KEY,
     title           TEXT    NOT NULL DEFAULT '新对话',
@@ -74,6 +80,10 @@ class SqliteSessionStore:
 
     def _init_db(self) -> None:
         with self._lock:
+            # 外键是 per-connection 设置且 SQLite 默认 OFF：必须在任何语句之前、
+            # 每次打开连接都打开。写进 _DDL 只在首次建库生效，旧库会以"外键关闭"
+            # 运行（级联删除失效、留下孤儿行）。
+            self._conn.execute("PRAGMA foreign_keys = ON")
             try:
                 self._conn.execute("PRAGMA journal_mode=WAL")
             except Exception:
@@ -81,23 +91,52 @@ class SqliteSessionStore:
             ver = self._conn.execute("PRAGMA user_version").fetchone()[0]
             if ver == 0:
                 self._conn.executescript(_DDL)
-                self._conn.execute("PRAGMA user_version=5")
-            elif ver < 3:
-                for col in _LEGACY_COLS:
-                    try:
-                        self._conn.execute(f"ALTER TABLE sessions DROP COLUMN {col}")
-                    except Exception:
-                        pass
-                self._conn.execute("PRAGMA user_version=5")
-            elif ver in (3, 4):
-                # v3/v4 → v5: 新增 is_summary 列
-                try:
-                    self._conn.execute(
-                        "ALTER TABLE messages ADD COLUMN is_summary INTEGER NOT NULL DEFAULT 0"
-                    )
-                except Exception:
-                    pass  # 已存在时忽略
-                self._conn.execute("PRAGMA user_version=5")
+            self._migrate()
+            self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+
+    def _migrate(self) -> None:
+        """把库补齐到当前版本。
+
+        逐级应用而非 if/elif 跳级：任何入口版本（v1/v2/v3/v4/未知）都要走完全部
+        步骤，否则会出现"升到 v5 但缺列"的半截 schema —— 曾经的 ver < 3 分支就是
+        只删旧列、直接标 v5，把 is_summary 漏了，read_display 直接报错。
+        全部操作幂等，可重复执行。
+        """
+        # v2 → v3：清掉历史遗留的 token 统计列
+        for col in _LEGACY_COLS:
+            self._drop_column_if_exists("sessions", col)
+        # v4 → v5：压缩摘要标记列
+        self._ensure_column("messages", "is_summary", "INTEGER NOT NULL DEFAULT 0")
+        # 外键开启前遗落的孤儿行（旧版本级联失效时留下的），清掉以免越积越多
+        try:
+            self._conn.execute(
+                "DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+        except Exception:
+            pass
+
+    def _columns(self, table: str) -> set:
+        try:
+            rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        except Exception:
+            return set()
+        return {r[1] for r in rows}
+
+    def _ensure_column(self, table: str, col: str, decl: str) -> None:
+        if col in self._columns(table):
+            return
+        try:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        except Exception:
+            pass
+
+    def _drop_column_if_exists(self, table: str, col: str) -> None:
+        if col not in self._columns(table):
+            return
+        try:
+            self._conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
+        except Exception:
+            pass  # SQLite < 3.35 不支持 DROP COLUMN，留着无害
 
     # ── 内部辅助 ──────────────────────────────────────────────────
 
@@ -121,12 +160,28 @@ class SqliteSessionStore:
     # ── SessionStore 接口 ─────────────────────────────────────────
 
     def write_header(self, session_id: str, header: dict) -> None:
+        """写入 / 更新会话 header。
+
+        必须是真正的 UPSERT（ON CONFLICT DO UPDATE）而不是 INSERT OR REPLACE：
+        REPLACE 会先 DELETE 冲突行再 INSERT，而 messages.session_id 带
+        ON DELETE CASCADE —— 「改个标题」等于「删光这个会话的全部聊天记录」。
+
+        只更新 title / workspace_id / updated_at：
+          - created_at 保留原值：本方法可能因改标题等操作被重复调用，
+            不能让每次调用都把创建时间刷成当下
+          - compressed_once / last_prompt_tokens 保留（REPLACE 会重置为默认值）
+          - workspace_id 缺省时保留原值（COALESCE），不把已有归属抹成 NULL
+        """
         now = self._now_iso()
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO sessions"
+                "INSERT INTO sessions"
                 "(id, title, workspace_id, created_at, updated_at)"
-                "VALUES (?, ?, ?, ?, ?)",
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET"
+                "   title=excluded.title,"
+                "   workspace_id=COALESCE(excluded.workspace_id, sessions.workspace_id),"
+                "   updated_at=excluded.updated_at",
                 (
                     session_id,
                     header.get("title", "新对话"),
@@ -339,8 +394,9 @@ class SqliteSessionStore:
     def list_headers(self) -> list[dict]:
         """只读会话 header（不触碰 messages 表），供 session/list 使用。
 
-        旧实现由调用方逐个 read()，会把每个会话的全部消息行都拉出来只为取
-        标题等 4 个字段——会话一多，列表 RPC 就退化成全量读消息。
+        只取 id/title/workspace_id/created_at 这 4 个字段：会话列表场景不需要
+        消息内容，若靠调用方逐个 read() 取全量消息再挑字段，会话一多，列表
+        RPC 就会退化成全量读消息。
         """
         with self._lock:
             rows = self._conn.execute(

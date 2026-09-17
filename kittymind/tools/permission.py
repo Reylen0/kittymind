@@ -6,18 +6,24 @@ check_permission(name, args, ask_fn) -> str | None
 闸门顺序：
   1. 硬拒绝（始终生效，含 ask_fn=None 的 CLI / 子 Agent 路径）
   2. 规则匹配（路径越界、删除操作、系统路径写入、chmod 777、
-     git 写历史/破坏性参数、剪贴板读写）
+     git 写历史/破坏性参数、剪贴板读写、verify 执行任意命令）
   3. 用户审批（ask_fn=None 时跳过，直接放行；避免在 worker 线程误触发终端 input）
+
+注意：硬拒绝是「按命令字符串」检查，凡是能执行模型给定命令的工具都必须列进
+_SHELL_TOOLS——漏一个（例如曾经的 verify）就等于给 bash 开了个无防护镜像。
 """
 
-import os
-from pathlib import Path
 from typing import Callable, Optional
 
+from .builtin._paths import is_inside, resolve_path
 from .builtin.bash_tool import bash_cwd
 
 
-# ── 闸门 1：硬拒绝（bash 专用） ────────────────────────────────
+# ── 闸门 1：硬拒绝（bash / verify 共用同一份黑名单） ──────────────
+# verify 的 type=command 同样把模型给的字符串交给 subprocess(shell=True)，
+# 能力等同 bash，因此必须与 bash 一视同仁。
+_SHELL_TOOLS: set[str] = {"bash", "verify"}
+
 _BASH_HARD_DENY: list[tuple[str, str]] = [
     ("rm -rf /",          "递归删除根目录"),
     ("rm -rf \\",         "递归删除根目录"),
@@ -38,10 +44,17 @@ _GIT_DANGEROUS_FLAGS: list[str] = [
 
 # ── 闸门 2：软规则 ─────────────────────────────────────────────
 def _check_path_outside(args: dict, key: str = "path") -> bool:
-    cwd = bash_cwd.get()
-    raw = args.get(key) or "."
-    resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
-    return not _inside_workdir(resolved, cwd)
+    """路径是否在工作区之外。
+
+    解析基准必须与工具实际落点一致——统一走 _paths.resolve_path（bash_cwd 基准），
+    否则会出现「权限检查查的是工作区里的路径，实际写的是另一个位置」。
+    """
+    return not is_inside(resolve_path(args.get(key) or "."), bash_cwd.get())
+
+
+def _shell_cmd(args: dict) -> str:
+    """取命令文本；verify 仅在 type=command 时才有命令。"""
+    return str(args.get("command") or "")
 
 
 def _git_commits(args: dict) -> bool:
@@ -69,21 +82,21 @@ _RULES: list[tuple[set, object, str]] = [
         "读取路径在工作目录之外",
     ),
     (
-        {"bash"},
-        lambda args: _has_any(args.get("command", ""), ["rm ", "del ", "rmdir ", "Remove-Item"]),
+        _SHELL_TOOLS,
+        lambda args: _has_any(_shell_cmd(args), ["rm ", "del ", "rmdir ", "Remove-Item"]),
         "命令包含删除操作",
     ),
     (
-        {"bash"},
-        lambda args: _has_any(args.get("command", ""), [
+        _SHELL_TOOLS,
+        lambda args: _has_any(_shell_cmd(args), [
             "> /etc/", "> /usr/", "> /bin/", "> /boot/",
             "> C:\\Windows\\", "> C:\\System32",
         ]),
         "命令向系统路径写入",
     ),
     (
-        {"bash"},
-        lambda args: "chmod 777" in args.get("command", ""),
+        _SHELL_TOOLS,
+        lambda args: "chmod 777" in _shell_cmd(args),
         "命令将权限设置为 777",
     ),
     # git：commit 写入仓库历史（add 仅改索引、可随手 unstage，故不拦截）
@@ -116,17 +129,20 @@ _RULES: list[tuple[set, object, str]] = [
         _is_action("write"),
         "写入剪贴板会覆盖用户当前剪贴板内容",
     ),
+    # verify：type=command 时执行任意命令，能力等同 bash，必须过审批
+    # （上面三条 _SHELL_TOOLS 规则已覆盖更具体的危险形态，故本条放在最后兜底）
+    (
+        {"verify"},
+        lambda args: (args.get("type") or "command").strip().lower() == "command"
+        and bool(_shell_cmd(args).strip()),
+        "verify 会执行任意命令（能力等同于 bash）",
+    ),
 ]
 
 
 def _inside_workdir(path: str, workdir: str) -> bool:
-    try:
-        Path(os.path.abspath(path)).resolve().relative_to(
-            Path(os.path.abspath(workdir)).resolve()
-        )
-        return True
-    except ValueError:
-        return False
+    """兼容旧调用点；实现统一在 _paths.is_inside。"""
+    return is_inside(path, workdir)
 
 
 def _has_any(text: str, patterns: list[str]) -> bool:
@@ -176,9 +192,9 @@ def check_permission(
     闸门1（硬拒绝）始终生效，含 ask_fn=None 的路径。
     闸门2/3 仅当名称匹配规则时触发；ask_fn=None 时跳过用户审批直接放行。
     """
-    # 闸门 1：硬拒绝
-    if name == "bash":
-        cmd = args.get("command", "").lower()
+    # 闸门 1：硬拒绝（bash / verify 共用）
+    if name in _SHELL_TOOLS:
+        cmd = _shell_cmd(args).lower()
         for pattern, reason in _BASH_HARD_DENY:
             if pattern.lower() in cmd:
                 return f"硬拒绝: {reason}"

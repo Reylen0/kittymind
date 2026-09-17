@@ -3,7 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
-from .bash_tool import bash_cwd
+from ._paths import resolve_path
 from ...config import cfg
 
 _MAX_LINES = cfg.FILE_READ_MAX_LINES
@@ -26,11 +26,7 @@ class FileReadTool(BaseTool):
     param_class = FileReadToolParam
 
     def execute(self, parameters: FileReadToolParam) -> ToolResult:
-        raw = parameters.path
-        if os.path.isabs(raw):
-            path = os.path.normpath(raw)
-        else:
-            path = os.path.normpath(os.path.join(bash_cwd.get(), raw))
+        path = resolve_path(parameters.path)
         if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
         if not os.path.isfile(path): return ToolResult(False, f"错误: 路径不是文件 — {path}")
         size = os.path.getsize(path)

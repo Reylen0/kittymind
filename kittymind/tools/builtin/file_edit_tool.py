@@ -3,6 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._paths import resolve_path
 from ...config import cfg
 
 _MAX_FILE_SIZE = cfg.FILE_EDIT_MAX_SIZE
@@ -25,7 +26,7 @@ class FileEditTool(BaseTool):
     param_class = FileEditToolParam
 
     def execute(self, parameters: FileEditToolParam) -> ToolResult:
-        path = os.path.abspath(parameters.path)
+        path = resolve_path(parameters.path)
         if not os.path.exists(path): return ToolResult(False, f"错误: 文件不存在 — {path}")
         if os.path.getsize(path) > _MAX_FILE_SIZE: return ToolResult(False, "错误: 文件超过 2MB，请使用 file_write 整体替换")
         try:

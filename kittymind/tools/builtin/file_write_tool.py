@@ -3,7 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
-from .bash_tool import bash_cwd
+from ._paths import resolve_path
 from ...config import cfg
 
 _MAX_WRITE_BYTES = cfg.FILE_WRITE_MAX_BYTES
@@ -24,11 +24,7 @@ class FileWriteTool(BaseTool):
     param_class = FileWriteToolParam
 
     def execute(self, parameters: FileWriteToolParam) -> ToolResult:
-        raw = parameters.path
-        if os.path.isabs(raw):
-            path = os.path.normpath(raw)
-        else:
-            path = os.path.normpath(os.path.join(bash_cwd.get(), raw))
+        path = resolve_path(parameters.path)
         if len(parameters.content.encode(parameters.encoding, errors="replace")) > _MAX_WRITE_BYTES:
             return ToolResult(False, "错误: 内容超过 1MB 限制，拒绝写入")
         try:

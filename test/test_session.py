@@ -1,5 +1,6 @@
 """SqliteSessionStore / SessionManager 单元测试（无需 LLM）"""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -386,4 +387,161 @@ def test_get_session_display_excludes_summary(mgr):
     assert "a2" in contents
     # 摘要不在
     assert "[摘要]" not in contents
+
+
+# ── P0 回归：header 写入必须是 UPSERT，不得连带删消息 ───────────────
+
+_CREATED = "2026-01-01T00:00:00+00:00"
+
+
+def test_write_header_twice_keeps_messages(store):
+    """INSERT OR REPLACE 会先 DELETE 冲突行 → 触发 messages 的 ON DELETE CASCADE。
+
+    「改个标题」曾等于「删光这个会话的全部聊天记录」，且静默无异常。
+    """
+    store.write_header("s1", {"title": "旧标题", "created_at": _CREATED})
+    store.append("s1", {"seq": 0, "role": "user", "content": "hello"})
+    store.append("s1", {"seq": 1, "role": "assistant", "content": "hi"})
+
+    store.write_header("s1", {"title": "新标题"})
+
+    header, records = store.read("s1")
+    assert header["title"] == "新标题"
+    assert len(records) == 2, "改写 header 不得删除该会话消息"
+    assert store.next_seq("s1") == 2
+
+
+def test_write_header_preserves_created_at_and_state(store):
+    """重复写 header 不应刷新 created_at，也不应重置压缩状态。"""
+    store.write_header("s1", {"title": "t", "created_at": _CREATED})
+    store.save_state("s1", compressed_once=True, last_prompt_tokens=1234)
+
+    store.write_header("s1", {"title": "t2"})   # 这次不带 created_at
+
+    header, _ = store.read("s1")
+    assert header["created_at"] == _CREATED
+    assert header["compressed_once"] is True
+    assert header["last_prompt_tokens"] == 1234
+
+
+def test_write_header_keeps_workspace_when_omitted(store):
+    store.write_header("s1", {"title": "t", "created_at": _CREATED, "workspace_id": "ws-1"})
+    store.write_header("s1", {"title": "t2"})
+    assert store.read("s1")[0]["workspace_id"] == "ws-1"
+
+
+def test_create_session_with_existing_id_keeps_history(mgr):
+    """create_session 是公开 API（session/create RPC 会透传 session_id）。"""
+    sid = mgr.create_session(title="原会话")
+    mgr.append_turn(sid, [{"role": "user", "content": "重要内容"}])
+
+    again = mgr.create_session(title="重复建", session_id=sid)
+    assert again == sid
+    assert len(mgr.load_messages(sid)) == 1, "用已有 id 建会话不得清空历史"
+
+
+# ── P0 回归：外键开关必须 per-connection 生效 ─────────────────────
+
+def _msg_count(db: Path) -> int:
+    conn = sqlite3.connect(str(db))
+    try:
+        return conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_foreign_keys_active_on_reopened_db(tmp_path):
+    """外键是 per-connection 设置，且 SQLite 默认 OFF。
+
+    旧实现把 PRAGMA foreign_keys=ON 写在 _DDL 里，只在首次建库执行——第二次打开
+    同一库时外键是关的，delete_session 只删 header、消息全变孤儿行。
+    """
+    db = tmp_path / "fk.db"
+    first = SqliteSessionStore(db)
+    first.write_header("s1", {"title": "t", "created_at": _CREATED})
+    first.append("s1", {"seq": 0, "role": "user", "content": "x"})
+    assert _msg_count(db) == 1
+
+    second = SqliteSessionStore(db)          # 同一个库，第二次打开
+    assert second._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+    second.delete("s1")
+    assert _msg_count(db) == 0, "删除会话必须级联清掉消息"
+
+
+def test_orphan_messages_cleaned_on_open(tmp_path):
+    """旧版本外键失效期间留下的孤儿行，在下次打开时清理掉。"""
+    db = tmp_path / "orphan.db"
+    store = SqliteSessionStore(db)
+    store.write_header("s1", {"title": "t", "created_at": _CREATED})
+    store.append("s1", {"seq": 0, "role": "user", "content": "x"})
+
+    raw = sqlite3.connect(str(db))           # 裸连接默认外键 OFF，可写入孤儿行
+    raw.execute(
+        "INSERT INTO messages(session_id, seq, role, content, ts)"
+        " VALUES ('ghost', 0, 'user', 'orphan', 0)"
+    )
+    raw.commit()
+    raw.close()
+    assert _msg_count(db) == 2
+
+    SqliteSessionStore(db)                   # 重新打开 → 触发清理
+    assert _msg_count(db) == 1
+
+
+# ── P1 回归：老版本库迁移后 schema 必须完整 ───────────────────────
+
+def _make_legacy_db(path: Path, version: int) -> None:
+    """手工造一个 v2 老库：messages 缺 is_summary 列。"""
+    conn = sqlite3.connect(str(path))
+    conn.executescript("""
+    CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新对话',
+        workspace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        compressed_once INTEGER NOT NULL DEFAULT 0, last_prompt_tokens INTEGER);
+    CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        seq REAL NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT,
+        tool_call_id TEXT, ts INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0);
+    """)
+    conn.execute(f"PRAGMA user_version={version}")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
+def test_legacy_db_migration_adds_is_summary(tmp_path, version):
+    """任何入口版本升上来都要补齐 is_summary，否则 read_display 直接报错。
+
+    旧实现的 ver < 3 分支只删旧列就标 v5，跳过了加列这一步。
+    """
+    db = tmp_path / f"old{version}.db"
+    _make_legacy_db(db, version)
+
+    store = SqliteSessionStore(db)
+
+    cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(messages)")}
+    assert "is_summary" in cols, f"v{version} 迁移后缺 is_summary 列"
+    assert sqlite3.connect(str(db)).execute("PRAGMA user_version").fetchone()[0] == 5
+
+    store.write_header("s1", {"title": "t", "created_at": _CREATED})
+    store.append("s1", {"seq": 0, "role": "user", "content": "hi"})
+    assert store.read_display("s1")[0]["content"] == "hi"
+
+
+def test_migration_is_idempotent(tmp_path):
+    """迁移可重复执行：反复打开同一个库不应报错，也不该改动数据。"""
+    db = tmp_path / "reopen.db"
+    first = SqliteSessionStore(db)
+    first.write_header("s1", {"title": "t", "created_at": _CREATED})
+    first.append("s1", {"seq": 0, "role": "user", "content": "x"})
+
+    for _ in range(3):
+        SqliteSessionStore(db)
+
+    assert _msg_count(db) == 1
+    header, records = SqliteSessionStore(db).read("s1")
+    assert header["title"] == "t" and len(records) == 1
 

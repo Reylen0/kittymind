@@ -5,6 +5,7 @@ import re
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._paths import resolve_path
 from ...config import cfg
 
 _SKIP_DIRS     = cfg.SKIP_DIRS
@@ -35,7 +36,7 @@ class GrepTool(BaseTool):
             regex = re.compile(parameters.pattern, flags)
         except re.error as e:
             return ToolResult(False, f"错误: 无效的正则表达式 — {e}")
-        target = os.path.abspath(parameters.path)
+        target = resolve_path(parameters.path)
         if os.path.isfile(target):
             files, base_dir = [target], os.path.dirname(target)
         elif os.path.isdir(target):

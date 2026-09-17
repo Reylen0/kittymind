@@ -3,6 +3,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._paths import resolve_path
 from ...config import cfg
 
 _SKIP_DIRS  = cfg.SKIP_DIRS
@@ -24,7 +25,7 @@ class LsTool(BaseTool):
     param_class = LsToolParam
 
     def execute(self, parameters: LsToolParam) -> ToolResult:
-        root = os.path.abspath(parameters.path)
+        root = resolve_path(parameters.path)
         if not os.path.exists(root): return ToolResult(False, f"错误: 路径不存在 — {root}")
         if os.path.isfile(root): return ToolResult(True, f"{root}  ({_fmt(os.path.getsize(root))})")
         show_hidden = parameters.show_hidden.lower() == "true"

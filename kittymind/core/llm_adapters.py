@@ -204,7 +204,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             timeout=float(self.timeout),
         )
 
-    # ── 提示词缓存断点（Phase 25.3）──────────────────────────────────
+    # ── 提示词缓存断点 ────────────────────────────────────────────
     #
     # Anthropic 缓存需显式在 content block 上打 cache_control，不像 OpenAI
     # 兼容端点那样按前缀自动缓存。断点越靠后，覆盖的可复用前缀越长：

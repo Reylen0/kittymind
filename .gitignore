@@ -41,7 +41,6 @@ Thumbs.db
 *.log
 tmp/
 temp/
-.workbuddy
 
 # uv
 uv.lock
@@ -59,3 +58,6 @@ electron/renderer-dist/
 dist-python/
 build-python/
 *.spec.bak
+
+docs/
+.workbuddy/

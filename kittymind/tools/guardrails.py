@@ -8,10 +8,10 @@
   2. 同工具连环失败：同工具不同参数连续报错（warn M 次后 block）
   3. 无进展空转：幂等只读工具反复返回相同结果（warn N 次后 block）
 
-额外：连续相同调用流（同 sig+同 result）达阈值则无条件 block，取代原 gate-0。
+额外：连续相同调用流（同 sig+同 result）达阈值则无条件 block，不受 warn/hard_stop 两态区分影响。
 
-失败判定（failed）由 executor 从工具显式返回的 ToolResult.ok 得出，
-本模块不再自行猜测文本内容。
+失败判定（failed）的唯一来源是 executor 从工具显式返回的 ToolResult.ok，
+本模块只消费这个判定，不解析工具输出文本内容。
 """
 
 from __future__ import annotations

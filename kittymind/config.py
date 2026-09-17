@@ -118,14 +118,14 @@ GUARD_SAME_TOOL_FAIL_WARN    = 3      # 同工具不同参失败：warn 阈值
 GUARD_SAME_TOOL_FAIL_BLOCK   = 8      # 同工具不同参失败：block 阈值（hard_stop 态）
 GUARD_NO_PROGRESS_WARN       = 2      # 幂等工具无进展：warn 阈值
 GUARD_NO_PROGRESS_BLOCK      = 5      # 幂等工具无进展：block 阈值（hard_stop 态）
-GUARD_IDENTICAL_STREAK_BLOCK = 3      # 连续完全相同调用：block 阈值（两态均生效，取代 gate-0）
+GUARD_IDENTICAL_STREAK_BLOCK = 3      # 连续完全相同调用：block 阈值（warn/hard_stop 两态均生效）
 
 # ── 工具审计与脱敏 ────────────────────────────────────
 TOOL_AUDIT_ENABLED        = True   # 是否记录工具调用审计（SQLite + JSONL 双写）
 TOOL_REDACT_ENABLED       = True   # 是否对工具输出/审计参数做敏感信息脱敏
 TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出截断）
 
-# ── 自我验证（Phase 13，verify 工具） ──────────────────
+# ── 自我验证（verify 工具） ──────────────────────────
 VERIFY_TIMEOUT        = 120     # command 验证器默认超时（测试/build 比普通命令更久）
 VERIFY_MAX_TIMEOUT    = 600     # command 验证器超时硬上限
 VERIFY_PROBE_RETRIES  = 5       # probe 验证器默认重试次数

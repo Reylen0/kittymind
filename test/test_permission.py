@@ -12,6 +12,7 @@ import pytest
 from kittymind.tools.builtin.bash_tool import bash_cwd
 from kittymind.tools.builtin.clipboard_tool import ClipboardTool
 from kittymind.tools.builtin.git_tool import GitTool
+from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.tools.executor import ToolExecutor, TurnContext
 from kittymind.tools.permission import (
     _GIT_DANGEROUS_FLAGS,
@@ -191,6 +192,51 @@ def test_executor_allows_git_status(workdir, ask):
     out = _run_tool(GitTool(), {"action": "status", "workdir": str(workdir)}, ask)
     assert not ask.asked, "只读 git 操作不应触发审批"
     assert "Permission denied" not in out["content"]
+
+
+# ── verify：与 bash 共用硬拒绝，且执行命令必须过审批（P0 回归） ───
+
+@pytest.mark.parametrize("command", [
+    "rm -rf /",
+    "sudo rm -rf /usr",
+    "format c:",
+    "del /f /s /q c:\\",
+])
+def test_verify_shares_hard_deny_with_bash(command):
+    """verify(type=command) 同样执行模型给的任意命令，硬拒绝不能漏。"""
+    bash_deny = check_permission("bash", {"command": command}, None)
+    verify_deny = check_permission("verify", {"type": "command", "command": command}, None)
+    assert bash_deny is not None, f"bash 未拦下 {command!r}"
+    assert verify_deny is not None, f"verify 未拦下 {command!r}（等同 bash 的无防护镜像）"
+
+
+def test_verify_command_asks(ask):
+    assert check_permission("verify", {"type": "command", "command": "pytest -q"}, ask) is None
+    assert ask.asked and "任意命令" in ask.last_reason
+
+
+def test_verify_probe_not_asked(ask):
+    """probe 只做连通性探测，不该弹审批。"""
+    assert check_permission("verify", {"type": "probe", "target": "127.0.0.1:8000"}, ask) is None
+    assert not ask.asked
+
+
+def test_verify_empty_command_not_asked(ask):
+    assert check_permission("verify", {"type": "command", "command": "  "}, ask) is None
+    assert not ask.asked
+
+
+def test_verify_delete_command_uses_specific_reason(ask):
+    """删除类命令应命中更具体的理由，而不是兜底那条。"""
+    assert check_permission("verify", {"type": "command", "command": "rm -rf build"}, ask) is None
+    assert ask.asked and "删除" in ask.last_reason
+
+
+def test_executor_blocks_verify_when_denied():
+    deny = Recorder(allow=False)
+    out = _run_tool(VerifyTool(), {"type": "command", "command": "echo hi"}, deny)
+    assert "Permission denied" in out["content"]
+    assert "任意命令" in deny.last_reason
 
 
 # ── _has_flag 精度 ───────────────────────────────────────────────

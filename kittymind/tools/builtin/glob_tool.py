@@ -4,6 +4,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
+from ._paths import is_inside, resolve_path
 from ...config import cfg
 
 _SKIP_DIRS = cfg.SKIP_DIRS
@@ -23,15 +24,20 @@ class GlobTool(BaseTool):
     param_class = GlobToolParam
 
     def execute(self, parameters: GlobToolParam) -> ToolResult:
-        root = os.path.abspath(parameters.path)
+        root = resolve_path(parameters.path)
         if not os.path.isdir(root): return ToolResult(False, f"错误: 目录不存在 — {root}")
+        # 掐掉根锚点：os.path.join(root, "/etc/*") 会直接丢弃 root，前导分隔符等于
+        # "从盘符根开始找"，必须去掉。
+        pattern = (parameters.pattern or "*").strip().lstrip("/\\") or "*"
         try:
-            raw = _glob.glob(os.path.join(root, parameters.pattern), recursive=True)
+            raw = _glob.glob(os.path.join(root, pattern), recursive=True)
         except Exception as e:
             return ToolResult(False, f"错误: glob 搜索失败 — {e}")
         matches = []
         for m in sorted(raw):
             if not os.path.isfile(m): continue
+            # 兜底：pattern 里带 ../ 时结果会落到 root 之外，一律丢弃
+            if not is_inside(m, root): continue
             rel = os.path.relpath(m, root).replace("\\", "/")
             if any(p in _SKIP_DIRS for p in rel.split("/")): continue
             matches.append(rel)
