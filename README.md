@@ -66,9 +66,6 @@ pnpm run dev
 ## CLI 演示（无 Electron）
 
 ```bash
-# 同步流式对话
-uv run python chat.py
-
 # 异步对话 + 会话持久化 + 事件总线演示
 uv run python chat_async.py
 ```
@@ -141,7 +138,6 @@ kittymind/
 │       ├── renderer/   # React 聊天界面
 │       ├── pet/        # 桌宠窗口（Canvas + 图层动画）
 │       └── overlay/    # 快速输入悬浮框
-├── chat.py             # CLI 同步对话演示
 ├── chat_async.py       # CLI 异步对话演示
 ├── build-python.spec   # PyInstaller 打包配置
 └── .env.example        # 环境变量模板

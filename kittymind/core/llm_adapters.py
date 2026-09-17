@@ -27,9 +27,6 @@ class BaseLLMAdapter(ABC):
     @abstractmethod
     def invoke_stream(self, messages: list[dict], **kwargs) -> iter: pass
 
-    @abstractmethod
-    def stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs): pass
-
     async def async_stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         raise NotImplementedError
 
@@ -73,58 +70,6 @@ class OpenAIAdapter(BaseLLMAdapter):
             content = chunk.choices[0].delta.content or ""
             if content:
                 yield content
-
-    def stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
-        if not self._client:
-            self._client = self._create_client()
-
-        create_kwargs = {
-            "model": self.model, "messages": messages, "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if tools:
-            create_kwargs["tools"] = tools
-        create_kwargs.update(kwargs)
-
-        tool_calls_buf: dict[int, dict] = {}
-        usage_snapshot: dict | None = None
-
-        for chunk in self._client.chat.completions.create(**create_kwargs):
-            if not chunk.choices:
-                if chunk.usage is not None:
-                    usage_snapshot = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    }
-                continue
-
-            delta = chunk.choices[0].delta
-
-            if delta.content:
-                yield StreamEvent(type='text_delta', delta=delta.content)
-
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_buf:
-                        tool_calls_buf[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                    if tc.id:
-                        tool_calls_buf[idx]["id"] += tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_buf[idx]["function"]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
-
-        if tool_calls_buf:
-            for tc in tool_calls_buf.values():
-                if not tc["function"]["arguments"]:
-                    tc["function"]["arguments"] = "{}"
-            yield StreamEvent(type='tool_calls_done', tool_calls=list(tool_calls_buf.values()))
-
-        if usage_snapshot:
-            yield StreamEvent(type='usage', usage=usage_snapshot)
 
     async def async_stream_with_tools(
         self, messages: list[dict], tools: list[dict] | None = None, **kwargs
@@ -376,52 +321,6 @@ class AnthropicAdapter(BaseLLMAdapter):
         for event in self._client.messages.create(**params, stream=True):
             if event.type == "content_block_delta" and event.delta.type == "text_delta":
                 yield event.delta.text
-
-    def stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
-        if not self._client:
-            self._client = self._create_client()
-        params = self._make_params(messages, tools, kwargs)
-
-        tool_calls_buf: dict[int, dict] = {}
-        input_tokens = 0
-        output_tokens = 0
-
-        for event in self._client.messages.create(**params, stream=True):
-            etype = event.type
-            if etype == "message_start":
-                input_tokens = event.message.usage.input_tokens
-            elif etype == "content_block_start":
-                cb = event.content_block
-                if cb.type == "tool_use":
-                    tool_calls_buf[event.index] = {
-                        "id": cb.id, "name": cb.name, "input_parts": [],
-                    }
-            elif etype == "content_block_delta":
-                delta = event.delta
-                if delta.type == "text_delta":
-                    yield StreamEvent(type="text_delta", delta=delta.text)
-                elif delta.type == "input_json_delta" and event.index in tool_calls_buf:
-                    tool_calls_buf[event.index]["input_parts"].append(delta.partial_json)
-            elif etype == "message_delta":
-                output_tokens = event.usage.output_tokens
-
-        if tool_calls_buf:
-            yield StreamEvent(type="tool_calls_done", tool_calls=[
-                {
-                    "id": buf["id"], "type": "function",
-                    "function": {
-                        "name": buf["name"],
-                        "arguments": "".join(buf["input_parts"]) or "{}",
-                    },
-                }
-                for _, buf in sorted(tool_calls_buf.items())
-            ])
-
-        yield StreamEvent(type="usage", usage={
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        })
 
     async def async_stream_with_tools(
         self, messages: list[dict], tools: list[dict] | None = None, **kwargs

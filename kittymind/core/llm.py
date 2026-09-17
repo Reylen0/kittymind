@@ -1,10 +1,9 @@
 """BaseAgent统一LLM接口"""
 
 import os
-from collections.abc import Iterator
 
 from .llm_adapters import create_adapter
-from .llm_response import LLMResponse, StreamEvent
+from .llm_response import LLMResponse
 from .exceptions import BaseAgentException, LLMException
 from ..config import cfg
 
@@ -53,18 +52,6 @@ class BaseAgentLLM:
             return self._client.invoke(messages=messages, **call_kwargs)
         except Exception as e:
             raise LLMException(f"LLM调用失败: {e}") from e
-
-    def stream_with_tools(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-        **kwargs,
-    ) -> Iterator[StreamEvent]:
-        call_kwargs = self._base_kwargs(kwargs)
-        try:
-            yield from self._client.stream_with_tools(messages=messages, tools=tools, **call_kwargs)
-        except Exception as e:
-            raise LLMException(f"LLM流式调用失败: {e}") from e
 
     async def async_stream_with_tools(
         self,

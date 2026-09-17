@@ -102,7 +102,7 @@ kittymind/                      # 项目根目录
 │   ├── test_rpc_handler.py     # WebSocket RPC 协议测试
 │   └── test_session.py         # JSONL 会话读写测试
 ├── assets/                     # 应用图标 / 托盘图
-├── chat.py / chat_async.py     # CLI 演示
+├── chat_async.py                # CLI 演示
 └── ARCHITECTURE.md
 ```
 
