@@ -12,13 +12,21 @@
   - _build_messages 返回 (messages, loaded_seqs)；历史消息带瞬态 _seq 标记。
   - LLM 调用前剥离 _seq / _compressed_summary（_strip_internal）。
   - _commit_turn：有压缩时走 archive_and_compact 落库，否则 append_turn。
+
+ReAct 循环的组织方式（审查报告 §3.2）：
+  - run() 与 stream_run() **共用同一个循环骨架** _react_loop_sync，两者只在
+    "怎么取一步 LLM 结果"（_step_invoke / _step_stream）与几个显式参数上不同。
+  - async_stream_run() 保留独立循环（同步生成器装不下 await / EventBus 广播），
+    但复用 _begin_turn / _assistant_message / _ensure_final_text 等共用规则。
+  - 三条路径的能力差异是**刻意保留**的，见 _CAPABILITY_MATRIX。
 """
 
 import asyncio
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Generator, Iterator
+from dataclasses import dataclass
 
 from ..callbacks.base import BaseCallBack
 from ..config import cfg
@@ -58,6 +66,53 @@ _AUX_AUTO = object()
 # 记忆召回段缓存：值 _RECALL_STALE 表示「历史前缀已因压缩重写，需用下一轮输入重算」
 _RECALL_STALE = object()
 _RECALL_CACHE_MAX = 256   # 冻结召回段的会话数上限（LRU，超出淘汰最久未用的）
+
+
+# ── 三条 ReAct 路径的能力对照（审查报告 §3.2）──────────────────────
+# 这张表描述的是**刻意保留**的差异，不是疏漏。不要在合并循环体时顺手抹平：
+# test/test_react_loops.py 的 §4「已知漂移」会在你抹平时变红，逼先做决策
+# （子 Agent 该不该拿到父级的记忆召回？该不该落库？last_messages 该不该含最终答复？）。
+#
+#   能力                     run()         stream_run()    async_stream_run()
+#   记忆召回                   ✗             ✗               ✓
+#   落库到 SessionManager      ✗             ✗               ✓（session_id 非空时）
+#   后台记忆提取               ✗             ✗               ✓（配了 memory 时）
+#   usage / 反抖动冷却         ✗             ✗               ✓
+#   EventBus 事件广播          ✗             ✗               ✓（同步路径只走 callbacks）
+#   压缩是否丢线程池           ✗             ✗               ✓
+#   on_llm_end 载荷            LLMResponse   None            —
+#   last_messages 尾部         含最终答复    不含            不含
+#
+# 记一笔现状：run() / stream_run() 的实际调用方（子 Agent / 同步 CLI）都不带集成层，
+# 所以上表左侧的 ✗ 在其上按构造就是 no-op（_memory_recall is None、session_manager is None、
+# memory is None）；差异只在"将来给这两条路径配上集成层"时才会显形。
+
+@dataclass(frozen=True)
+class _LlmStep:
+    """一次 LLM 调用收尾后的产物，把三条路径的差异收拢到一处显式表达。
+
+    text        —— 作为「最终答复」的文本。非流式取 `response.content`（可为 None，
+                   按既有语义视作"本轮没收到答复"→ 迭代耗尽异常）；流式取累积文本。
+    msg_content —— 入列 assistant 消息时用的 content。非流式原样传 `response.content`，
+                   流式把空串归一成 None（工具调用轮通常没有正文，OpenAI 协议允许 null）。
+    tool_calls  —— 本步请求的工具调用（空列表 = 本轮收尾）。
+    llm_end     —— `on_llm_end` 回调载荷：非流式有完整 LLMResponse，流式拿不到故为 None。
+    """
+    text: str | None
+    msg_content: str | None
+    tool_calls: list[dict]
+    llm_end: object
+
+
+@dataclass(frozen=True)
+class _TurnSetup:
+    """每轮开始时的共用运行态（run / stream_run / async_stream_run 三处同构）。"""
+    messages: list[dict]
+    loaded_seqs: list
+    tools_schema: list[dict] | None
+    tracker: TokenTracker
+    compressor: ContextCompressor
+    ctx: TurnContext
 
 
 class KittyAgent(Agent):
@@ -124,7 +179,7 @@ class KittyAgent(Agent):
         """
         return self.aux_llm or self.llm
 
-    # ── 每轮初始化（run/stream_run/async_stream_run 共用）──────────
+    # ── 三条路径共用的每轮规则 ────────────────────────────────────
 
     def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
         """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
@@ -138,16 +193,101 @@ class KittyAgent(Agent):
                 tracker._last_prompt_tokens = state["last_prompt_tokens"]
         return tracker, compressor, TurnContext(session_id=session_id)
 
-    # ── 同步 ReAct（子 Agent 使用，纯内存，支持压缩不落库）──────
+    def _begin_turn(self, session_id: str | None, input_text: str) -> _TurnSetup:
+        """每轮共用初始化：上下文 + 工具表 + 运行态。三条路径都从这里出发。
+
+        `session_id` 为空（子 Agent）时历史为空、loaded_seqs=[]；记忆召回由
+        async 路径在拿到 messages 之后另行注入。
+        """
+        messages, loaded_seqs = self._build_messages(session_id, input_text)
+        tracker, compressor, ctx = self._new_turn(session_id)
+        return _TurnSetup(
+            messages=messages,
+            loaded_seqs=loaded_seqs,
+            tools_schema=self.tool_registry.get_schemas() or None,
+            tracker=tracker,
+            compressor=compressor,
+            ctx=ctx,
+        )
+
+    @staticmethod
+    def _assistant_message(content: str | None, tool_calls: list[dict]) -> dict:
+        """本轮 assistant 消息。没有工具调用时 `tool_calls` 写 None（OpenAI 协议如此）。"""
+        return {"role": "assistant", "content": content, "tool_calls": tool_calls or None}
+
+    def _ensure_final_text(self, final_text: str | None) -> str:
+        """迭代耗尽仍未收尾 → 抛迭代上限异常（三条路径共用同一文案）。"""
+        if final_text is None:
+            raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
+        return final_text
+
+    def _execute_tools(self, messages: list[dict], tool_calls: list[dict], ctx: TurnContext) -> None:
+        """同步执行一批工具调用并把结果回灌 `messages`（子 Agent 与同步 CLI 共用）。
+
+        异步路径不用这个：它要把每次调用广播到 EventBus，并把阻塞执行丢进线程池。
+        """
+        for tool_call in tool_calls:
+            name = tool_call["function"]["name"]
+            self._emit("on_tool_start", name, tool_call)
+            result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
+            self._emit("on_tool_end", name, result)
+            messages.append(result)
+
+    # ── 同步 ReAct：run() 与 stream_run() 共用一套循环骨架 ────────
 
     def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
+        """同步 ReAct（子 Agent 使用，纯内存，支持压缩但不落库）。
+
+        非流式：一次 `invoke` 取整步结果。循环骨架与 `stream_run()` 共用
+        `_react_loop_sync`，差别只在 `llm_step` / `error_prefix` /
+        `keep_final_assistant` 三个显式参数（见 `_CAPABILITY_MATRIX`）。
+        """
+        return self._drain(self._react_loop_sync(
+            session_id, input_text,
+            llm_step=self._step_invoke,
+            error_prefix="LLM调用失败",
+            keep_final_assistant=True,
+            llm_kwargs=kwargs,
+        ))
+
+    def stream_run(self, session_id: str | None, input_text: str, **kwargs) -> Iterator[str]:
+        """同步流式 ReAct（CLI 使用）：边收边吐，调用方逐字看到输出。
+
+        `yield from` 会把循环骨架的 `return` 值当作本生成器的返回值（调用方忽略）。
+        """
+        return (yield from self._react_loop_sync(
+            session_id, input_text,
+            llm_step=self._step_stream,
+            error_prefix="LLM流式调用失败",
+            keep_final_assistant=False,
+            llm_kwargs=kwargs,
+        ))
+
+    def _react_loop_sync(
+        self,
+        session_id: str | None,
+        input_text: str,
+        *,
+        llm_step: Callable[..., Generator[str, None, _LlmStep]],
+        error_prefix: str,
+        keep_final_assistant: bool,
+        llm_kwargs: dict,
+    ) -> Generator[str, None, str]:
+        """`run()` 与 `stream_run()` 的共用循环骨架。
+
+        向上游 yield 每一步的文本增量（`run()` 全部丢弃，`stream_run()` 转给 CLI），
+        并以 `return` 给出本轮最终答复。
+
+        与 `async_stream_run()` 的差异一律显式保留、不做「顺手统一」：本函数不注入
+        记忆召回、不落库、不起后台提取；压缩冷却固定 0.0（同步路径收不到 usage 事件，
+        反抖动无从判断）；事件只经 callbacks，不走 EventBus。
+        """
         try:
             self._emit("on_agent_start", self.name, input_text)
-            messages, _ = self._build_messages(session_id, input_text)
-            tools_schema = self.tool_registry.get_schemas() or None
+            setup = self._begin_turn(session_id, input_text)
+            messages, tracker, compressor = setup.messages, setup.tracker, setup.compressor
+            ctx, tools_schema = setup.ctx, setup.tools_schema
             final_text: str | None = None
-
-            tracker, compressor, ctx = self._new_turn(session_id)
 
             for _ in range(self.max_iterations):
                 messages, tracker, _ = self._maybe_compress(
@@ -155,35 +295,24 @@ class KittyAgent(Agent):
                 )
                 self._emit("on_llm_start", messages)
                 try:
-                    response = self.llm.invoke(
-                        messages=self._strip_internal(messages),
-                        tools=tools_schema, **kwargs,
-                    )
+                    step = yield from llm_step(messages, tools_schema, llm_kwargs)
                 except Exception as e:
                     self._emit("on_llm_error", e)
-                    raise LLMException(f"LLM调用失败: {e}") from e
-                self._emit("on_llm_end", response)
+                    raise LLMException(f"{error_prefix}: {e}") from e
+                self._emit("on_llm_end", step.llm_end)
 
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content,
-                    "tool_calls": response.tool_calls or None,
-                })
+                if step.tool_calls:
+                    messages.append(self._assistant_message(step.msg_content, step.tool_calls))
+                    self._execute_tools(messages, step.tool_calls, ctx)
+                    continue
 
-                if response.is_tool_call():
-                    for tool_call in response.tool_calls:
-                        name = tool_call["function"]["name"]
-                        self._emit("on_tool_start", name, tool_call)
-                        result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
-                        self._emit("on_tool_end", name, result)
-                        messages.append(result)
-                else:
-                    final_text = response.content
-                    break
+                # 收尾。流式路径到此不再入列最终 assistant 消息（见能力对照表）
+                final_text = step.text
+                if keep_final_assistant:
+                    messages.append(self._assistant_message(step.msg_content, []))
+                break
 
-            if final_text is None:
-                raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
-
+            final_text = self._ensure_final_text(final_text)
             self.last_messages = messages
             self._emit("on_agent_end", self.name, final_text)
             return final_text
@@ -192,69 +321,60 @@ class KittyAgent(Agent):
             self._emit("on_agent_error", self.name, e)
             raise
 
-    # ── 同步流式 ReAct（CLI 使用）────────────────────────────────
+    def _step_invoke(
+        self, messages: list[dict], tools_schema: list[dict] | None, llm_kwargs: dict
+    ) -> Generator[str, None, _LlmStep]:
+        """非流式取一步：一次 `invoke`，整段文本作为「单个增量」吐出。
 
-    def stream_run(
-        self, session_id: str | None, input_text: str, **kwargs
-    ) -> Iterator[str]:
+        `run()` 会把增量全部丢弃——这里之所以写成生成器，是为了让 `yield from` 能同时
+        转发增量、拿到 `_LlmStep` 作为返回值，从而与 `_step_stream` 共用同一个骨架。
+        """
+        response = self.llm.invoke(
+            messages=self._strip_internal(messages), tools=tools_schema, **llm_kwargs
+        )
+        if response.content is not None:
+            yield response.content
+        return _LlmStep(
+            text=response.content,
+            msg_content=response.content,
+            tool_calls=response.tool_calls,
+            llm_end=response,
+        )
+
+    def _step_stream(
+        self, messages: list[dict], tools_schema: list[dict] | None, llm_kwargs: dict
+    ) -> Generator[str, None, _LlmStep]:
+        """流式取一步：边收 delta 边吐给调用方，收尾才拿到完整 tool_calls。"""
+        chunks: list[str] = []
+        tool_calls: list[dict] = []
+        for event in self.llm.stream_with_tools(
+            messages=self._strip_internal(messages), tools=tools_schema, **llm_kwargs
+        ):
+            if event.type == "text_delta":
+                chunks.append(event.delta)
+                yield event.delta
+            elif event.type == "tool_calls_done":
+                tool_calls = event.tool_calls
+        step_text = "".join(chunks)
+        return _LlmStep(
+            text=step_text,
+            msg_content=step_text or None,
+            tool_calls=tool_calls,
+            llm_end=None,
+        )
+
+    @staticmethod
+    def _drain(gen: Generator[str, None, str]) -> str:
+        """把循环骨架跑完并取回其返回值（最终答复）。
+
+        `run()` 不需要流式输出，但骨架是生成器（为了与 `stream_run()` 共用），
+        于是逐次推进、丢掉增量，最后从 `StopIteration.value` 取答案。
+        """
         try:
-            self._emit("on_agent_start", self.name, input_text)
-            messages, _ = self._build_messages(session_id, input_text)
-            tools_schema = self.tool_registry.get_schemas() or None
-            final_text: str | None = None
-
-            tracker, compressor, ctx = self._new_turn(session_id)
-
-            for _ in range(self.max_iterations):
-                messages, tracker, _ = self._maybe_compress(
-                    messages, tracker, compressor, 0.0
-                )
-                self._emit("on_llm_start", messages)
-                text_chunks: list[str] = []
-                tool_calls: list[dict] = []
-
-                try:
-                    for event in self.llm.stream_with_tools(
-                        messages=self._strip_internal(messages),
-                        tools=tools_schema, **kwargs,
-                    ):
-                        if event.type == "text_delta":
-                            text_chunks.append(event.delta)
-                            yield event.delta
-                        elif event.type == "tool_calls_done":
-                            tool_calls = event.tool_calls
-                except Exception as e:
-                    self._emit("on_llm_error", e)
-                    raise LLMException(f"LLM流式调用失败: {e}") from e
-
-                self._emit("on_llm_end", None)
-                step_text = "".join(text_chunks)
-
-                if not tool_calls:
-                    final_text = step_text
-                    break
-
-                messages.append({
-                    "role": "assistant",
-                    "content": step_text or None,
-                    "tool_calls": tool_calls,
-                })
-                for tool_call in tool_calls:
-                    name = tool_call["function"]["name"]
-                    self._emit("on_tool_start", name, tool_call)
-                    result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
-                    self._emit("on_tool_end", name, result)
-                    messages.append(result)
-
-            if final_text is None:
-                raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
-
-            self.last_messages = messages
-            self._emit("on_agent_end", self.name, final_text)
-
-        except Exception as e:
-            self._emit("on_agent_error", self.name, e)
-            raise
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            return stop.value
 
     # ── 异步流式 ReAct（生产路径，含所有集成层）─────────────────
 
@@ -271,15 +391,18 @@ class KittyAgent(Agent):
         try:
             await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
-            messages, loaded_seqs = self._build_messages(session_id, input_text)
+            setup = self._begin_turn(session_id, input_text)
+            messages, loaded_seqs = setup.messages, setup.loaded_seqs
+            tools_schema, tracker = setup.tools_schema, setup.tracker
+            compressor, ctx = setup.compressor, setup.ctx
+
+            # 记忆召回是 async 路径**独有**的能力（见 _CAPABILITY_MATRIX），
+            # 作为独立 system 消息插在主 system 之后。
             await self._inject_memory_recall(messages, input_text, session_id)
 
-            tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
             turn_messages: list[dict] = [{"role": "user", "content": input_text}]
             compressed_this_turn = False
-
-            tracker, compressor, ctx = self._new_turn(session_id)
             cooldown_until = 0.0
             ineffective_count = 0
 
@@ -333,11 +456,7 @@ class KittyAgent(Agent):
                         final_text = step_text
                         break
 
-                    assistant_msg = {
-                        "role": "assistant",
-                        "content": step_text or None,
-                        "tool_calls": tool_calls,
-                    }
+                    assistant_msg = self._assistant_message(step_text or None, tool_calls)
                     messages.append(assistant_msg)
                     turn_messages.append(assistant_msg)
 
@@ -359,8 +478,7 @@ class KittyAgent(Agent):
                         messages.append(result)
                         turn_messages.append(result)
 
-                if final_text is None:
-                    raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
+                final_text = self._ensure_final_text(final_text)
 
                 # 与 run() / stream_run() 保持一致：三条路径都要暴露本轮完整消息。
                 # 此前 async 路径漏了这一步，等于生产路径上这个属性永远是空列表。

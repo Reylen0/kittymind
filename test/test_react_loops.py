@@ -10,13 +10,15 @@
 1. 钉住 `run()` / `stream_run()` 的**可观察行为**——这两条此前**零覆盖**，
    而子 Agent 走的正是 `run()`。
 2. 钉住三条路径**共有**的不变量（异常类型与文案、回调时序、喂给 LLM 的消息序列）。
-3. **显式记录已知漂移**，共两类四条：
+3. **显式记录已知漂移**，共两类五条：
    - 集成层三条：记忆召回 / 落库 / 后台提取只在 async 路径发生；
-   - 消息累积一条：`run()` 的 `last_messages` 结尾多一条**最终 assistant 消息**（它没被喂给
-     LLM），两条流式路径都不含。分界线是「非流式 vs 流式」，不是「同步 vs 异步」。
+   - 消息与答复语义两条：`run()` 的 `last_messages` 结尾多一条**最终 assistant 消息**
+     （它没被喂给 LLM），两条流式路径都不含（分界线是「非流式 vs 流式」）；
+     以及"空答复"的处理不对称——非流式把 `content=None` 视作未能收尾（抛迭代上限），
+     流式只可能累积出 `""`（判为正常收尾）；工具调用轮的空正文同理（`""` vs `None`）。
    合并时若有人"顺手"把任一漂移抹平，对应测试会红——逼他先做决策
-   （子 Agent 该不该拿到父级记忆召回？该不该落库？`last_messages` 该不该含最终答复？），
-   而不是默认改行为。
+   （子 Agent 该不该拿到父级记忆召回？该不该落库？`last_messages` 该不该含最终答复？
+   空答复算收尾还是算失败？），而不是默认改行为。
 
 不碰真实文件系统 / 网络：工具执行器整个换成记录桩，LLM 用脚本替身。
 """
@@ -51,7 +53,7 @@ class _ScriptedLLM:
 
     model = "scripted"
 
-    def __init__(self, steps: list[tuple[str, list[dict]]]):
+    def __init__(self, steps: list[tuple[str | None, list[dict]]]):
         self.steps = list(steps)
         self.seen: list[list[dict]] = []
 
@@ -104,7 +106,20 @@ class _Recorder:
         raise AttributeError(name)
 
 
-def make_agent(steps, *, max_iterations=30, memory=None):
+class _FakeSessionManager:
+    """只给出 `_build_messages` / `_new_turn` 需要的最小接口（不碰 SQLite）。"""
+
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+
+    def load_messages(self, session_id):
+        return self._rows
+
+    def get_session_state(self, session_id):
+        return {}
+
+
+def make_agent(steps, *, max_iterations=30, memory=None, session_manager=None):
     """构造一个只连替身的 agent。
 
     `aux_llm=None` 是显式哨兵（"强制回退主模型"），避免默认 `_AUX_AUTO` 在
@@ -115,7 +130,8 @@ def make_agent(steps, *, max_iterations=30, memory=None):
     agent = KittyAgent(
         name="t", llm=llm, system_prompt="sp", tools=[],
         callbacks=[rec], max_iterations=max_iterations,
-        memory=memory, aux_llm=None, interactive=False,
+        memory=memory, session_manager=session_manager,
+        aux_llm=None, interactive=False,
     )
     agent.tool_executor = _RecordingExecutor()
     return agent, llm, rec
@@ -169,6 +185,22 @@ def test_run_executes_tool_then_continues():
     second_call = llm.seen[1]
     assert second_call[-1]["role"] == "tool"
     assert second_call[-1]["content"] == "ran:noop"
+
+
+def test_run_executes_every_tool_call_in_one_step():
+    """一步内请求多个工具时，逐个执行、逐个回灌（不是只取第一个）。"""
+    calls = [_tool_call("a", "c1"), _tool_call("b", "c2")]
+    agent, _, rec = make_agent([("go", calls), ("done", [])])
+
+    assert run_sync(agent) == "done"
+
+    assert agent.tool_executor.calls == calls
+    assert [m["role"] for m in agent.last_messages] == [
+        "system", "user", "assistant", "tool", "tool", "assistant",
+    ]
+    assert [m["tool_call_id"] for m in agent.last_messages if m["role"] == "tool"] == ["c1", "c2"]
+    assert rec.events.count("on_tool_start") == 2
+    assert rec.events.count("on_tool_end") == 2
 
 
 def test_run_raises_agent_exception_when_iterations_exhausted():
@@ -296,11 +328,31 @@ def test_all_paths_share_the_max_iterations_error_text():
     assert str(a.value) == str(b.value)
 
 
-def test_sync_last_messages_carry_the_final_assistant_reply():
+def test_history_seq_marks_are_stripped_before_the_llm_call():
+    """历史消息上的 `_seq` 只用于落库对账，必须在调 LLM 前剥掉（`_strip_internal`）。
+
+    同时确认剥离是"只对喂给 LLM 的那份做拷贝"，本轮回灌的 `messages` 仍带 `_seq`。
+    """
+    rows = [
+        {"seq": 1, "role": "user", "content": "早前的提问"},
+        {"seq": 2, "role": "assistant", "content": "早前的回答"},
+    ]
+    agent, llm, _ = make_agent([("done", [])], session_manager=_FakeSessionManager(rows))
+
+    assert run_sync(agent) == "done"
+
+    assert all("_seq" not in m for m in llm.seen[0]), "内部标记不得泄漏给 LLM API"
+    assert [m["role"] for m in llm.seen[0]] == ["system", "user", "assistant", "user"]
+    assert agent.last_messages[1]["_seq"] == 1, "本轮回灌的 messages 仍保留 _seq 供落库对账"
+
+
+# ── 4. 已知漂移：合并前必须先做决策，不能默认改行为 ────────────────
+
+def test_run_last_messages_carry_the_final_assistant_reply():
     """**漂移第 4 条（前半）**：`run()` 会把最终 assistant 消息 append 进 `last_messages`。
 
     虽然这条消息**从未喂给 LLM**（下一轮循环已经 break 了），但它确实是本轮的产出，
-    所以 `task_tool` 拿它估 token 是合理的。前半条在这里，后半条见文件末的流式对照。
+    所以 `task_tool` 拿它估 token 是合理的。后半条见 `test_streaming_last_messages_*`。
     """
     agent, llm, _ = make_agent([("final answer", [])])
 
@@ -310,8 +362,6 @@ def test_sync_last_messages_carry_the_final_assistant_reply():
         {"role": "assistant", "content": "final answer", "tool_calls": None}
     ]
 
-
-# ── 4. 已知漂移：合并前必须先做决策，不能默认改行为 ────────────────
 
 @pytest.fixture
 def integration_spies(monkeypatch):
@@ -400,3 +450,63 @@ async def test_streaming_last_messages_equal_what_was_fed_to_the_llm():
     for agent, llm in ((agent_a, llm_a), (agent_b, llm_b)):
         assert agent.last_messages == llm.seen[-1]
         assert [m["role"] for m in agent.last_messages] == ["system", "user"]
+
+
+def test_run_keeps_an_empty_string_reply_as_an_answer():
+    """`content=""` 是一段（空的）答复 → 正常收尾、返回空串。"""
+    agent, _, _ = make_agent([("", [])])
+
+    assert run_sync(agent) == ""
+
+
+def test_run_treats_none_reply_as_exhaustion():
+    """**漂移第 5 条（前半）**：`content=None` 且无工具调用 → 按"本轮没能收尾"处理。
+
+    注意与上一条的区别：`""` 是答复，`None` 是"没拿到答复"。非流式才有 None 这一态
+    （`LLMResponse.content` 可为 None），于是它被判为迭代耗尽、抛 `AgentException`
+    （文案是"超过最大迭代次数"，严格说并不准确——这里只是沿用既有行为并把它钉住）。
+    """
+    agent, _, rec = make_agent([(None, [])])
+
+    with pytest.raises(AgentException, match="超过最大迭代次数"):
+        run_sync(agent)
+
+    assert rec.events[-1] == "on_agent_error"
+
+
+async def test_streaming_paths_turn_a_blank_reply_into_empty_string():
+    """**漂移第 5 条（后半）**：流式路径没有 None 态，空答复只会累积成 `""`。
+
+    同一条脚本（`content=None`，无工具调用）在 `run()` 上抛异常，在两条流式路径上
+    正常返回空串——这是"非流式 vs 流式"的分界，不是"同步 vs 异步"。合并时必须先定
+    语义（空答复算收尾还是算失败），再动手。
+    """
+    agent_a, _, _ = make_agent([(None, [])], max_iterations=1)
+    agent_b, _, _ = make_agent([(None, [])], max_iterations=1)
+
+    assert run_stream(agent_a) == []          # 没有任何增量
+    assert await run_async(agent_b) == ""     # 正常收尾，答复为空串
+    assert [m["role"] for m in agent_b.last_messages] == ["system", "user"]
+
+
+def test_tool_only_round_normalizes_empty_content_differently():
+    """**漂移第 5 条（其一）**：工具调用轮的 assistant 正文，两条路径写法不同。
+
+    工具调用轮通常没有正文（模型只吐 tool_calls），而这行消息会被原样写进后续请求，
+    所以 `""` 与 `None` 的差别是真实可见的：`run()` 保留 `""`，流式归一成 `None`
+    （OpenAI 协议允许 content=null）。合并时别顺手统一。
+    """
+    steps = [("", [_tool_call("noop")]), ("done", [])]
+    agent_a, _, _ = make_agent(steps)
+    agent_b, _, _ = make_agent(steps)
+
+    run_sync(agent_a)
+    run_stream(agent_b)
+
+    expected_calls = [_tool_call("noop")]
+    assert agent_a.last_messages[2] == {
+        "role": "assistant", "content": "", "tool_calls": expected_calls,
+    }
+    assert agent_b.last_messages[2] == {
+        "role": "assistant", "content": None, "tool_calls": expected_calls,
+    }
