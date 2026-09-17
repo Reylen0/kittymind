@@ -16,6 +16,7 @@
 
 import asyncio
 import time
+from collections import OrderedDict
 from typing import AsyncIterator, Iterator, Optional
 
 from ..callbacks.base import BaseCallBack
@@ -50,6 +51,10 @@ _INTERNAL_KEYS = ("_seq", _SUMMARY_MARKER)
 
 # 辅助模型哨兵：默认「按配置自动解析」，显式传 None 表示强制回退主模型
 _AUX_AUTO = object()
+
+# 记忆召回段缓存：值 _RECALL_STALE 表示「历史前缀已因压缩重写，需用下一轮输入重算」
+_RECALL_STALE = object()
+_RECALL_CACHE_MAX = 256   # 冻结召回段的会话数上限（LRU，超出淘汰最久未用的）
 
 
 class KittyAgent(Agent):
@@ -91,6 +96,9 @@ class KittyAgent(Agent):
         self.aux_llm: Optional[BaseAgentLLM] = (
             get_aux_llm() if aux_llm is _AUX_AUTO else aux_llm
         )
+
+        # 冻结的记忆召回段（session_id -> 文本 | _RECALL_STALE）
+        self._recall_cache: OrderedDict[str, object] = OrderedDict()
 
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
@@ -256,7 +264,7 @@ class KittyAgent(Agent):
             await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
             messages, loaded_seqs = self._build_messages(session_id, input_text)
-            await self._inject_memory_recall(messages, input_text)
+            await self._inject_memory_recall(messages, input_text, session_id)
 
             tools_schema = self.tool_registry.get_schemas() or None
             final_text: str | None = None
@@ -274,6 +282,8 @@ class KittyAgent(Agent):
                     )
                     if did_compress:
                         compressed_this_turn = True
+                        # 历史前缀已被重写，跨轮缓存反正失效 —— 顺势标记召回段待重算
+                        self._mark_recall_stale(session_id)
 
                     await self.event_bus.emit(AGENT_THINKING, {"session_id": session_id})
 
@@ -383,22 +393,55 @@ class KittyAgent(Agent):
                 return effective, ws["path"]
         return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
 
-    async def _inject_memory_recall(self, messages: list[dict], input_text: str) -> None:
+    async def _inject_memory_recall(
+        self, messages: list[dict], input_text: str, session_id: str | None
+    ) -> None:
+        """注入记忆召回段 —— 独立 system 消息，插在主 system 之后。
+
+        缓存关键设计（E1）：
+          - 不再改写 messages[0]，主 system prompt 跨轮字节级稳定；
+          - 召回内容按会话生命周期冻结（跨轮不变），保住前缀提示缓存——
+            旧实现每轮把召回追加进 system，长会话成本近似翻倍；
+          - 仅在会话首次出现、或压缩之后（历史前缀反正已重写，缓存必失效）
+            用当轮输入重算，重算时机零额外缓存损失。
+        """
         if not self._memory_recall:
             return
+        section = await self._recall_section(session_id, input_text)
+        if not section or not messages:
+            return
+        insert_at = 1 if messages[0].get("role") == "system" else 0
+        messages.insert(insert_at, {"role": "system", "content": section})
+
+    async def _recall_section(self, session_id: str | None, input_text: str) -> str:
+        """返回本会话冻结的召回段；未命中（首次/被淘汰/压缩后）才重算。"""
+        if not session_id:
+            # 无会话（无从跨轮）：现算现用，不缓存
+            return await self._compute_recall_section(input_text)
+        cached = self._recall_cache.get(session_id)
+        if cached is not None and cached is not _RECALL_STALE:
+            self._recall_cache.move_to_end(session_id)
+            return cached
+        section = await self._compute_recall_section(input_text)
+        self._recall_cache[session_id] = section  # 空串也缓存，避免每轮重算
+        self._recall_cache.move_to_end(session_id)
+        while len(self._recall_cache) > _RECALL_CACHE_MAX:
+            self._recall_cache.popitem(last=False)
+        return section
+
+    async def _compute_recall_section(self, input_text: str) -> str:
         try:
             relevant = await asyncio.to_thread(
                 self._memory_recall.select_relevant, input_text
             )
-            recall_section = self._memory_recall.build_recall_section(relevant)
-            if not recall_section or not messages:
-                return
-            if messages[0]["role"] == "system":
-                messages[0] = {**messages[0], "content": messages[0]["content"] + recall_section}
-            else:
-                messages.insert(0, {"role": "system", "content": recall_section})
+            return self._memory_recall.build_recall_section(relevant) or ""
         except Exception:
-            pass
+            return ""  # 召回是增强能力，失败静默降级
+
+    def _mark_recall_stale(self, session_id: str | None) -> None:
+        """压缩后调用：下一轮用当轮输入重算召回段。"""
+        if session_id:
+            self._recall_cache[session_id] = _RECALL_STALE
 
     # ── 消息构建 ──────────────────────────────────────────────────
 

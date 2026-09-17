@@ -204,6 +204,38 @@ class AnthropicAdapter(BaseLLMAdapter):
             timeout=float(self.timeout),
         )
 
+    # ── 提示词缓存断点（Phase 25.3）──────────────────────────────────
+    #
+    # Anthropic 缓存需显式在 content block 上打 cache_control，不像 OpenAI
+    # 兼容端点那样按前缀自动缓存。断点越靠后，覆盖的可复用前缀越长：
+    #   tools（工具定义几乎不变）→ system（含记忆召回段，会话内冻结）→
+    #   messages 最后一条（标准的多轮对话增量缓存写法：本轮标记的前缀，
+    #   下一轮连同新增内容一起复用）。三处共 3 个断点，未超过 API 上限 4。
+
+    _CACHE_CONTROL = {"type": "ephemeral"}
+
+    @classmethod
+    def _mark_cache_breakpoint(cls, block: dict) -> dict:
+        return {**block, "cache_control": cls._CACHE_CONTROL}
+
+    @classmethod
+    def _add_cache_breakpoint(cls, messages: list[dict]) -> list[dict]:
+        """在最后一条消息末尾追加缓存断点，使其之前的完整历史可被复用。"""
+        if not messages:
+            return messages
+        content = messages[-1]["content"]
+        if isinstance(content, str):
+            if not content:
+                return messages
+            content = [{"type": "text", "text": content}]
+        elif not content:
+            return messages
+        else:
+            content = list(content)
+        content[-1] = cls._mark_cache_breakpoint(content[-1])
+        messages[-1] = {**messages[-1], "content": content}
+        return messages
+
     # ── 格式转换：消息 ─────────────────────────────────────────────
 
     @staticmethod
@@ -271,6 +303,8 @@ class AnthropicAdapter(BaseLLMAdapter):
                 })
             else:
                 result.append(t)
+        if result:
+            result[-1] = AnthropicAdapter._mark_cache_breakpoint(result[-1])
         return result or None
 
     # ── 构建请求参数 ────────────────────────────────────────────────
@@ -284,13 +318,19 @@ class AnthropicAdapter(BaseLLMAdapter):
         kwargs.pop("temperature", None)  # Anthropic Claude 不接受 temperature 参数
         params: dict = {
             "model": self.model,
-            "messages": self._to_anthropic_messages(messages),
+            "messages": self._add_cache_breakpoint(self._to_anthropic_messages(messages)),
             "max_tokens": kwargs.pop("max_tokens", cfg.LLM_MAX_TOKENS),
         }
         params.update(kwargs)
-        system = next((m.get("content") for m in messages if m.get("role") == "system"), None)
-        if system:
-            params["system"] = system
+        # 合并全部 system 消息（按原顺序）：内部会用独立 system 消息承载记忆召回段
+        system_parts = [
+            m.get("content") for m in messages
+            if m.get("role") == "system" and m.get("content")
+        ]
+        if system_parts:
+            params["system"] = [
+                self._mark_cache_breakpoint({"type": "text", "text": "\n\n".join(system_parts)})
+            ]
         ant_tools = self._to_anthropic_tools(tools)
         if ant_tools:
             params["tools"] = ant_tools

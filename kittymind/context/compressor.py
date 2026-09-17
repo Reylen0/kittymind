@@ -1,7 +1,7 @@
 """轨迹压缩器：保护头尾、绝不分裂 tool_call/tool 配对、LLM 摘要中间段。
 
 设计原则（参考 hermes context_compressor）：
-- head  = system + 前 protect_first_n 条历史（首次压缩后衰减为 0）
+- head  = 前导 system 消息（主 system + 记忆召回段等）+ 前 protect_first_n 条历史（首次压缩后衰减为 0）
 - tail  = 最近若干条（token 预算 + floor）
 - mid   = head..tail 之间，整段调 LLM 摘要，失败则降级
 - 边界对齐：compress_end 后退到完整 assistant+tool 组末尾，绝不留孤儿 tool
@@ -86,10 +86,14 @@ class ContextCompressor:
 
     @staticmethod
     def _find_head_end(messages: list[dict], protect_first_n: int) -> int:
-        """head_end：system(如有) + protect_first_n 条历史后的位置。"""
+        """head_end：所有前导 system 消息（主 system + 记忆召回段等）+ protect_first_n 条历史后的位置。
+
+        只跳过 messages[0] 会漏掉紧跟其后的记忆召回 system 消息（见 kitty_agent
+        ._inject_memory_recall），导致它被当成"历史"落进 mid 段参与摘要。
+        """
         start = 0
-        if messages and messages[0].get("role") == "system":
-            start = 1
+        while start < len(messages) and messages[start].get("role") == "system":
+            start += 1
         return start + protect_first_n
 
     def _find_tail_start(
