@@ -362,6 +362,10 @@ class KittyAgent(Agent):
                 if final_text is None:
                     raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
 
+                # 与 run() / stream_run() 保持一致：三条路径都要暴露本轮完整消息。
+                # 此前 async 路径漏了这一步，等于生产路径上这个属性永远是空列表。
+                self.last_messages = messages
+
                 turn_messages.append({"role": "assistant", "content": final_text})
 
                 if session_id is not None:
