@@ -15,6 +15,7 @@ _SHELL_TOOLS——漏一个（例如曾经的 verify）就等于给 bash 开了�
 
 from collections.abc import Callable
 
+from .builtin._dangerous import find_dangerous
 from .builtin._paths import is_inside, resolve_path
 from .builtin.bash_tool import bash_cwd
 
@@ -24,16 +25,9 @@ from .builtin.bash_tool import bash_cwd
 # 能力等同 bash，因此必须与 bash 一视同仁。
 _SHELL_TOOLS: set[str] = {"bash", "verify"}
 
-_BASH_HARD_DENY: list[tuple[str, str]] = [
-    ("rm -rf /",          "递归删除根目录"),
-    ("rm -rf \\",         "递归删除根目录"),
-    ("sudo rm",           "以 sudo 执行删除"),
-    (":(){ :|:",          "fork bomb"),
-    ("rd /s /q c:\\",     "递归删除 C 盘"),
-    ("rd /s /q c:/",      "递归删除 C 盘"),
-    ("format c:",         "格式化 C 盘"),
-    ("del /f /s /q c:\\", "递归删除 C 盘文件"),
-]
+# 黑名单本体在 builtin/_dangerous.py（全仓唯一事实源，叶子模块）。
+# 放在那边而不是这里：permission 依赖 bash_tool 取 bash_cwd，
+# 表若定义在本模块，bash_tool 回头 import 就成环。
 
 # git 附加参数中的破坏性 / 改写历史选项（长选项按前缀匹配，短选项按整词匹配）
 _GIT_DANGEROUS_FLAGS: list[str] = [
@@ -200,12 +194,11 @@ def check_permission(
     闸门1（硬拒绝）始终生效，含 ask_fn=None 的路径。
     闸门2/3 仅当名称匹配规则时触发；ask_fn=None 时跳过用户审批直接放行。
     """
-    # 闸门 1：硬拒绝（bash / verify 共用）
+    # 闸门 1：硬拒绝（bash / verify 共用，黑名单见 builtin/_dangerous.py）
     if name in _SHELL_TOOLS:
-        cmd = _shell_cmd(args).lower()
-        for pattern, reason in _BASH_HARD_DENY:
-            if pattern.lower() in cmd:
-                return f"硬拒绝: {reason}"
+        reason = find_dangerous(_shell_cmd(args))
+        if reason is not None:
+            return f"硬拒绝: {reason}"
 
     # 闸门 2 + 3：规则 → 用户审批
     for tool_names, check_fn, reason in _RULES:

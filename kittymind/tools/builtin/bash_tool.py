@@ -1,5 +1,4 @@
 import locale
-import re
 import subprocess
 import sys
 from contextvars import ContextVar
@@ -8,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
 from ...config import cfg
+from ._dangerous import find_dangerous
 
 # 由 KittyAgent 在每次 async_stream_run 开始前设置
 bash_cwd: ContextVar[str] = ContextVar("bash_cwd", default=str(cfg.DEFAULT_WORKSPACE_DIR))
@@ -17,13 +17,6 @@ if sys.platform == "win32":
     _SYS_ENCODING = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
 else:
     _SYS_ENCODING = locale.getpreferredencoding(False) or "utf-8"
-
-_DANGEROUS_PATTERNS = [
-    r"rm\s+-[^\s]*r", r"rm\s+/", r":\(\)\{", r"mkfs", r"dd\s+",
-    r">\s*/dev/sd", r"chmod\s+-R\s+777", r"sudo\s+rm",
-    r"shutdown", r"reboot", r"format\s+[a-zA-Z]:", r"del\s+/[sqf]", r"rd\s+/s",
-]
-_DANGEROUS_RE = re.compile("|".join(_DANGEROUS_PATTERNS), re.IGNORECASE)
 
 
 class BashToolParam(BaseModel):
@@ -45,8 +38,12 @@ class BashTool(BaseTool):
 
     def execute(self, parameters: BashToolParam) -> ToolResult:
         command = parameters.command.strip()
-        if _DANGEROUS_RE.search(command):
-            return ToolResult(False, "Error: Dangerous command blocked")
+        # 与 permission 闸门 1 共用同一份黑名单（builtin/_dangerous.py）。
+        # 这里再查一遍不是冗余：execute() 可以被直接调用而绕过 ToolExecutor，
+        # 那样闸门 1 根本不会跑。两处同源，因此不存在"两份黑名单漂移"的老问题。
+        reason = find_dangerous(command)
+        if reason is not None:
+            return ToolResult(False, f"Error: 危险命令已阻止 — {reason}")
 
         # 夹住超时：防止模型传入过大值导致长时间阻塞
         timeout = max(1, min(parameters.timeout, cfg.BASH_MAX_TIMEOUT))

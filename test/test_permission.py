@@ -230,8 +230,12 @@ def test_verify_empty_command_not_asked(ask):
 
 
 def test_verify_delete_command_uses_specific_reason(ask):
-    """删除类命令应命中更具体的理由，而不是兜底那条。"""
-    assert check_permission("verify", {"type": "command", "command": "rm -rf build"}, ask) is None
+    """删除类命令应命中更具体的理由，而不是 verify 的兜底那条。
+
+    用非递归删除举例：递归删除（`rm -rf ...`）现在归闸门 1 硬拒绝，
+    根本走不到规则匹配——那是黑名单合并后的行为，见 test_dangerous_commands.py。
+    """
+    assert check_permission("verify", {"type": "command", "command": "rm build/old.txt"}, ask) is None
     assert ask.asked and "删除" in ask.last_reason
 
 
