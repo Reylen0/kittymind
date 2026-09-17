@@ -69,6 +69,11 @@ _RECALL_STALE = object()
 _RECALL_CACHE_MAX = 256   # 冻结召回段的会话数上限（LRU，超出淘汰最久未用的）
 
 
+def _fresh_tracker() -> TokenTracker:
+    """新建 TokenTracker：上限与保留额取自配置（调用时求值，cfg.reload() 后生效）。"""
+    return TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
+
+
 # ── 两条 ReAct 路径的能力对照 ──────────────────────────────────────
 # 这张表描述的是**刻意保留**的差异，不是疏漏。不要在改动时顺手抹平：
 # test/test_react_loops.py 的「已知漂移」区块会在你抹平时变红，逼先做决策
@@ -163,11 +168,11 @@ class KittyAgent(Agent):
         """
         return self.aux_llm or self.llm
 
-    # ── 两条路径共用的每轮规则 ────────────────────────────────────
+    # ── 每轮初始化（两条路径共用）─────────────────────────────────
 
     def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
         """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
-        tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
+        tracker = _fresh_tracker()
         compressor = ContextCompressor(self.aux_model)
         if session_id and self.session_manager:
             state = self.session_manager.get_session_state(session_id)
@@ -193,6 +198,23 @@ class KittyAgent(Agent):
             compressor=compressor,
             ctx=ctx,
         )
+
+    def _resolve_workspace(
+        self, session_id: str | None, workspace_id: str | None
+    ) -> tuple[str | None, str]:
+        """解析本轮工作目录：显式 workspace_id > 会话记录里的 workspace_id > 默认目录。"""
+        effective = workspace_id
+        if not effective and self.session_manager and session_id:
+            session_data = self.session_manager.get_session(session_id)
+            if session_data:
+                effective = session_data["header"].get("workspace_id")
+        if effective and self.workspace_manager:
+            ws = self.workspace_manager.get_workspace(effective)
+            if ws and ws.get("path"):
+                return effective, ws["path"]
+        return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
+
+    # ── 循环内共用规则 ────────────────────────────────────────────
 
     @staticmethod
     def _assistant_message(content: str | None, tool_calls: list[dict]) -> dict:
@@ -369,8 +391,7 @@ class KittyAgent(Agent):
 
                 final_text = self._ensure_final_text(final_text)
 
-                # 与 run() 保持一致：两条路径都要暴露本轮完整消息。
-                # 此前 async 路径漏了这一步，等于生产路径上这个属性永远是空列表。
+                # 与 run() 一致：暴露本轮完整消息（不含最终 assistant 答复，见 _CAPABILITY_MATRIX）。
                 self.last_messages = messages
 
                 turn_messages.append({"role": "assistant", "content": final_text})
@@ -398,21 +419,7 @@ class KittyAgent(Agent):
             reset_root_budget(budget_token)
             reset_root_session(session_token)
 
-    # ── 会话 / 工作区准备 ─────────────────────────────────────────
-
-    def _resolve_workspace(
-        self, session_id: str | None, workspace_id: str | None
-    ) -> tuple[str | None, str]:
-        effective = workspace_id
-        if not effective and self.session_manager and session_id:
-            session_data = self.session_manager.get_session(session_id)
-            if session_data:
-                effective = session_data["header"].get("workspace_id")
-        if effective and self.workspace_manager:
-            ws = self.workspace_manager.get_workspace(effective)
-            if ws and ws.get("path"):
-                return effective, ws["path"]
-        return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
+    # ── 记忆召回（async 路径独有的能力，见 _CAPABILITY_MATRIX）────
 
     async def _inject_memory_recall(
         self, messages: list[dict], input_text: str, session_id: str | None
@@ -520,15 +527,11 @@ class KittyAgent(Agent):
         compressor: ContextCompressor,
         cooldown_until: float,
     ) -> tuple[list[dict], TokenTracker, bool]:
-        """微压缩 + 主压缩（同步路径：CLI / 子 Agent）。返回 (messages, tracker, did_compress)。"""
+        """同步压缩（子 Agent 路径）。返回 (messages, tracker, did_compress)。"""
         messages, ratio = self._compression_trigger(messages, tracker, cooldown_until)
         if ratio is None:
             return messages, tracker, False
-        compressed = compressor.compress(messages, tracker)
-        if compressed is messages:
-            return messages, tracker, False
-        logger.info("压缩 %d → %d 条消息（占用比 %.2f）", len(messages), len(compressed), ratio)
-        return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
+        return self._compress_result(messages, tracker, ratio, compressor.compress(messages, tracker))
 
     async def _maybe_compress_async(
         self,
@@ -547,10 +550,20 @@ class KittyAgent(Agent):
         if ratio is None:
             return messages, tracker, False
         compressed = await asyncio.to_thread(compressor.compress, messages, tracker)
+        return self._compress_result(messages, tracker, ratio, compressed)
+
+    def _compress_result(
+        self,
+        messages: list[dict],
+        tracker: TokenTracker,
+        ratio: float,
+        compressed: list[dict],
+    ) -> tuple[list[dict], TokenTracker, bool]:
+        """两条压缩路径的共同收尾：无变化原样返回；有变化记日志、换新 tracker。"""
         if compressed is messages:
             return messages, tracker, False
         logger.info("压缩 %d → %d 条消息（占用比 %.2f）", len(messages), len(compressed), ratio)
-        return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
+        return compressed, _fresh_tracker(), True
 
     @staticmethod
     def _compression_trigger(
