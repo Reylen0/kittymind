@@ -336,6 +336,28 @@ class SqliteSessionStore:
             ).fetchall()
         return [r[0] for r in rows]
 
+    def list_headers(self) -> list[dict]:
+        """只读会话 header（不触碰 messages 表），供 session/list 使用。
+
+        旧实现由调用方逐个 read()，会把每个会话的全部消息行都拉出来只为取
+        标题等 4 个字段——会话一多，列表 RPC 就退化成全量读消息。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, title, workspace_id, created_at"
+                " FROM sessions ORDER BY created_at DESC"
+            ).fetchall()
+        return [
+            {
+                "version":            1,
+                "id":                 r[0],
+                "title":              r[1],
+                "workspace_id":       r[2],
+                "created_at":         r[3],
+            }
+            for r in rows
+        ]
+
     def get_state(self, session_id: str) -> dict:
         with self._lock:
             row = self._conn.execute(

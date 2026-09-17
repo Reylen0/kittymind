@@ -251,7 +251,7 @@ class KittyAgent(Agent):
 
             try:
                 for _ in range(self.max_iterations):
-                    messages, tracker, did_compress = self._maybe_compress(
+                    messages, tracker, did_compress = await self._maybe_compress_async(
                         messages, tracker, compressor, cooldown_until
                     )
                     if did_compress:
@@ -433,16 +433,53 @@ class KittyAgent(Agent):
         compressor: ContextCompressor,
         cooldown_until: float,
     ) -> tuple[list[dict], TokenTracker, bool]:
-        """微压缩 + 主压缩。返回 (messages, tracker, did_compress)。"""
-        messages = prune_tool_outputs(messages)
-        ratio = tracker.ratio(messages)
-        if ratio < cfg.COMPRESS_THRESHOLD_RATIO or time.monotonic() < cooldown_until:
+        """微压缩 + 主压缩（同步路径：CLI / 子 Agent）。返回 (messages, tracker, did_compress)。"""
+        messages, ratio = self._compression_trigger(messages, tracker, cooldown_until)
+        if ratio is None:
             return messages, tracker, False
         compressed = compressor.compress(messages, tracker)
         if compressed is messages:
             return messages, tracker, False
         print(f"[compress] ratio={ratio:.2f}，{len(messages)} → {len(compressed)}", flush=True)
         return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
+
+    async def _maybe_compress_async(
+        self,
+        messages: list[dict],
+        tracker: TokenTracker,
+        compressor: ContextCompressor,
+        cooldown_until: float,
+    ) -> tuple[list[dict], TokenTracker, bool]:
+        """异步路径的压缩。
+
+        compress() 内部要调 LLM 生成摘要（同步阻塞调用），直接在此调用会卡死
+        整个事件循环——期间其它会话的事件推送、心跳、新请求全部冻结。故仅把
+        摘要这一步丢到线程里执行，修剪与阈值判断仍在循环内（纯 CPU、开销小）。
+        """
+        messages, ratio = self._compression_trigger(messages, tracker, cooldown_until)
+        if ratio is None:
+            return messages, tracker, False
+        compressed = await asyncio.to_thread(compressor.compress, messages, tracker)
+        if compressed is messages:
+            return messages, tracker, False
+        print(f"[compress] ratio={ratio:.2f}，{len(messages)} → {len(compressed)}", flush=True)
+        return compressed, TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS), True
+
+    @staticmethod
+    def _compression_trigger(
+        messages: list[dict],
+        tracker: TokenTracker,
+        cooldown_until: float,
+    ) -> tuple[list[dict], float | None]:
+        """微压缩修剪 + 阈值/冷却判断。
+
+        返回 (修剪后的 messages, ratio)；ratio 为 None 表示本轮无需压缩。
+        """
+        messages = prune_tool_outputs(messages)
+        ratio = tracker.ratio(messages)
+        if ratio < cfg.COMPRESS_THRESHOLD_RATIO or time.monotonic() < cooldown_until:
+            return messages, None
+        return messages, ratio
 
     def _check_anti_thrash(
         self,

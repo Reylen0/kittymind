@@ -93,6 +93,38 @@ def test_manager_list_sessions(mgr):
     assert len(mgr.list_sessions()) == 2
 
 
+# ── P0 回归：session/list 不得读取消息表 ──────────────────────────
+
+def test_store_list_headers_returns_summary_only(store):
+    store.write_header("s1", {"version": 1, "id": "s1", "title": "t1",
+                              "created_at": "2026-01-01T00:00:00+00:00"})
+    for i in range(50):
+        store.append("s1", {"seq": i, "role": "user", "content": f"msg-{i}"})
+
+    headers = store.list_headers()
+    assert [h["id"] for h in headers] == ["s1"]
+    assert headers[0]["title"] == "t1"
+    assert headers[0]["created_at"] == "2026-01-01T00:00:00+00:00"
+
+
+def test_manager_list_sessions_never_reads_messages(mgr):
+    """回归：list_sessions 曾对每个会话调用 read()（连带加载该会话全部消息）。"""
+    for i in range(3):
+        sid = mgr.create_session(title=f"S{i}")
+        mgr.append_turn(sid, [{"role": "user", "content": "hi"}] * 20)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("list_sessions 不应读取消息")
+
+    mgr.store.read = _boom
+    mgr.store.read_display = _boom
+
+    sessions = mgr.list_sessions()
+    assert len(sessions) == 3
+    assert {s["title"] for s in sessions} == {"S0", "S1", "S2"}
+    assert all(s["id"] for s in sessions)
+
+
 def test_manager_delete_session(mgr):
     sid = mgr.create_session()
     mgr.delete_session(sid)

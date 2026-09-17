@@ -175,7 +175,12 @@ class RpcHandler:
                 bus.unsubscribe(AGENT_CONTEXT_USAGE, fwd_context_usage)
                 bus.unsubscribe(SUBAGENT_START,      fwd_subagent_start)
                 bus.unsubscribe(SUBAGENT_DONE,       fwd_subagent_done)
-                self._tasks.pop(session_id, None)
+                # 仅当本任务仍是该 session 的当前任务时才摘除登记。
+                # 同一 session 再次 turn/run 会先 cancel 旧任务并登记新任务，
+                # 旧任务的 finally 若无条件 pop，会把新任务条目误删，
+                # 导致随后 turn/cancel 找不到任务、停止按钮失效。
+                if self._tasks.get(session_id) is asyncio.current_task():
+                    self._tasks.pop(session_id, None)
 
         task = asyncio.create_task(_run())
         self._tasks[session_id] = task

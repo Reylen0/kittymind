@@ -29,17 +29,19 @@ class SessionManager:
         return self.store.exists(session_id)
 
     def list_sessions(self) -> list[dict]:
-        result = []
-        for sid in self.store.list_ids():
-            header, _ = self.store.read(sid)
-            if header:
-                result.append({
-                    "id":           header["id"],
-                    "title":        header.get("title", ""),
-                    "created_at":   header.get("created_at", ""),
-                    "workspace_id": header.get("workspace_id"),
-                })
-        return sorted(result, key=lambda x: x["created_at"], reverse=True)
+        """会话概要列表。
+
+        只查 sessions 表（list_headers），不加载任何消息——列表页只需要标题/时间。
+        """
+        return [
+            {
+                "id":           h["id"],
+                "title":        h.get("title", ""),
+                "created_at":   h.get("created_at", ""),
+                "workspace_id": h.get("workspace_id"),
+            }
+            for h in self.store.list_headers()
+        ]
 
     def get_session(self, session_id: str) -> dict | None:
         header, _ = self.store.read(session_id)

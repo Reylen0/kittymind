@@ -20,6 +20,14 @@ from dotenv import load_dotenv
 from kittymind.tools.builtin.bash_tool import BashTool
 from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
+from kittymind.tools.builtin.file_edit_tool import FileEditTool
+from kittymind.tools.builtin.glob_tool import GlobTool
+from kittymind.tools.builtin.grep_tool import GrepTool
+from kittymind.tools.builtin.ls_tool import LsTool
+from kittymind.tools.builtin.git_tool import GitTool
+from kittymind.tools.builtin.screenshot_tool import ScreenshotTool
+from kittymind.tools.builtin.clipboard_tool import ClipboardTool
+from kittymind.tools.builtin.get_current_time_tool import GetCurrentTimeTool
 from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
@@ -43,7 +51,6 @@ from kittymind.core.llm import BaseAgentLLM
 from kittymind.events.bus import EventBus
 from kittymind.session.manager import SessionManager
 from kittymind.workspace.manager import WorkspaceManager
-from kittymind.tools import GetCurrentTimeTool
 from kittymind.agent import KittyAgent
 from kittymind.prompts import build_system_prompt
 from server.ws_server import start_server
@@ -52,11 +59,19 @@ from server.ws_server import start_server
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
     llm = BaseAgentLLM()
     memory_store = MemoryStore()
+    # 工具集与 CLI（chat_async.py）保持一致：13 个内置工具 + task 委派
     base_tools = [
         GetCurrentTimeTool(),
+        LsTool(),
+        GlobTool(),
+        GrepTool(),
         FileReadTool(),
         FileWriteTool(),
+        FileEditTool(),
+        GitTool(),
         BashTool(),
+        ScreenshotTool(),
+        ClipboardTool(),
         WriteMemoryTool(memory_store),
         VerifyTool(),
     ]
