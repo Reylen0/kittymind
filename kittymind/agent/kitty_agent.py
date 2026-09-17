@@ -23,7 +23,7 @@ from ..config import cfg
 from ..context import ContextCompressor, TokenTracker, prune_tool_outputs
 from ..context.compressor import _SUMMARY_MARKER
 from ..core.exceptions import AgentException, LLMException
-from ..core.llm import BaseAgentLLM
+from ..core.llm import BaseAgentLLM, get_aux_llm
 from ..events.bus import EventBus
 from ..events.types import (
     AGENT_CHUNK, AGENT_CONTEXT_USAGE, AGENT_DONE, AGENT_ERROR,
@@ -48,6 +48,9 @@ from .delegation import (
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
 _INTERNAL_KEYS = ("_seq", _SUMMARY_MARKER)
 
+# 辅助模型哨兵：默认「按配置自动解析」，显式传 None 表示强制回退主模型
+_AUX_AUTO = object()
+
 
 class KittyAgent(Agent):
     """KittyMind 统一 Agent。"""
@@ -61,6 +64,8 @@ class KittyAgent(Agent):
         description: Optional[str] = None,
         callbacks: Optional[list[BaseCallBack]] = None,
         max_iterations: int = cfg.AGENT_MAX_ITERATIONS,
+        # 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）；默认按 LLM_AUX_* 配置自动解析
+        aux_llm=_AUX_AUTO,
         # 集成层（子 Agent 不传）
         event_bus: Optional[EventBus] = None,
         session_manager: Optional[SessionManager] = None,
@@ -82,20 +87,33 @@ class KittyAgent(Agent):
         )
         self.last_messages: list[dict] = []
 
+        # 辅助小模型：未配置 LLM_AUX_MODEL_ID 时为 None，辅助任务自动回退主模型
+        self.aux_llm: Optional[BaseAgentLLM] = (
+            get_aux_llm() if aux_llm is _AUX_AUTO else aux_llm
+        )
+
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: Optional[SessionManager] = session_manager
         self.workspace_manager = workspace_manager
         self.memory: Optional[MemoryStore] = memory
         self._memory_recall: Optional[MemoryRecall] = (
-            MemoryRecall(memory, llm) if memory else None
+            MemoryRecall(memory, self.aux_model) if memory else None
         )
+
+    @property
+    def aux_model(self) -> BaseAgentLLM:
+        """辅助任务（压缩摘要 / 记忆提取 / 记忆召回筛选）使用的模型。
+
+        优先小模型，未配置则回退主模型。主任务的推理与工具调用不受影响。
+        """
+        return self.aux_llm or self.llm
 
     # ── 每轮初始化（run/stream_run/async_stream_run 共用）──────────
 
     def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
         """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
         tracker = TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
-        compressor = ContextCompressor(self.llm)
+        compressor = ContextCompressor(self.aux_model)
         if session_id and self.session_manager:
             state = self.session_manager.get_session_state(session_id)
             if state.get("compressed_once"):
@@ -604,7 +622,7 @@ class KittyAgent(Agent):
     async def _extract_memories_bg(self, turn_messages: list[dict]) -> None:
         try:
             await asyncio.to_thread(
-                extract_memories, turn_messages, self.llm, self.memory
+                extract_memories, turn_messages, self.aux_model, self.memory
             )
         except Exception as e:
             print(f"[memory] background extraction error: {e}", flush=True)

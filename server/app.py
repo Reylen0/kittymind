@@ -97,6 +97,12 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         memory=memory_store,
         ask_fn=bridge.ask,
     )
+    # 辅助模型启动自检：配了 LLM_AUX_MODEL_ID 却没生效（凭据缺失等）时能一眼看出
+    print(
+        "[aux] 压缩摘要 / 记忆任务使用: "
+        + (agent.aux_llm.model if agent.aux_llm else "未配置（回退主模型）"),
+        flush=True,
+    )
     return agent
 
 

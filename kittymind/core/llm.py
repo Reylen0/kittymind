@@ -8,6 +8,7 @@ from .llm_response import LLMResponse, StreamEvent
 from .exceptions import BaseAgentException, LLMException
 from ..config import cfg
 
+
 class BaseAgentLLM:
     """统一 LLM 客户端，支持 OpenAI 及所有兼容接口。"""
 
@@ -78,3 +79,52 @@ class BaseAgentLLM:
                 yield event
         except Exception as e:
             raise LLMException(f"LLM流式调用失败: {e}")
+
+
+# ── 辅助小模型 ────────────────────────────────────────────────────
+# 用途：上下文压缩摘要、记忆提取、记忆召回筛选等「非主任务」调用。
+# 主任务的推理与工具调用始终使用主模型，不受此处配置影响。
+
+_AUX_CACHE: dict[tuple, "BaseAgentLLM"] = {}
+
+
+def get_aux_llm() -> Optional[BaseAgentLLM]:
+    """返回辅助小模型客户端；未配置或构造失败时返回 None（调用方回退主模型）。
+
+    模型名解析优先级：环境变量 LLM_AUX_MODEL_ID > settings.json 的
+    LLM_AUX_MODEL_ID；留空即不启用。
+    api_key / base_url 默认复用主模型的（LLM_API_KEY / LLM_BASE_URL），
+    也可用 LLM_AUX_API_KEY / LLM_AUX_BASE_URL 单独指定（例如换一家更便宜的供应商）。
+
+    构造失败一律返回 None —— 辅助能力不得影响主流程，调用方负责回退主模型。
+    失败结果不缓存（避免 env 尚未加载时把 None 永久钉死）。
+    """
+    model = (os.getenv("LLM_AUX_MODEL_ID") or cfg.LLM_AUX_MODEL_ID or "").strip()
+    if not model:
+        return None
+
+    api_key  = os.getenv("LLM_AUX_API_KEY")  or os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_AUX_BASE_URL") or os.getenv("LLM_BASE_URL")
+    key = (model, api_key, base_url, cfg.LLM_AUX_TEMPERATURE, cfg.LLM_AUX_MAX_TOKENS)
+
+    cached = _AUX_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        llm = BaseAgentLLM(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=cfg.LLM_AUX_TEMPERATURE,
+            max_tokens=cfg.LLM_AUX_MAX_TOKENS,
+        )
+    except Exception:
+        return None
+    _AUX_CACHE[key] = llm
+    return llm
+
+
+def reset_aux_llm() -> None:
+    """清空辅助模型缓存（配置热更新 / 测试隔离时调用）。"""
+    _AUX_CACHE.clear()

@@ -8,6 +8,7 @@ from kittymind.tools.builtin.clipboard_tool import ClipboardTool
 from kittymind.tools.builtin.file_read_tool import FileReadTool
 from kittymind.tools.builtin.file_write_tool import FileWriteTool
 from kittymind.tools.builtin.screenshot_tool import ScreenshotTool
+from kittymind.tools.permission import _cli_ask
 load_dotenv()
 
 from kittymind.session import SessionManager
@@ -74,6 +75,7 @@ async def main():
         system_prompt="你是一个聪明可爱的桌面助手 KittyMind，可以进行日常对话并使用工具。",
         event_bus=bus,
         session_manager=mgr,
+        ask_fn=_cli_ask
     )
 
     print(f"=== KittyAgent  session={session_id[:8]}...  输入 quit 退出 ===\n")

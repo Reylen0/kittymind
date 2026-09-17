@@ -5,7 +5,8 @@ check_permission(name, args, ask_fn) -> str | None
 
 闸门顺序：
   1. 硬拒绝（始终生效，含 ask_fn=None 的 CLI / 子 Agent 路径）
-  2. 规则匹配（路径越界、删除操作、系统路径写入、chmod 777）
+  2. 规则匹配（路径越界、删除操作、系统路径写入、chmod 777、
+     git 写历史/破坏性参数、剪贴板读写）
   3. 用户审批（ask_fn=None 时跳过，直接放行；避免在 worker 线程误触发终端 input）
 """
 
@@ -28,13 +29,32 @@ _BASH_HARD_DENY: list[tuple[str, str]] = [
     ("del /f /s /q c:\\", "递归删除 C 盘文件"),
 ]
 
+# git 附加参数中的破坏性 / 改写历史选项（长选项按前缀匹配，短选项按整词匹配）
+_GIT_DANGEROUS_FLAGS: list[str] = [
+    "--force", "--amend", "--hard", "--delete", "--no-verify",
+    "-f", "-d", "-D",
+]
+
 
 # ── 闸门 2：软规则 ─────────────────────────────────────────────
-def _check_path_outside(args: dict) -> bool:
+def _check_path_outside(args: dict, key: str = "path") -> bool:
     cwd = bash_cwd.get()
-    raw = args.get("path", ".")
+    raw = args.get(key) or "."
     resolved = os.path.normpath(raw if os.path.isabs(raw) else os.path.join(cwd, raw))
     return not _inside_workdir(resolved, cwd)
+
+
+def _git_commits(args: dict) -> bool:
+    """仅当确实会生成提交时才触发（message 为空时 git 工具退化为 status）。"""
+    return (
+        (args.get("action") or "").lower().strip() == "commit"
+        and bool((args.get("message") or "").strip())
+    )
+
+
+def _is_action(name: str):
+    """生成 action 匹配器（大小写/空白不敏感）。"""
+    return lambda args: (args.get("action") or "").lower().strip() == name
 
 
 _RULES: list[tuple[set, object, str]] = [
@@ -66,6 +86,36 @@ _RULES: list[tuple[set, object, str]] = [
         lambda args: "chmod 777" in args.get("command", ""),
         "命令将权限设置为 777",
     ),
+    # git：commit 写入仓库历史（add 仅改索引、可随手 unstage，故不拦截）
+    (
+        {"git"},
+        _git_commits,
+        "git commit 会写入仓库历史",
+    ),
+    # git：附加参数含 --amend / --force / --hard 等破坏性或改写历史的选项
+    (
+        {"git"},
+        lambda args: _has_flag(args.get("extra", ""), _GIT_DANGEROUS_FLAGS),
+        "git 附加参数含强制或改写历史的选项",
+    ),
+    # git：在别的仓库上操作
+    (
+        {"git"},
+        lambda args: _check_path_outside(args, "workdir"),
+        "git 工作目录在工作目录之外",
+    ),
+    # 剪贴板：读取会把用户剪贴板内容（可能含密码等敏感信息）发送给模型
+    (
+        {"clipboard"},
+        _is_action("read"),
+        "读取剪贴板会把其内容（可能含敏感信息）发送给模型",
+    ),
+    # 剪贴板：写入会覆盖用户当前剪贴板内容
+    (
+        {"clipboard"},
+        _is_action("write"),
+        "写入剪贴板会覆盖用户当前剪贴板内容",
+    ),
 ]
 
 
@@ -82,6 +132,18 @@ def _inside_workdir(path: str, workdir: str) -> bool:
 def _has_any(text: str, patterns: list[str]) -> bool:
     t = text.lower()
     return any(p.lower() in t for p in patterns)
+
+
+def _has_flag(text: str, flags: list[str]) -> bool:
+    """按空白切词匹配命令行选项，避免 '-f' 命中 '--file' 这类子串误判。
+
+    长选项（--x）按前缀匹配，可覆盖 --force-with-lease 这类变形。
+    """
+    for word in text.split():
+        for flag in flags:
+            if word == flag or (flag.startswith("--") and word.startswith(flag)):
+                return True
+    return False
 
 
 def _short(val: object, limit: int = 80) -> str:

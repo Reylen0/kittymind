@@ -91,6 +91,13 @@ PORT_RETRY_COUNT = 20
 LLM_TEMPERATURE  = 0.7
 LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，OpenAI 可选）
 
+# ── 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）──────────────
+# 留空 = 不启用，上述辅助任务回退主模型（与旧行为一致）。
+# 环境变量优先级高于 settings.json：LLM_AUX_MODEL_ID / LLM_AUX_API_KEY / LLM_AUX_BASE_URL
+LLM_AUX_MODEL_ID    = ""
+LLM_AUX_TEMPERATURE = 0.3    # 摘要/抽取类任务需要稳定输出，温度低于主模型
+LLM_AUX_MAX_TOKENS  = 2048   # 摘要长度上限，防止小模型跑飞
+
 # ── 上下文压缩 ────────────────────────────────────────
 LLM_CONTEXT_WINDOW         = 1024_000  # 模型上下文窗口 token 数，settings.json 可覆盖
 LLM_RESERVED_OUTPUT_TOKENS = 2048    # 预留给输出的 token，effective = window - reserved
@@ -143,6 +150,7 @@ _OVERRIDABLE = {
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
+    "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",
     "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",
     "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",
     "COMPRESS_PROTECT_FIRST_N", "COMPRESS_TAIL_MIN_MSGS",

@@ -32,6 +32,15 @@ cp .env.example .env
 
 支持所有 OpenAI 兼容接口：DeepSeek、Qwen、Ollama 等。
 
+可选：给「压缩摘要 / 记忆提取 / 记忆召回」这类辅助任务单独配一个小模型，更省更稳。
+留空则这些任务照旧走主模型（主任务的推理与工具调用始终用主模型）。
+
+```env
+LLM_AUX_MODEL_ID=qwen-turbo          # 留空即不启用
+# LLM_AUX_API_KEY=sk-xxx             # 可选，不填复用 LLM_API_KEY
+# LLM_AUX_BASE_URL=...               # 可选，不填复用 LLM_BASE_URL
+```
+
 ### 2. 安装依赖
 
 ```bash
@@ -104,6 +113,7 @@ C:\Users\<用户名>\.kittymind\.env
 LLM_MODEL_ID=deepseek-chat
 LLM_API_KEY=sk-xxx
 LLM_BASE_URL=https://api.deepseek.com/v1
+# LLM_AUX_MODEL_ID=qwen-turbo    # 可选：压缩摘要/记忆任务用的小模型
 ```
 
 ---
