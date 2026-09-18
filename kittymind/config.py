@@ -104,16 +104,9 @@ WS_ALLOW_NON_LOOPBACK = False
 LOG_LEVEL = "INFO"
 
 # ── 工具权限审批 ─────────────────────────────────────────────────
-# worker 线程等待用户点击允许/拒绝的上限；超时按「拒绝」处理。
-# 等待期间该 worker 线程被占用（工具跑在独立线程池 TOOL_POOL_MAX_WORKERS，
-# 不占 asyncio 默认线程池），并发审批上限 = TOOL_POOL_MAX_WORKERS。
+# 用户点击允许/拒绝的等待上限；超时按「拒绝」处理。审批是 await 一个 Future，
+# 不占用任何线程，超时值可以放宽松（不像旧的线程阻塞式设计那样要考虑线程占用）。
 PERMISSION_ASK_TIMEOUT = 120
-
-# ── 工具执行线程池 ───────────────────────────────────────────────
-# 异步路径的工具执行（含审批等待）跑在独立线程池，与 asyncio 默认线程池
-# （压缩摘要 / 记忆召回 / 后台提取共用）隔离：集中弹审批时最多占满本池、
-# 让后续工具调用排队，不会冻结其它会话的事件推送与压缩。
-TOOL_POOL_MAX_WORKERS = 16
 
 # ── LLM ─────────────────────────────────────────────────────────
 LLM_TEMPERATURE  = 0.7
@@ -179,7 +172,7 @@ _OVERRIDABLE = {
     "AGENT_MAX_ITERATIONS",
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",
-    "PERMISSION_ASK_TIMEOUT", "TOOL_POOL_MAX_WORKERS",
+    "PERMISSION_ASK_TIMEOUT",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
     "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",

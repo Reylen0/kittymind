@@ -19,7 +19,7 @@ from kittymind.agent import KittyAgent
 
 
 class RpcHandler:
-    def __init__(self, agent: KittyAgent, ws, bridge=None, loop=None) -> None:
+    def __init__(self, agent: KittyAgent, ws, bridge=None) -> None:
         self.agent = agent
         self.ws = ws
         self._tasks: dict[str, asyncio.Task] = {}
@@ -39,8 +39,8 @@ class RpcHandler:
         }
         # 本连接的审批通道 id：bridge 是进程级单例，靠它区分多连接
         self.conn_id: str | None = None
-        if bridge is not None and loop is not None:
-            self.conn_id = bridge.set_connection(loop, self._push)
+        if bridge is not None:
+            self.conn_id = bridge.set_connection(self._push)
 
     # ──────────────────────────────────────────────────────────────
     # 消息收发
@@ -156,9 +156,9 @@ class RpcHandler:
         workspace_id = params.get("workspace_id")
 
         async def _run() -> None:
-            # 标记本 turn 归属的连接：工具经 asyncio.to_thread 执行，
-            # context 会复制进 worker 线程，PermissionBridge.ask() 据此找到
-            # 正确的推送目标（多连接并存时不会互相劫持审批）。
+            # 标记本 turn 归属的连接：整条调用链（工具执行 → 权限审批）都在这个
+            # task 内部 await，contextvar 天然沿调用栈传播，PermissionBridge.ask()
+            # 据此找到正确的推送目标（多连接并存时不会互相劫持审批）。
             conn_token = (
                 self._bridge.bind(self.conn_id)
                 if self._bridge is not None and self.conn_id is not None

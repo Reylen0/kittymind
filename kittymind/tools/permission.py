@@ -1,19 +1,21 @@
-"""权限检查纯函数模块。
+"""权限检查模块。
 
-check_permission(name, args, ask_fn) -> str | None
+check_permission(name, args, ask_fn) -> str | None（async）
   返回 None 表示放行；返回拒绝原因字符串表示阻止。
 
 闸门顺序：
-  1. 硬拒绝（始终生效，含 ask_fn=None 的 CLI / 子 Agent 路径）
+  1. 硬拒绝（始终生效，不受 ask_fn 是否配置影响）
   2. 规则匹配（路径越界、删除操作、系统路径写入、chmod 777、
      git 写历史/破坏性参数、剪贴板读写、verify 执行任意命令）
-  3. 用户审批（ask_fn=None 时跳过，直接放行；避免在 worker 线程误触发终端 input）
+  3. 用户审批：`await ask_fn(...)`；ask_fn=None 时跳过，直接放行——用于没有
+     人在场点按钮的场景（无 GUI 的程序化调用、测试），不是给某类 Agent 专用的
 
 注意：硬拒绝是「按命令字符串」检查，凡是能执行模型给定命令的工具都必须列进
 _SHELL_TOOLS——漏一个（例如曾经的 verify）就等于给 bash 开了个无防护镜像。
 """
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 
 from .builtin._dangerous import find_dangerous
 from .builtin._paths import is_inside, resolve_path
@@ -170,35 +172,44 @@ def _short(val: object, limit: int = 80) -> str:
 
 
 # ── 默认 ask_fn：CLI 交互 ──────────────────────────────────────
-def _cli_ask(tool_name: str, args: dict, reason: str) -> bool:
+async def _cli_ask(tool_name: str, args: dict, reason: str) -> bool:
+    """阻塞的 `input()` 挪进线程池执行，不占事件循环。"""
     display = {k: (_short(v, 100) if k != "content" else f"<{len(str(v))} chars>") for k, v in args.items()}
     print(f"\n[WARN] {reason}")
     print(f"    tool : {tool_name}")
     for k, v in display.items():
         print(f"    {k}: {v}")
     try:
-        return input("    允许执行？[y/N] ").strip().lower() in ("y", "yes")
+        answer = await asyncio.to_thread(input, "    允许执行？[y/N] ")
+        return answer.strip().lower() in ("y", "yes")
     except (EOFError, KeyboardInterrupt):
         return False
 
 
 # ── 公共接口 ─────────────────────────────────────────────────
 
-def check_permission(
+def _hard_deny_reason(name: str, args: dict) -> str | None:
+    """闸门 1：硬拒绝（bash / verify 共用，黑名单见 builtin/_dangerous.py）。始终生效。"""
+    if name in _SHELL_TOOLS:
+        reason = find_dangerous(_shell_cmd(args))
+        if reason is not None:
+            return f"硬拒绝: {reason}"
+    return None
+
+
+async def check_permission(
     name: str,
     args: dict,
-    ask_fn: Callable[[str, dict, str], bool] | None = None,
+    ask_fn: Callable[[str, dict, str], Awaitable[bool]] | None = None,
 ) -> str | None:
     """检查工具调用权限。返回 None 表示放行；返回字符串表示拒绝原因。
 
     闸门1（硬拒绝）始终生效，含 ask_fn=None 的路径。
     闸门2/3 仅当名称匹配规则时触发；ask_fn=None 时跳过用户审批直接放行。
     """
-    # 闸门 1：硬拒绝（bash / verify 共用，黑名单见 builtin/_dangerous.py）
-    if name in _SHELL_TOOLS:
-        reason = find_dangerous(_shell_cmd(args))
-        if reason is not None:
-            return f"硬拒绝: {reason}"
+    reason = _hard_deny_reason(name, args)
+    if reason is not None:
+        return reason
 
     # 闸门 2 + 3：规则 → 用户审批
     for tool_names, check_fn, reason in _RULES:
@@ -210,10 +221,10 @@ def check_permission(
             triggered = False
         if not triggered:
             continue
-        # ask_fn=None → 跳过审批直接放行（不阻断，但也不触发终端 input）
+        # ask_fn=None → 没有审批入口，跳过闸门 3 直接放行（不算阻断）
         if ask_fn is None:
             break
-        if not ask_fn(name, args, reason):
+        if not await ask_fn(name, args, reason):
             return "用户拒绝执行"
         break
 

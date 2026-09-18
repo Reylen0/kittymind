@@ -118,9 +118,9 @@ kittymind/                      # 项目根目录
 
 参考 deepseek-harness：**每步都流式，工具调用也在流里检测**，不存在"非流式工具循环 + 流式最终回答"的分离。
 
-- `OpenAIAdapter.stream_with_tools()` 在同一 stream 里同时 yield `text_delta` 和累积 `tool_call_delta`，流结束时输出 `tool_calls_done`。
+- `AnthropicAdapter`/`OpenAIAdapter.async_stream_with_tools()` 在同一 stream 里同时 yield `text_delta` 和累积 `tool_call_delta`，流结束时输出 `tool_calls_done`。
 - 循环每步：文字 delta 实时 `yield` 给用户 + emit `agent.chunk`；流结束若有 tool_calls 则执行并追加结果、继续下一步；无则本步即最终回答（已推完）。
-- `async_stream_run()`：Thread + `asyncio.Queue` 桥接，把同步生成器接入事件循环，供 WebSocket 推送。
+- `async_stream_run()` 本身就是一个原生异步生成器（`async def ... yield`），直接被 WebSocket 处理协程 `async for` 消费，不需要额外的线程或队列桥接。子 Agent（`task_tool`）复用同一个方法（`root=False`），不是另一套实现。
 - 实现见 `agent/kitty_agent.py`、`core/llm_adapters.py`。
 
 ### 5.2 IPC 通信协议（WebSocket JSON-RPC）

@@ -1,37 +1,24 @@
 """KittyMind 主 Agent。
 
 直接继承 Agent，包含：
-  - 工具 ReAct 引擎（同步 run / 异步流式 async_stream_run）
-  - 上下文压缩（两条路径均可触发，压缩状态跨轮持久化到 SessionManager）
+  - 工具 ReAct 引擎（异步流式 async_stream_run，唯一入口）
+  - 上下文压缩（压缩状态跨轮持久化到 SessionManager）
   - 桌面集成（EventBus / SessionManager / WorkspaceManager / MemoryStore）
   - 委派守护（DelegationBudget 根预算）
 
-子 Agent 调 run(session_id=None)，不触发任何集成层副作用。
+子 Agent 调 `async_stream_run(session_id=None, root=False)`：`session_id=None`
+跳过落库/记忆召回（这两者本就要求真实会话），`root=False` 复用父级已建立的
+根作用域（cwd / 委派预算 / 根 session 标签），不重新解析或重置。
 
-ReAct 循环的组织方式：
-  - run() 是纯同步方法：子 Agent 委派走 ToolExecutor → 工具线程池 → run()，
-    这条链路上没有事件循环，run() 不能依赖 asyncio。
-  - async_stream_run() 是独立的异步生成器（需要 await / EventBus 广播），
-    与 run() 共用 _begin_turn / _assistant_message / _ensure_final_text 等轮次规则，
-    但循环体不共享
-
-线程模型：
-  - 异步路径的工具执行（含审批等待）跑在独立线程池 _get_tool_pool()，
-    与 asyncio 默认线程池（压缩摘要 / 记忆召回 / 后台提取）隔离——
-    集中弹审批最多占满工具池让后续调用排队，不会冻结其它会话。
-  - 经 run_in_executor 进线程池时必须显式 copy_context().run：
-    to_thread 会复制 contextvars 而 run_in_executor 不会，权限桥的 ask()
-    靠 ContextVar 定位归属连接，漏了复制会让多连接审批退化。
+全程无跨线程调度：工具体（真阻塞）经 `ToolExecutor.execute` 内部的
+`asyncio.to_thread` 丢线程；权限审批（等人点按钮）直接 `await`，不占用线程。
 """
 
 import asyncio
-import contextvars
-import functools
 import logging
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..callbacks.base import BaseCallBack
@@ -63,6 +50,7 @@ from .delegation import (
 
 logger = logging.getLogger(__name__)
 
+
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
 _INTERNAL_KEYS = ("_seq", _SUMMARY_MARKER)
 
@@ -80,7 +68,7 @@ def _fresh_tracker() -> TokenTracker:
 
 @dataclass(frozen=True)
 class _TurnSetup:
-    """每轮开始时的共用运行态（run / async_stream_run 两处同构）。"""
+    """每轮开始时的运行态，`_begin_turn` 统一构造。"""
     messages: list[dict]
     loaded_seqs: list
     tools_schema: list[dict] | None
@@ -135,10 +123,6 @@ class KittyAgent(Agent):
         # 任务可能在执行途中被 GC 掉（且异常被静默吞掉）。
         self._bg_tasks: set[asyncio.Task] = set()
 
-        # 工具执行专用线程池（懒创建）：同步路径（run()）用不到，不预建。
-        # 与 asyncio 默认线程池隔离的原因见模块 docstring「线程模型」。
-        self._tool_pool: ThreadPoolExecutor | None = None
-
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: SessionManager | None = session_manager
         self.workspace_manager = workspace_manager
@@ -157,7 +141,7 @@ class KittyAgent(Agent):
         """
         return self.aux_llm or self.llm
 
-    # ── 每轮初始化（两条路径共用）─────────────────────────────────
+    # ── 每轮初始化 ──────────────────────────────────────────────────
 
     def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
         """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
@@ -172,10 +156,10 @@ class KittyAgent(Agent):
         return tracker, compressor, TurnContext(session_id=session_id)
 
     def _begin_turn(self, session_id: str | None, input_text: str) -> _TurnSetup:
-        """每轮共用初始化：上下文 + 工具表 + 运行态。两条路径都从这里出发。
+        """每轮共用初始化：上下文 + 工具表 + 运行态。
 
         `session_id` 为空（子 Agent）时历史为空、loaded_seqs=[]；记忆召回由
-        async 路径在拿到 messages 之后另行注入。
+        `async_stream_run` 在拿到 messages 之后另行注入。
         """
         messages, loaded_seqs = self._build_messages(session_id, input_text)
         tracker, compressor, ctx = self._new_turn(session_id)
@@ -203,18 +187,6 @@ class KittyAgent(Agent):
                 return effective, ws["path"]
         return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
 
-    def _get_tool_pool(self) -> ThreadPoolExecutor:
-        """工具执行专用线程池（懒创建，尺寸取 TOOL_POOL_MAX_WORKERS）。
-
-        只在异步路径首次执行工具时创建；同步路径（run()/子 Agent）全程不碰。
-        """
-        if self._tool_pool is None:
-            self._tool_pool = ThreadPoolExecutor(
-                max_workers=cfg.TOOL_POOL_MAX_WORKERS,
-                thread_name_prefix="km-tool",
-            )
-        return self._tool_pool
-
     # ── 循环内共用规则 ────────────────────────────────────────────
 
     @staticmethod
@@ -223,83 +195,30 @@ class KittyAgent(Agent):
         return {"role": "assistant", "content": content, "tool_calls": tool_calls or None}
 
     def _ensure_final_text(self, final_text: str | None) -> str:
-        """迭代耗尽仍未收尾 → 抛迭代上限异常（两条路径共用同一文案）。"""
+        """迭代耗尽仍未收尾 → 抛迭代上限异常。"""
         if final_text is None:
             raise AgentException(f"超过最大迭代次数 {self.max_iterations}")
         return final_text
 
-    def _execute_tools(self, messages: list[dict], tool_calls: list[dict], ctx: TurnContext) -> None:
-        """同步执行一批工具调用并把结果回灌 `messages`（run() / 子 Agent 使用）。
-
-        异步路径不用这个：它要把每次调用广播到 EventBus，并把阻塞执行丢进线程池。
-        """
-        for tool_call in tool_calls:
-            name = tool_call["function"]["name"]
-            self._emit("on_tool_start", name, tool_call)
-            result = self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
-            self._emit("on_tool_end", name, result)
-            messages.append(result)
-
-    # ── 同步 ReAct（子 Agent 使用）────────────────────────────────
-
-    def run(self, session_id: str | None, input_text: str, **kwargs) -> str:
-        """同步 ReAct（子 Agent 使用，纯内存，支持压缩但不落库）。
-
-        不注入记忆召回、不落库、不起后台提取；压缩冷却固定 0.0（同步路径收不到
-        usage 事件，反抖动无从判断）；事件只经 callbacks，不走 EventBus——
-        这些差异一律显式保留。
-        """
-        try:
-            self._emit("on_agent_start", self.name, input_text)
-            setup = self._begin_turn(session_id, input_text)
-            messages, tracker, compressor = setup.messages, setup.tracker, setup.compressor
-            ctx, tools_schema = setup.ctx, setup.tools_schema
-            final_text: str | None = None
-
-            for _ in range(self.max_iterations):
-                messages, tracker, _ = self._maybe_compress(
-                    messages, tracker, compressor, 0.0
-                )
-                self._emit("on_llm_start", messages)
-                try:
-                    response = self.llm.invoke(
-                        messages=self._strip_internal(messages), tools=tools_schema, **kwargs
-                    )
-                except Exception as e:
-                    self._emit("on_llm_error", e)
-                    raise LLMException(f"LLM调用失败: {e}") from e
-                self._emit("on_llm_end", response)
-
-                messages.append(self._assistant_message(response.content, response.tool_calls))
-
-                if response.is_tool_call():
-                    self._execute_tools(messages, response.tool_calls, ctx)
-                    continue
-
-                final_text = response.content
-                break
-
-            final_text = self._ensure_final_text(final_text)
-            self.last_messages = messages
-            self._emit("on_agent_end", self.name, final_text)
-            return final_text
-
-        except Exception as e:
-            self._emit("on_agent_error", self.name, e)
-            raise
-
-    # ── 异步流式 ReAct（生产路径，含所有集成层）─────────────────
+    # ── 异步流式 ReAct（唯一入口，含所有集成层）─────────────────
 
     async def async_stream_run(
         self, session_id: str | None, input_text: str,
-        workspace_id: str | None = None, **kwargs
+        workspace_id: str | None = None, root: bool = True, **kwargs
     ) -> AsyncIterator[str]:
-        """带事件广播的异步流式 ReAct 循环。"""
+        """带事件广播的异步流式 ReAct 循环。
+
+        root=False：子 Agent 复用父级已建立的根作用域——不重新设置 cwd（沿用父级
+        工作目录）、不重置委派预算（`child_scope` 已经递增过深度，重置等于让递归
+        防爆栏归零）、不覆盖根 session 标签（子事件仍打父级真实 session_id）。
+        """
         effective_workspace_id, cwd_path = self._resolve_workspace(session_id, workspace_id)
 
-        cwd_token     = bash_cwd.set(cwd_path)
-        budget_token  = set_root_budget(cfg.SUBAGENT_MAX_DEPTH, cfg.SUBAGENT_MAX_TOTAL)
-        session_token = set_root_session(session_id)
+        cwd_token = budget_token = session_token = None
+        if root:
+            cwd_token     = bash_cwd.set(cwd_path)
+            budget_token  = set_root_budget(cfg.SUBAGENT_MAX_DEPTH, cfg.SUBAGENT_MAX_TOTAL)
+            session_token = set_root_session(session_id)
         try:
             await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
@@ -379,17 +298,11 @@ class KittyAgent(Agent):
                             "args": tool_call["function"].get("arguments"),
                             "session_id": session_id,
                         })
-                        # 独立线程池（非默认池）：审批等待可长达 PERMISSION_ASK_TIMEOUT，
-                        # 占满默认池会冻结压缩/召回/其它会话。必须 copy_context().run——
-                        # run_in_executor 不复制 contextvars，权限桥 ask() 靠它定位连接。
-                        run_in_ctx = contextvars.copy_context().run
-                        result = await asyncio.get_running_loop().run_in_executor(
-                            self._get_tool_pool(),
-                            functools.partial(
-                                run_in_ctx, self.tool_executor.execute,
-                                tool_call=tool_call, ctx=ctx,
-                            ),
-                        )
+                        # 同时经 callbacks 分派（EventBus 服务 WS 推送；callbacks 服务
+                        # 同进程内的轻量探针，例如 task_tool 用它统计子 Agent 的工具调用数）。
+                        self._emit("on_tool_start", name, tool_call)
+                        result = await self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
+                        self._emit("on_tool_end", name, result)
                         await self.event_bus.emit(AGENT_TOOL_RESULT, {
                             "name": name,
                             "result": result.get("content"),
@@ -400,8 +313,9 @@ class KittyAgent(Agent):
 
                 final_text = self._ensure_final_text(final_text)
 
-                # 与 run() 一致：暴露本轮完整消息（不含最终 assistant 答复）。
-                self.last_messages = messages
+                # 与子 Agent 路径统一：末尾含本轮最终 assistant 答复（task_tool 拿它
+                # estimate_tokens，要的就是整轮产出，不只是喂给 LLM 的那部分）。
+                self.last_messages = messages + [self._assistant_message(final_text, [])]
 
                 turn_messages.append({"role": "assistant", "content": final_text})
 
@@ -424,9 +338,10 @@ class KittyAgent(Agent):
                 raise
 
         finally:
-            bash_cwd.reset(cwd_token)
-            reset_root_budget(budget_token)
-            reset_root_session(session_token)
+            if root:
+                bash_cwd.reset(cwd_token)
+                reset_root_budget(budget_token)
+                reset_root_session(session_token)
 
     # ── 记忆召回（async 路径独有的能力）────
 
@@ -529,19 +444,6 @@ class KittyAgent(Agent):
 
     # ── 压缩 ──────────────────────────────────────────────────────
 
-    def _maybe_compress(
-        self,
-        messages: list[dict],
-        tracker: TokenTracker,
-        compressor: ContextCompressor,
-        cooldown_until: float,
-    ) -> tuple[list[dict], TokenTracker, bool]:
-        """同步压缩（子 Agent 路径）。返回 (messages, tracker, did_compress)。"""
-        messages, ratio = self._compression_trigger(messages, tracker, cooldown_until)
-        if ratio is None:
-            return messages, tracker, False
-        return self._compress_result(messages, tracker, ratio, compressor.compress(messages, tracker))
-
     async def _maybe_compress_async(
         self,
         messages: list[dict],
@@ -568,7 +470,7 @@ class KittyAgent(Agent):
         ratio: float,
         compressed: list[dict],
     ) -> tuple[list[dict], TokenTracker, bool]:
-        """两条压缩路径的共同收尾：无变化原样返回；有变化记日志、换新 tracker。"""
+        """压缩结果收尾：无变化原样返回；有变化记日志、换新 tracker。"""
         if compressed is messages:
             return messages, tracker, False
         logger.info("压缩 %d → %d 条消息（占用比 %.2f）", len(messages), len(compressed), ratio)

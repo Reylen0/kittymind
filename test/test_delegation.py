@@ -188,15 +188,16 @@ def test_spawned_not_incremented_when_limit_exceeded():
 class _FakeLLM:
     model = "fake"
 
-    def invoke(self, messages, tools=None, **kwargs):
-        from kittymind.core.llm_response import LLMResponse
-        return LLMResponse(content="任务完成：结果是42", tool_calls=[])
+    async def async_stream_with_tools(self, messages=None, tools=None, **kwargs):
+        from kittymind.core.llm_response import StreamEvent
+        yield StreamEvent(type="text_delta", delta="任务完成：结果是42")
 
 
 class _FakeTool:
     name = "echo"
     description = "回显输入。"
     param_class = None
+    is_async = False
 
     def run(self, parameters):
         return "echo: ok"
@@ -205,7 +206,7 @@ class _FakeTool:
         return {"type": "function", "function": {"name": "echo", "description": "echo", "parameters": {}}}
 
 
-def test_task_tool_returns_footnote():
+async def test_task_tool_returns_footnote():
     """TaskTool 正常委派：返回包含脚注的文字。"""
     from kittymind.tools.builtin.task_tool import TaskTool
 
@@ -213,7 +214,7 @@ def test_task_tool_returns_footnote():
     try:
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()])
         from kittymind.tools.builtin.task_tool import TaskInput
-        result = tool.execute(TaskInput(prompt="测试任务"))
+        result = await tool.aexecute(TaskInput(prompt="测试任务"))
         assert "任务完成" in result.content
         assert "子任务完成" in result.content  # 脚注
         assert "工具" in result.content
@@ -222,7 +223,7 @@ def test_task_tool_returns_footnote():
         reset_root_budget(token)
 
 
-def test_task_tool_depth_limit_returns_text():
+async def test_task_tool_depth_limit_returns_text():
     """深度达上限时返回文字提示，不抛异常。"""
     from kittymind.tools.builtin.task_tool import TaskTool, TaskInput
 
@@ -233,25 +234,67 @@ def test_task_tool_depth_limit_returns_text():
 
     try:
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()])
-        result = tool.execute(TaskInput(prompt="超限任务"))
+        result = await tool.aexecute(TaskInput(prompt="超限任务"))
         assert "上限" in result.content
     finally:
         reset_root_budget(budget_token_inner)
 
 
-def test_task_tool_emit_safe_no_crash_when_loop_none():
-    """loop=None 时 _emit_safe 不抛异常。"""
+async def test_task_tool_emit_no_crash_when_event_bus_none():
+    """event_bus=None 时 _emit 不抛异常，静默降级。"""
     from kittymind.tools.builtin.task_tool import TaskTool
 
     token = set_root_budget(3, 8)
     try:
-        tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()], loop=None, event_bus=None)
-        tool._emit_safe("subagent.start", {"depth": 1})  # 静默降级，不崩
+        tool = TaskTool(llm=_FakeLLM(), sub_tools=[_FakeTool()], event_bus=None)
+        await tool._emit("subagent.start", {"depth": 1})  # 静默降级，不崩
     finally:
         reset_root_budget(token)
 
 
-def test_task_tool_allowed_tools_filter():
+async def test_async_stream_run_root_false_does_not_reset_budget():
+    """子 Agent 传 root=False 时，async_stream_run 不得重置委派预算/根 session 标签。
+
+    async_stream_run 默认 root=True 会无条件 set_root_budget（新建全零预算）——
+    子 Agent 若直接调用它，递归防爆栏当场归零，等于给子 Agent 开无限委派权限。
+    root=False 必须原样沿用父级已经建立的作用域。
+    """
+    from kittymind.agent.kitty_agent import KittyAgent
+    from kittymind.agent.delegation import _budget, _root_session_id
+    from kittymind.core.llm_response import StreamEvent
+
+    class _DoneLLM:
+        async def async_stream_with_tools(self, messages=None, tools=None, **kwargs):
+            yield StreamEvent(type="text_delta", delta="done")
+
+    b = DelegationBudget(depth=1, spawned=1, max_depth=3, max_total=8)
+    budget_token = set_root_budget(3, 8)
+    _budget.set(b)  # 覆盖为「子 Agent 视角下父级已递增过深度」的那份 budget
+    session_token = set_root_session("root-session")
+
+    try:
+        agent = KittyAgent(
+            name="sub", llm=_DoneLLM(), system_prompt="sp", tools=[],
+            aux_llm=None, interactive=False,
+        )
+        result = "".join([
+            chunk async for chunk in
+            agent.async_stream_run(session_id=None, input_text="hi", root=False)
+        ])
+
+        assert result == "done"
+        # 委派预算原样未动：既不是新对象，深度/总数也没被清零
+        assert current_budget() is b
+        assert b.depth == 1
+        assert b.spawned == 1
+        # 根 session 标签没被子 Agent 的 session_id=None 覆盖
+        assert _root_session_id.get() == "root-session"
+    finally:
+        reset_root_session(session_token)
+        reset_root_budget(budget_token)
+
+
+async def test_task_tool_allowed_tools_filter():
     """allowed_tools 过滤正确；未知名字忽略不崩，过滤后为空则回退全量。"""
     from kittymind.tools.builtin.task_tool import TaskTool, TaskInput
 
@@ -259,6 +302,7 @@ def test_task_tool_allowed_tools_filter():
         name = "tool_a"
         description = "A"
         param_class = None
+        is_async = False
         def run(self, p): return "a"
         def to_schema(self):
             return {"type": "function", "function": {"name": "tool_a", "description": "A", "parameters": {}}}
@@ -267,6 +311,7 @@ def test_task_tool_allowed_tools_filter():
         name = "tool_b"
         description = "B"
         param_class = None
+        is_async = False
         def run(self, p): return "b"
         def to_schema(self):
             return {"type": "function", "function": {"name": "tool_b", "description": "B", "parameters": {}}}
@@ -275,11 +320,11 @@ def test_task_tool_allowed_tools_filter():
     try:
         tool = TaskTool(llm=_FakeLLM(), sub_tools=[ToolA(), ToolB()])
         # 只允许 tool_a
-        result = tool.execute(TaskInput(prompt="过滤测试", allowed_tools=["tool_a"]))
+        result = await tool.aexecute(TaskInput(prompt="过滤测试", allowed_tools=["tool_a"]))
         assert "任务完成" in result.content
 
         # 指定不存在的工具 → 回退全量，不崩
-        result2 = tool.execute(TaskInput(prompt="回退测试", allowed_tools=["nonexistent"]))
+        result2 = await tool.aexecute(TaskInput(prompt="回退测试", allowed_tools=["nonexistent"]))
         assert "任务完成" in result2.content
     finally:
         reset_root_budget(token)

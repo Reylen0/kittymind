@@ -69,7 +69,7 @@ class _Recorder:
         self.allow = allow
         self.calls: list[tuple[str, dict, str]] = []
 
-    def __call__(self, tool_name: str, args: dict, reason: str) -> bool:
+    async def __call__(self, tool_name: str, args: dict, reason: str) -> bool:
         self.calls.append((tool_name, args, reason))
         return self.allow
 
@@ -98,23 +98,23 @@ def test_merged_table_covers_every_old_entry(command):
 # ── 2. 核心 bug：verify 曾是 bash 的无防护镜像 ────────────────────
 
 @pytest.mark.parametrize("command", _ALL_OLD_ENTRIES)
-def test_bash_and_verify_deny_identically(command):
+async def test_bash_and_verify_deny_identically(command):
     """bash 与 verify 必须逐条一致——这正是 P1-4 的 bug 所在。
 
     旧代码上：`mkfs` / `shutdown` / `dd` / `reboot` 等只在 bash 侧被
     `bash_tool` 拦截，verify 侧完全放行（返回 None = 允许执行）。
     """
-    bash_deny = check_permission("bash", {"command": command}, None)
-    verify_deny = check_permission("verify", {"type": "command", "command": command}, None)
+    bash_deny = await check_permission("bash", {"command": command}, None)
+    verify_deny = await check_permission("verify", {"type": "command", "command": command}, None)
 
     assert bash_deny is not None, f"bash 未拦下 {command!r}"
     assert verify_deny == bash_deny, f"verify 与 bash 判定不一致: {command!r}"
 
 
 @pytest.mark.parametrize("command", ["mkfs.ext4 /dev/sda1", "shutdown -h now", "reboot", "dd if=x of=y"])
-def test_verify_denies_bash_tool_only_patterns(command):
+async def test_verify_denies_bash_tool_only_patterns(command):
     """单独点名：这几条旧代码里只有 bash_tool 那份正则认得，verify 全放行。"""
-    assert check_permission("verify", {"type": "command", "command": command}, None) is not None
+    assert await check_permission("verify", {"type": "command", "command": command}, None) is not None
 
 
 # ── 3. 单一事实源 ─────────────────────────────────────────────────
@@ -177,9 +177,9 @@ def test_safe_commands_are_not_hard_denied(command):
     assert find_dangerous(command) is None, f"误伤: {command!r}"
 
 
-def test_non_recursive_delete_goes_to_approval_not_hard_deny(ask):
+async def test_non_recursive_delete_goes_to_approval_not_hard_deny(ask):
     """非递归删在该审批的地方审批：硬拒绝只收"明显误触"，不收常规操作。"""
-    assert check_permission("bash", {"command": "rm build/old.txt"}, ask) is None
+    assert await check_permission("bash", {"command": "rm build/old.txt"}, ask) is None
     assert ask.asked and "删除" in ask.last_reason
 
 

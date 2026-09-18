@@ -1,12 +1,16 @@
 """工具执行器 — 守护栏前置 → 权限闸门 → 执行 → 脱敏 → 守护栏后置 → 审计。
 
 单一 ToolExecutor 类涵盖全部场景：
-  - ask_fn=None：纯路径（CLI / 子 Agent），跳过用户审批（gate-2/3），保留硬拒绝（gate-1）
-  - ask_fn 有值：桌面 GUI 路径，完整三道权限闸门
+  - ask_fn=None：纯路径（无 GUI 时的调用方），跳过用户审批（gate-2/3），保留硬拒绝（gate-1）
+  - ask_fn 有值：完整三道权限闸门（gate-3 是 `await ask_fn(...)`，不占用任何线程）
   - guardrail 有值：启用失败循环/无进展检测
   - audit 有值：记录每次调用（脱敏后）到 SQLite + JSONL
+
+工具体本身（`tool.run`）是同步阻塞调用，`execute()` 用 `asyncio.to_thread` 丢进
+默认线程池；task 工具是例外（它本身要 `await` 子 Agent），走 `tool.arun`。
 """
 
+import asyncio
 import contextlib
 import json
 import time
@@ -40,7 +44,7 @@ class ToolExecutor:
         self._guardrail = guardrail
         self._audit = audit
 
-    def execute(self, tool_call: dict, ctx: TurnContext) -> dict:
+    async def execute(self, tool_call: dict, ctx: TurnContext) -> dict:
         t0 = time.monotonic()
         tool_call_id = tool_call.get("id", "")
         function = tool_call.get("function", {})
@@ -58,15 +62,18 @@ class ToolExecutor:
                 return _tool_result(tool_call_id, decision.message)
 
         # ── 2. 权限闸门（硬拒绝始终生效；ask_fn=None 跳过用户审批）──
-        reason = check_permission(name, args, self._ask_fn)
+        reason = await check_permission(name, args, self._ask_fn)
         if reason is not None:
             self._record(ctx.session_id, name, args, "denied", reason, False, t0)
             return _tool_result(tool_call_id, f"Permission denied: {reason}")
 
-        # ── 3. 执行 ──────────────────────────────────────────
+        # ── 3. 执行（同步工具体丢进线程池；task 等异步工具直接 await）───
         try:
             tool = self.registry.get(name=name)
-            tool_result = tool.run(args)
+            if tool.is_async:
+                tool_result = await tool.arun(args)
+            else:
+                tool_result = await asyncio.to_thread(tool.run, args)
             ok, content = tool_result.ok, str(tool_result.content)
             # 全局统一截断（对所有工具生效，故配置名是 TOOL_ 而非 BASH_）
             if len(content) > cfg.TOOL_MAX_OUTPUT:

@@ -200,7 +200,7 @@ def _make_call(name="fake", args=None):
     }
 
 
-def test_executor_block_skips_execution():
+async def test_executor_block_skips_execution():
     """守护栏 block 时工具不执行，返回合成结果。"""
     tool = _FakeTool("ok")
     ctrl = GuardrailController(interactive=True)
@@ -215,13 +215,13 @@ def test_executor_block_skips_execution():
     for _ in range(3):
         ctrl.after_call(ctx.guardrail_state, "fake", args, "same", False)
 
-    result = executor.execute(call, ctx=ctx)
+    result = await executor.execute(call, ctx=ctx)
     assert "已阻断" in result["content"]
     # 确认工具本身没被调用（返回值不含 "ok"）
     assert "ok" not in result["content"]
 
 
-def test_executor_warn_appends_guidance():
+async def test_executor_warn_appends_guidance():
     """守护栏 warn 时工具结果尾部追加中文指导。"""
     tool = _FakeTool("Error: fail", ok=False)
     ctrl = GuardrailController(interactive=True)
@@ -233,12 +233,12 @@ def test_executor_warn_appends_guidance():
     ctx = TurnContext()
 
     # 执行 2 次触发 warn（exact_failure_warn 阈值 = 2）
-    executor.execute(call, ctx=ctx)
-    result = executor.execute(call, ctx=ctx)
+    await executor.execute(call, ctx=ctx)
+    result = await executor.execute(call, ctx=ctx)
     assert "守护栏警告" in result["content"]
 
 
-def test_executor_hard_deny_without_ask_fn():
+async def test_executor_hard_deny_without_ask_fn():
     """arm -rf / 硬拒绝即使 ask_fn=None 也生效。"""
     tool = _FakeTool("ok")
     reg = _FakeRegistry(tool)
@@ -247,11 +247,11 @@ def test_executor_hard_deny_without_ask_fn():
         "id": "x",
         "function": {"name": "bash", "arguments": json.dumps({"command": "rm -rf /"})}
     }
-    result = executor.execute(call, ctx=TurnContext())
+    result = await executor.execute(call, ctx=TurnContext())
     assert "Permission denied" in result["content"]
 
 
-def test_executor_fresh_turn_context_resets_guardrail():
+async def test_executor_fresh_turn_context_resets_guardrail():
     """新建一份 TurnContext 就是从零开始，不需要专门的 begin_turn 方法。"""
     tool = _FakeTool("Error: fail", ok=False)
     ctrl = GuardrailController(interactive=True)
@@ -261,9 +261,9 @@ def test_executor_fresh_turn_context_resets_guardrail():
     call = _make_call()
     ctx = TurnContext()
     for _ in range(4):
-        executor.execute(call, ctx=ctx)
+        await executor.execute(call, ctx=ctx)
 
     # 新的一轮：新建 TurnContext，第 1 次不应有 warn
     new_ctx = TurnContext()
-    result = executor.execute(call, ctx=new_ctx)
+    result = await executor.execute(call, ctx=new_ctx)
     assert "守护栏警告" not in result["content"]

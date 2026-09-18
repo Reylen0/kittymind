@@ -36,8 +36,7 @@ def _ensure_loopback(host: str) -> None:
 
 
 async def _handle(websocket, agent: KittyAgent, bridge=None) -> None:
-    loop = asyncio.get_running_loop()
-    handler = RpcHandler(agent, websocket, bridge=bridge, loop=loop)
+    handler = RpcHandler(agent, websocket, bridge=bridge)
     try:
         async for raw in websocket:
             try:

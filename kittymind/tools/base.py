@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
@@ -18,6 +18,8 @@ class BaseTool(ABC):
     name: str | None = None
     description: str | None = None
     param_class: type[BaseModel] | None = None
+    # True 表示该工具没有同步 execute() 实现，必须走 aexecute()（目前只有 task 工具）
+    is_async: ClassVar[bool] = False
 
     def __init__(self, name=None, description=None, param_class=None):
         if name is not None: self.name = name
@@ -31,6 +33,12 @@ class BaseTool(ABC):
     def execute(self, parameters: BaseModel) -> ToolResult:
         pass
 
+    async def arun(self, parameters: dict[str, Any]) -> ToolResult:
+        return await self.aexecute(self.param_class(**parameters))
+
+    async def aexecute(self, parameters: BaseModel) -> ToolResult:
+        raise NotImplementedError(f"{type(self).__name__} 未实现 aexecute")
+
     def to_schema(self) -> dict[str, Any]:
         schema = self.param_class.model_json_schema()
         schema.pop("title", None)
@@ -42,3 +50,4 @@ class BaseTool(ABC):
                 "parameters": schema,
             }
         }
+

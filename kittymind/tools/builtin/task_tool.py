@@ -8,12 +8,13 @@
   - allowed_tools 约束子 Agent 可用工具集
   - 用量回传（工具数/耗时/估算 tokens）
   - subagent.start / subagent.done 生命周期事件
+
+本工具是异步工具（`is_async = True`）：子 Agent 走 `async_stream_run(root=False)`，
+`root=False` 表示复用父 Agent 已经建立的作用域——不重新设置 cwd、不重置委派预算
+（否则递归防爆栏归零）、不覆盖根 session 标签，详见 `KittyAgent.async_stream_run`。
 """
 
-import asyncio
-import contextlib
 import time
-from asyncio import AbstractEventLoop
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +70,7 @@ class TaskTool(BaseTool):
         "子 Agent 拥有完整工具集（深度未达上限时含 task 工具），与父 Agent 共享工作目录。"
     )
     param_class = TaskInput
+    is_async = True
 
     def __init__(
         self,
@@ -76,30 +78,26 @@ class TaskTool(BaseTool):
         sub_tools: list[BaseTool],
         ask_fn=None,
         event_bus=None,
-        loop: AbstractEventLoop | None = None,
     ):
         self._llm = llm
         self._sub_tools = sub_tools
         self._ask_fn = ask_fn
         self._event_bus = event_bus
-        self._loop = loop
 
-    # ── 线程安全事件发送 ──────────────────────────────────────────
+    def execute(self, parameters: TaskInput) -> ToolResult:
+        raise RuntimeError("task 是异步工具，只能通过 aexecute() 调用")
 
-    def _emit_safe(self, event: str, data: dict) -> None:
-        """在 worker 线程里将事件提交到 asyncio 主循环；loop/bus 为 None 时静默降级。"""
-        if not self._loop or not self._event_bus:
+    # ── 事件发送 ─────────────────────────────────────────────────
+
+    async def _emit(self, event: str, data: dict) -> None:
+        if self._event_bus is None:
             return
         data.setdefault("session_id", _root_session_id.get())
-        # loop 已关闭时 run_coroutine_threadsafe 抛 RuntimeError，按降级处理
-        with contextlib.suppress(RuntimeError):
-            asyncio.run_coroutine_threadsafe(
-                self._event_bus.emit(event, data), self._loop
-            )
+        await self._event_bus.emit(event, data)
 
     # ── 执行入口 ──────────────────────────────────────────────────
 
-    def execute(self, parameters: TaskInput) -> ToolResult:
+    async def aexecute(self, parameters: TaskInput) -> ToolResult:
         from ...agent.kitty_agent import KittyAgent
 
         budget = current_budget()
@@ -129,7 +127,6 @@ class TaskTool(BaseTool):
                             sub_tools=child_tools,
                             ask_fn=self._ask_fn,
                             event_bus=self._event_bus,
-                            loop=self._loop,
                         )
                     ]
                 # leaf：不加 task 工具，提示词也不提 task
@@ -148,7 +145,7 @@ class TaskTool(BaseTool):
 
                 depth = active.depth
                 t0 = time.monotonic()
-                self._emit_safe(SUBAGENT_START, {
+                await self._emit(SUBAGENT_START, {
                     "depth": depth,
                     "prompt_preview": parameters.prompt[:120],
                 })
@@ -156,16 +153,21 @@ class TaskTool(BaseTool):
                 ok = True
                 result = ""
                 try:
-                    result = sub_agent.run(
-                        session_id=None, input_text=parameters.prompt
-                    )
+                    result = "".join([
+                        chunk async for chunk in sub_agent.async_stream_run(
+                            session_id=None, input_text=parameters.prompt, root=False,
+                        )
+                    ])
+                    if not result.strip():
+                        ok = False
+                        result = "子任务无输出"
                 except Exception as e:
                     ok = False
                     result = f"子任务执行失败: {e}"
                 finally:
                     elapsed = time.monotonic() - t0
                     tokens = estimate_tokens(sub_agent.last_messages)
-                    self._emit_safe(SUBAGENT_DONE, {
+                    await self._emit(SUBAGENT_DONE, {
                         "depth": depth,
                         "ok": ok,
                         "tool_calls": counter.count,
