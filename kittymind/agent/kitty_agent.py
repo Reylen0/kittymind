@@ -9,18 +9,31 @@
 子 Agent 调 run(session_id=None)，不触发任何集成层副作用。
 
 ReAct 循环的组织方式：
-  - run() 是纯同步方法：子 Agent 委派走 ToolExecutor → asyncio.to_thread → run()，
+  - run() 是纯同步方法：子 Agent 委派走 ToolExecutor → 工具线程池 → run()，
     这条链路上没有事件循环，run() 不能依赖 asyncio。
   - async_stream_run() 是独立的异步生成器（需要 await / EventBus 广播），
     与 run() 共用 _begin_turn / _assistant_message / _ensure_final_text 等轮次规则，
-    但循环体不共享。
+    但循环体不共享——**刻意不做二合一**：让 run() 走 async 需要 task_tool.run
+    变 async、ToolExecutor 与权限审批整条管线支持异步工具，属架构变更；
+    而同步侧只剩一个消费者后，间接层的收益已小于成本（2026-09-18 决策）。
+
+线程模型：
+  - 异步路径的工具执行（含审批等待）跑在独立线程池 _get_tool_pool()，
+    与 asyncio 默认线程池（压缩摘要 / 记忆召回 / 后台提取）隔离——
+    集中弹审批最多占满工具池让后续调用排队，不会冻结其它会话。
+  - 经 run_in_executor 进线程池时必须显式 copy_context().run：
+    to_thread 会复制 contextvars 而 run_in_executor 不会，权限桥的 ask()
+    靠 ContextVar 定位归属连接，漏了复制会让多连接审批退化。
 """
 
 import asyncio
+import contextvars
+import functools
 import logging
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..callbacks.base import BaseCallBack
@@ -124,6 +137,10 @@ class KittyAgent(Agent):
         # 任务可能在执行途中被 GC 掉（且异常被静默吞掉）。
         self._bg_tasks: set[asyncio.Task] = set()
 
+        # 工具执行专用线程池（懒创建）：同步路径（run()）用不到，不预建。
+        # 与 asyncio 默认线程池隔离的原因见模块 docstring「线程模型」。
+        self._tool_pool: ThreadPoolExecutor | None = None
+
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: SessionManager | None = session_manager
         self.workspace_manager = workspace_manager
@@ -187,6 +204,18 @@ class KittyAgent(Agent):
             if ws and ws.get("path"):
                 return effective, ws["path"]
         return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
+
+    def _get_tool_pool(self) -> ThreadPoolExecutor:
+        """工具执行专用线程池（懒创建，尺寸取 TOOL_POOL_MAX_WORKERS）。
+
+        只在异步路径首次执行工具时创建；同步路径（run()/子 Agent）全程不碰。
+        """
+        if self._tool_pool is None:
+            self._tool_pool = ThreadPoolExecutor(
+                max_workers=cfg.TOOL_POOL_MAX_WORKERS,
+                thread_name_prefix="km-tool",
+            )
+        return self._tool_pool
 
     # ── 循环内共用规则 ────────────────────────────────────────────
 
@@ -352,8 +381,16 @@ class KittyAgent(Agent):
                             "args": tool_call["function"].get("arguments"),
                             "session_id": session_id,
                         })
-                        result = await asyncio.to_thread(
-                            self.tool_executor.execute, tool_call=tool_call, ctx=ctx
+                        # 独立线程池（非默认池）：审批等待可长达 PERMISSION_ASK_TIMEOUT，
+                        # 占满默认池会冻结压缩/召回/其它会话。必须 copy_context().run——
+                        # run_in_executor 不复制 contextvars，权限桥 ask() 靠它定位连接。
+                        run_in_ctx = contextvars.copy_context().run
+                        result = await asyncio.get_running_loop().run_in_executor(
+                            self._get_tool_pool(),
+                            functools.partial(
+                                run_in_ctx, self.tool_executor.execute,
+                                tool_call=tool_call, ctx=ctx,
+                            ),
                         )
                         await self.event_bus.emit(AGENT_TOOL_RESULT, {
                             "name": name,

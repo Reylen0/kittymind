@@ -17,9 +17,11 @@ WebSocket 连接注册自己的一份 (loop, push_fn, pending)，互不覆盖、
 
 归属连接如何确定
 ----------------
-ask() 用 contextvar 定位归属连接：RpcHandler 在处理 turn 的任务里 bind() 一次，
-`asyncio.to_thread` 会把 context 复制进 worker 线程，因此阻塞中的 ask() 也能读到
-正确的连接 id（已用并发双连接实测验证）。
+ask() 用 contextvar 定位归属连接：RpcHandler 在处理 turn 的任务里 bind() 一次。
+工具在线程池里执行时，kitty_agent 用 `copy_context().run` 显式把上下文带进 worker
+线程（`asyncio.to_thread` 自带该行为，但裸 `run_in_executor` 不会——这也是工具
+执行不能用裸 run_in_executor 的原因），因此阻塞中的 ask() 也能读到正确的连接 id
+（已用并发双连接实测验证）。
 定位不到归属连接时（多个连接活跃但调用发生在任何连接上下文之外）一律 fail-closed
 返回 False——猜错连接等于把 A 的审批弹窗推给 B，比直接拒绝更糟。
 """

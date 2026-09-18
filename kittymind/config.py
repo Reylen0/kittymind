@@ -43,7 +43,11 @@ FILE_READ_MAX_LINES  = 2_000
 FILE_READ_MAX_BYTES  = 800_000
 FILE_EDIT_MAX_SIZE   = 2_000_000
 FILE_WRITE_MAX_BYTES = 1_000_000
-BASH_MAX_OUTPUT      = 50_000
+# 工具输出统一截断上限（executor 全局截断 + bash 流预截断共用）。
+# 原名 BASH_MAX_OUTPUT 名不副实（管的是所有工具），2026-09-18 改名；
+# 旧名保留为弃用别名，settings.json 里写旧名仍生效但会告警。
+TOOL_MAX_OUTPUT = 50_000
+BASH_MAX_OUTPUT = TOOL_MAX_OUTPUT  # 弃用别名，勿在新代码里引用
 
 # ── 搜索/列表限制 ────────────────────────────────────────────────
 GREP_MAX_RESULTS    = 100
@@ -90,6 +94,10 @@ SUBAGENT_MAX_ITERATIONS = 20  # 子 Agent ReAct 循环上限
 WS_HOST          = "127.0.0.1"
 WS_PORT          = 8765
 PORT_RETRY_COUNT = 20
+# 服务器无鉴权、无连接数上限——绑定环回地址是唯一防线。WS_HOST 可被环境变量 /
+# settings.json 改成 0.0.0.0，那样同网段任何进程都能远程驱动 bash 工具。
+# 因此启动时默认拒绝非环回绑定；确有局域网使用需求（自担风险）才显式打开此项。
+WS_ALLOW_NON_LOOPBACK = False
 
 # ── 日志 ─────────────────────────────────────────────────────────
 # 业务/诊断日志走 logging → stderr；stdout 留给启动横幅与 CLI 交互（见 logging_setup.py）
@@ -97,9 +105,15 @@ LOG_LEVEL = "INFO"
 
 # ── 工具权限审批 ─────────────────────────────────────────────────
 # worker 线程等待用户点击允许/拒绝的上限；超时按「拒绝」处理。
-# 注意：等待期间该 worker 线程被占用（工具经 asyncio.to_thread 执行），
-# 同时挂起的审批数受默认线程池大小限制，调大需一并评估线程池容量。
+# 等待期间该 worker 线程被占用（工具跑在独立线程池 TOOL_POOL_MAX_WORKERS，
+# 不占 asyncio 默认线程池），并发审批上限 = TOOL_POOL_MAX_WORKERS。
 PERMISSION_ASK_TIMEOUT = 120
+
+# ── 工具执行线程池 ───────────────────────────────────────────────
+# 异步路径的工具执行（含审批等待）跑在独立线程池，与 asyncio 默认线程池
+# （压缩摘要 / 记忆召回 / 后台提取共用）隔离：集中弹审批时最多占满本池、
+# 让后续工具调用排队，不会冻结其它会话的事件推送与压缩。
+TOOL_POOL_MAX_WORKERS = 16
 
 # ── LLM ─────────────────────────────────────────────────────────
 LLM_TEMPERATURE  = 0.7
@@ -155,7 +169,8 @@ _SETTINGS_FILE = KITTYMIND_DIR / "settings.json"
 _OVERRIDABLE = {
     "BASH_TIMEOUT", "BASH_MAX_TIMEOUT", "GIT_TIMEOUT",
     "FILE_READ_MAX_LINES", "FILE_READ_MAX_BYTES",
-    "FILE_EDIT_MAX_SIZE", "FILE_WRITE_MAX_BYTES", "BASH_MAX_OUTPUT",
+    "FILE_EDIT_MAX_SIZE", "FILE_WRITE_MAX_BYTES", "TOOL_MAX_OUTPUT",
+    "BASH_MAX_OUTPUT",  # 弃用别名 → TOOL_MAX_OUTPUT（见 _DEPRECATED_ALIASES）
     "GREP_MAX_RESULTS", "GREP_MAX_FILE_SIZE", "LS_MAX_ENTRIES",
     "GREP_CONTEXT_LINES", "LS_DEPTH", "GIT_LOG_COUNT", "SCREENSHOT_MONITOR",
     "SCREENSHOT_KEEP_MAX",
@@ -163,8 +178,8 @@ _OVERRIDABLE = {
     "MEMORY_RECALL_MAX_RELEVANT", "MEMORY_RECALL_MAX_BODY_CHARS",
     "AGENT_MAX_ITERATIONS",
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
-    "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT",
-    "PERMISSION_ASK_TIMEOUT",
+    "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",
+    "PERMISSION_ASK_TIMEOUT", "TOOL_POOL_MAX_WORKERS",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
     "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",
@@ -186,6 +201,11 @@ _OVERRIDABLE = {
 # settings.json 里布尔值的可接受字面量（用户经常把 false 写成 "false" 这种带引号的串）
 _truthy_tokens = frozenset({"true", "1", "yes", "y", "on", "enable", "enabled"})
 _falsy_tokens = frozenset({"false", "0", "no", "n", "off", "disable", "disabled"})
+
+# 配置项改名后的旧名映射：旧名仍可写进 settings.json（向后兼容），但会告警提示更新
+_DEPRECATED_ALIASES = {
+    "BASH_MAX_OUTPUT": "TOOL_MAX_OUTPUT",
+}
 
 
 def _warn(message: str) -> None:
@@ -254,7 +274,13 @@ class _Config:
         overrides, load_error = self._load_settings()
         if load_error:
             _warn(load_error)
-        for key, value in overrides.items():
+        for raw_key, value in overrides.items():
+            key = _DEPRECATED_ALIASES.get(raw_key, raw_key)
+            if key in _DEPRECATED_ALIASES:
+                _warn(
+                    f"settings.json 中的 {raw_key!r} 已改名为 "
+                    f"{_DEPRECATED_ALIASES[raw_key]!r}，本次仍生效，请更新配置文件"
+                )
             if key not in _OVERRIDABLE:
                 _warn(
                     f"settings.json 中的 {key!r} 不是可覆盖配置项，已忽略"
