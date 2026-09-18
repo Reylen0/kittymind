@@ -18,10 +18,10 @@
 免得日后有人"整理"构造参数时手滑传了 `memory=self._memory`，就在无意间让
 子 Agent 拿到了父级的记忆。
 
-另一点非显而易见的行为：`self.callbacks`（`BaseCallBack` 实例）只在工具调用
-处被 dispatch（`on_tool_start` / `on_tool_end`），agent/llm 级别的起止只走
-`EventBus`。这是因为 callbacks 目前唯一的消费者是 `task_tool` 的
-`_ToolCallCounter`（统计子 Agent 的工具调用数），它只关心 `on_tool_start`。
+另一点非显而易见的行为：agent 的全部分派统一走 `EventBus`（无 callbacks 机制，
+已于 2026-09-18 移除）。工具起止事件 `agent.tool_call` / `agent.tool_result`
+的进程内消费者是 `task_tool` 的工具计数器——它订阅的是子 Agent 自己的私有
+总线，不是共享总线（并行子 Agent 场景下按 session_id 过滤会串计数）。
 
 不碰真实文件系统 / 网络：工具执行器整个换成记录桩，LLM 用脚本替身。
 """
@@ -33,6 +33,7 @@ import pytest
 from kittymind.agent.kitty_agent import KittyAgent
 from kittymind.core.exceptions import AgentException, LLMException
 from kittymind.core.llm_response import StreamEvent
+from kittymind.events.types import AGENT_TOOL_CALL, AGENT_TOOL_RESULT
 
 
 # ── 替身 ─────────────────────────────────────────────────────────
@@ -82,19 +83,24 @@ class _RecordingExecutor:
         name = tool_call["function"]["name"]
         return {"role": "tool", "tool_call_id": tool_call.get("id"), "content": f"ran:{name}"}
 
+    async def execute_batch(self, tool_calls, ctx):
+        """与真实 execute_batch 的契约对齐：结果按声明序返回。"""
+        return [await self.execute(tc, ctx) for tc in tool_calls]
+
 
 class _Recorder:
-    """回调探针：按名字记录 `_emit` 的调用顺序（`_emit` 用 getattr 分派，故此法可行）。"""
+    """事件探针：订阅 agent 的 EventBus，按序记录事件类型。
+
+    用通配符订阅（"*"）接住所有事件；断言时按需过滤。
+    """
 
     def __init__(self):
         self.events: list[str] = []
 
-    def __getattr__(self, name):
-        if name.startswith("on_"):
-            def record(*args, **kwargs):
-                self.events.append(name)
-            return record
-        raise AttributeError(name)
+    def attach(self, bus) -> None:
+        async def _record(event_type, data):
+            self.events.append(event_type)
+        bus.subscribe("*", _record)
 
 
 class _FakeSessionManager:
@@ -133,10 +139,11 @@ def make_agent(steps, *, max_iterations=30, memory=None, session_manager=None):
     rec = _Recorder()
     agent = KittyAgent(
         name="t", llm=llm, system_prompt="sp", tools=[],
-        callbacks=[rec], max_iterations=max_iterations,
+        max_iterations=max_iterations,
         memory=memory, session_manager=session_manager,
         aux_llm=None, interactive=False,
     )
+    rec.attach(agent.event_bus)
     agent.tool_executor = _RecordingExecutor()
     return agent, llm, rec
 
@@ -160,13 +167,14 @@ async def test_returns_text_and_exposes_messages():
     assert llm.seen[0][0]["role"] == "system"  # 首条始终是主 system
 
 
-async def test_tool_calls_dispatch_callbacks_in_order():
-    """`on_tool_start`/`on_tool_end` 经 callbacks 分派——task_tool 的工具计数器就靠这个。"""
+async def test_tool_calls_emit_events_in_order():
+    """工具起止事件经 EventBus 发出且按序——task_tool 的工具计数器就靠这个。"""
     agent, _, rec = make_agent([("", [_tool_call()]), ("final", [])])
 
     assert await run_agent(agent) == "final"
 
-    assert rec.events == ["on_tool_start", "on_tool_end"]
+    tool_events = [e for e in rec.events if e.startswith("agent.tool")]
+    assert tool_events == [AGENT_TOOL_CALL, AGENT_TOOL_RESULT]
 
 
 async def test_executes_tool_then_continues():
@@ -197,8 +205,8 @@ async def test_executes_every_tool_call_in_one_step():
         "system", "user", "assistant", "tool", "tool", "assistant",
     ]
     assert [m["tool_call_id"] for m in agent.last_messages if m["role"] == "tool"] == ["c1", "c2"]
-    assert rec.events.count("on_tool_start") == 2
-    assert rec.events.count("on_tool_end") == 2
+    assert rec.events.count(AGENT_TOOL_CALL) == 2
+    assert rec.events.count(AGENT_TOOL_RESULT) == 2
 
 
 async def test_raises_agent_exception_when_iterations_exhausted():

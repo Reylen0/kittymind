@@ -20,6 +20,9 @@ class BaseTool(ABC):
     param_class: type[BaseModel] | None = None
     # True 表示该工具没有同步 execute() 实现，必须走 aexecute()（目前只有 task 工具）
     is_async: ClassVar[bool] = False
+    # True 表示该工具只读、同批并行执行无竞态（execute_batch 据此分区）。
+    # 默认 False = fail-closed：未声明的工具一律串行；只给确定只读的工具标 True。
+    is_concurrency_safe: ClassVar[bool] = False
 
     def __init__(self, name=None, description=None, param_class=None):
         if name is not None: self.name = name

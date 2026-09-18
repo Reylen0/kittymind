@@ -22,6 +22,7 @@ class FileReadTool(BaseTool):
         "单次返回行数有上限；大文件请用 start_line/end_line 分段读取。"
     )
     param_class = FileReadToolParam
+    is_concurrency_safe = True  # 只读，可同批并行
 
     def execute(self, parameters: FileReadToolParam) -> ToolResult:
         path = resolve_path(parameters.path)

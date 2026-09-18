@@ -22,6 +22,7 @@ class GetCurrentTimeTool(BaseTool):
         "仅当用户明确要求其他时区时才传入 timezone 参数。"
     )
     param_class = GetCurrentTimeParam
+    is_concurrency_safe = True  # 只读，可同批并行
 
     WEEKDAYS: ClassVar[list[str]] = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 

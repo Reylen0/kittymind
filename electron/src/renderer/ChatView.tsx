@@ -13,6 +13,13 @@ interface Props {
 // 预览辅助：?loading 初始即处于"思考中"状态，便于截图验证取消按钮（生产环境无参数，恒为 false）
 const INIT_LOADING = new URLSearchParams(window.location.search).has('loading')
 
+interface PermRequest {
+  request_id: string
+  tool: string
+  args: Record<string, unknown>
+  reason: string
+}
+
 const fmtK = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M`
   : n >= 1_000   ? `${Math.round(n / 1_000)}k`
@@ -27,12 +34,9 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   const [ctxUsed,             setCtxUsed]             = useState(0)
   const [ctxTotal,            setCtxTotal]            = useState(0)
   const [isHistoryLoading,    setIsHistoryLoading]    = useState(true)
-  const [permRequest, setPermRequest] = useState<{
-    request_id: string
-    tool: string
-    args: Record<string, unknown>
-    reason: string
-  } | null>(null)
+  // 审批队列：并发多个审批时排队展示，不互相覆盖；队首可交互
+  const [permQueue, setPermQueue] = useState<PermRequest[]>([])
+  const permRequest = permQueue[0] ?? null
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
 
@@ -154,16 +158,23 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   }, [sessionId])
 
   useEffect(() => {
-    const unsub = window.kitty?.on('tool.permission_request', (data) => {
-      setPermRequest(data)
+    const unsubReq = window.kitty?.on('tool.permission_request', (data: PermRequest) => {
+      // 同一 request_id 只入队一次（后端推送与前端订阅的重连场景可能重复）
+      setPermQueue(prev =>
+        prev.some(r => r.request_id === data.request_id) ? prev : [...prev, data],
+      )
     })
-    return () => unsub?.()
+    // 超时/作废：后端等待超时后会推此事件，把对应弹窗从队列移除
+    const unsubExp = window.kitty?.on('tool.permission_expired', (data: { request_id: string }) => {
+      setPermQueue(prev => prev.filter(r => r.request_id !== data.request_id))
+    })
+    return () => { unsubReq?.(); unsubExp?.() }
   }, [])
 
   async function handlePermission(approved: boolean) {
     if (!permRequest) return
     const id = permRequest.request_id
-    setPermRequest(null)
+    setPermQueue(prev => prev.filter(r => r.request_id !== id))
     await window.kitty?.respondPermission(id, approved)
   }
 
@@ -353,7 +364,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
                 />
               </div>
               {permRequest && (
-                <PermissionBanner req={permRequest} onRespond={handlePermission} />
+                <PermissionBanner req={permRequest} pendingCount={permQueue.length - 1} onRespond={handlePermission} />
               )}
               {inputBox}
             </div>
@@ -371,7 +382,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
         <div ref={bottomRef} />
       </div>
       {permRequest && (
-        <PermissionBanner req={permRequest} onRespond={handlePermission} />
+        <PermissionBanner req={permRequest} pendingCount={permQueue.length - 1} onRespond={handlePermission} />
       )}
       <div className="input-area">
         {inputBox}
@@ -390,9 +401,11 @@ function IcoChevron() {
 
 function PermissionBanner({
   req,
+  pendingCount = 0,
   onRespond,
 }: {
-  req: { request_id: string; tool: string; args: Record<string, unknown>; reason: string }
+  req: PermRequest
+  pendingCount?: number
   onRespond: (approved: boolean) => void
 }) {
   const argsText = Object.entries(req.args)
@@ -405,6 +418,11 @@ function PermissionBanner({
         <span className="perm-banner-icon">🔐</span>
         <span className="perm-banner-title">工具请求确认</span>
         <span className="perm-banner-tool">{req.tool}</span>
+        {pendingCount > 0 && (
+          <span className="perm-banner-tool" title="队列中还有待审批的请求">
+            +{pendingCount}
+          </span>
+        )}
       </div>
       <div className="perm-banner-reason">{req.reason}</div>
       {argsText && <div className="perm-banner-args">{argsText}</div>}

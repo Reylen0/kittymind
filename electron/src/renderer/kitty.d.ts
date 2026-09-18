@@ -12,7 +12,14 @@ declare global {
       createSession(title?: string, workspaceId?: string): Promise<{ session_id: string; title: string }>
       listSessions(): Promise<Array<{ id: string; title: string; created_at: string; workspace_id?: string | null }>>
       getSession(sessionId: string): Promise<{
-        header: { id: string; title: string; created_at: string; workspace_id?: string | null }
+        header: {
+          id: string
+          title: string
+          created_at: string
+          workspace_id?: string | null
+          used_tokens?: number
+          total_tokens?: number
+        }
         messages: Array<{
           role: string
           content: string | null

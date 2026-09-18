@@ -18,10 +18,10 @@ import time
 
 from pydantic import BaseModel, Field
 
-from ...callbacks.base import BaseCallBack
 from ...config import cfg
 from ...context import estimate_tokens
-from ...events.types import SUBAGENT_DONE, SUBAGENT_START
+from ...events.bus import EventBus
+from ...events.types import SUBAGENT_DONE, SUBAGENT_START, AGENT_TOOL_CALL
 from ...prompts import build_subtask_prompt
 from ...agent.delegation import (
     DelegationLimit,
@@ -39,16 +39,6 @@ class TaskInput(BaseModel):
         default=None,
         description="（可选）限制子 Agent 可用的工具名称列表；不填则使用全部工具。",
     )
-
-
-class _ToolCallCounter(BaseCallBack):
-    """统计子 Agent 的工具调用次数，挂入 callbacks 无侵入地计数。"""
-
-    def __init__(self) -> None:
-        self.count = 0
-
-    def on_tool_start(self, name: str, args) -> None:
-        self.count += 1
 
 
 class TaskTool(BaseTool):
@@ -132,13 +122,23 @@ class TaskTool(BaseTool):
                 # leaf：不加 task 工具，提示词也不提 task
 
                 system_prompt = build_subtask_prompt(child_tools)
-                counter = _ToolCallCounter()
+                # 工具计数器：订阅子 Agent 自己的私有 EventBus（KittyAgent 未传
+                # event_bus 时本就自建一次性总线）。计数走子 Agent 的总线而不是
+                # 共享总线按 session_id=None 过滤——并行多个 task 时后者会互相
+                # 串计数，私有总线天然 per-run 隔离。
+                sub_bus = EventBus()
+                tool_count = {"n": 0}
+
+                async def _count_tool_call(_event_type: str, _data: dict) -> None:
+                    tool_count["n"] += 1
+
+                sub_bus.subscribe(AGENT_TOOL_CALL, _count_tool_call)
                 sub_agent = KittyAgent(
                     name="kitty-sub",
                     llm=self._llm,
                     system_prompt=system_prompt,
                     tools=child_tools,
-                    callbacks=[counter],
+                    event_bus=sub_bus,
                     max_iterations=cfg.SUBAGENT_MAX_ITERATIONS,
                     ask_fn=self._ask_fn,
                 )
@@ -170,13 +170,13 @@ class TaskTool(BaseTool):
                     await self._emit(SUBAGENT_DONE, {
                         "depth": depth,
                         "ok": ok,
-                        "tool_calls": counter.count,
+                        "tool_calls": tool_count["n"],
                         "tokens": tokens,
                         "elapsed": round(elapsed, 2),
                     })
 
                 footnote = (
-                    f"\n\n[子任务完成 · {counter.count} 工具 · "
+                    f"\n\n[子任务完成 · {tool_count['n']} 工具 · "
                     f"~{tokens} tokens · {elapsed:.1f}s]"
                 )
                 return ToolResult(ok, result + footnote)

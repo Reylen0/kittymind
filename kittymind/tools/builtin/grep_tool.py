@@ -31,6 +31,7 @@ class GrepTool(BaseTool):
         "支持跨多个文件搜索，可通过 file_pattern 过滤文件类型。"
     )
     param_class = GrepToolParam
+    is_concurrency_safe = True  # 只读，可同批并行
 
     def execute(self, parameters: GrepToolParam) -> ToolResult:
         flags = 0 if parameters.case_sensitive.lower() == "true" else re.IGNORECASE

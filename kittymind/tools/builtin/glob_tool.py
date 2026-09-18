@@ -22,6 +22,7 @@ class GlobTool(BaseTool):
         "支持 ** 跨目录通配。自动跳过 .git、node_modules 等目录。"
     )
     param_class = GlobToolParam
+    is_concurrency_safe = True  # 只读，可同批并行
 
     def execute(self, parameters: GlobToolParam) -> ToolResult:
         root = resolve_path(parameters.path)

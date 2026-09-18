@@ -29,6 +29,7 @@ WebSocket 连接注册自己的一份 (push_fn, pending)，互不覆盖、互不
 """
 
 import asyncio
+import contextlib
 import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -76,6 +77,8 @@ class PermissionBridge:
 
         传 conn_id 只清理该连接（正常路径）；传 None 清理全部（进程收尾兜底）。
         必须在事件循环线程上调用（会对 Future 直接 set_result）。
+        不推 permission_expired：走到这里说明连接正在断开，弹窗所在的渲染层
+        已经收不到了（clear_connection 只 deny 本连接的挂起请求）。
         """
         if conn_id is None:
             conns = list(self._conns.values())
@@ -136,9 +139,20 @@ class PermissionBridge:
         try:
             return await asyncio.wait_for(fut, timeout=cfg.PERMISSION_ASK_TIMEOUT)
         except asyncio.TimeoutError:
+            # 超时按拒绝处理，同时主动撤回前端弹窗——否则弹窗仍挂在屏幕上，
+            # 用户点「允许」时 respond() 返回 matched=false，观感是「批准了却没执行」。
+            await self._notify_expired(conn, request_id, tool_name)
             return False
         finally:
             conn.pending.pop(request_id, None)
+
+    async def _notify_expired(self, conn: _Connection, request_id: str, tool_name: str) -> None:
+        """向前端推送 tool.permission_expired（连接已断时静默放弃）。"""
+        with contextlib.suppress(Exception):
+            await conn.push_fn("tool.permission_expired", {
+                "request_id": request_id,
+                "tool": tool_name,
+            })
 
     def respond(
         self,

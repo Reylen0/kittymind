@@ -195,3 +195,47 @@ async def test_contextvar_routes_ask_through_concurrent_tasks():
 
     assert await task_a is True
     assert await task_b is False, "两个连接的结果串了（contextvar 未正确隔离）"
+
+
+# ── 超时撤回推送（permission_expired）──────────────────────────
+
+async def test_timeout_pushes_permission_expired(monkeypatch):
+    """ask 超时 → 返回 False，且向归属连接推送 tool.permission_expired。
+
+    没有这条推送时前端弹窗会悬挂：用户点「允许」→ respond 返回 matched=false，
+    观感是「批准了却没执行」。
+    """
+    monkeypatch.setattr(cfg, "PERMISSION_ASK_TIMEOUT", 0.05, raising=False)
+    bridge = PermissionBridge()
+    a = _FakeConn("A")
+    cid_a = bridge.set_connection(a.push)
+
+    task = _ask_task(bridge, cid_a)
+    req = (await a.wait_requests(1))[0]
+
+    assert await task is False, "超时应按拒绝处理"
+    expired = [e for e in a.events if e[0] == "tool.permission_expired"]
+    assert len(expired) == 1, "超时后必须推送 permission_expired 撤回弹窗"
+    assert expired[0][1]["request_id"] == req["request_id"]
+
+    # 超时后迟到的批准不再命中任何挂起请求
+    assert bridge.respond(req["request_id"], True, conn_id=cid_a) is False
+
+
+async def test_expired_push_failure_is_suppressed(monkeypatch):
+    """推送 permission_expired 时连接已断 → 静默放弃，不影响超时拒绝语义。"""
+    monkeypatch.setattr(cfg, "PERMISSION_ASK_TIMEOUT", 0.05, raising=False)
+
+    class _BrokenConn(_FakeConn):
+        async def push(self, method: str, params: dict) -> None:
+            if method == "tool.permission_expired":
+                raise RuntimeError("connection closed")
+            await super().push(method, params)
+
+    bridge = PermissionBridge()
+    a = _BrokenConn("A")
+    cid_a = bridge.set_connection(a.push)
+
+    task = _ask_task(bridge, cid_a)
+    await a.wait_requests(1)
+    assert await task is False, "推送失败不得改变超时拒绝的返回值"

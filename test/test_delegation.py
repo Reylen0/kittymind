@@ -328,3 +328,55 @@ async def test_task_tool_allowed_tools_filter():
         assert "任务完成" in result2.content
     finally:
         reset_root_budget(token)
+
+
+class _ToolThenTextLLM:
+    """第一步发起一次工具调用，第二步给最终文本——驱动子 Agent 的计数路径。"""
+
+    model = "fake"
+
+    def __init__(self):
+        self._step = 0
+
+    async def async_stream_with_tools(self, messages=None, tools=None, **kwargs):
+        from kittymind.core.llm_response import StreamEvent
+        self._step += 1
+        if self._step == 1:
+            yield StreamEvent(type="tool_calls_done", tool_calls=[
+                {"id": "c1", "type": "function",
+                 "function": {"name": "echo", "arguments": "{}"}}
+            ])
+        else:
+            yield StreamEvent(type="text_delta", delta="子任务完成：42")
+
+
+async def test_task_tool_counts_subagent_tool_calls():
+    """子 Agent 调 1 次工具 → 脚注记「1 工具」。
+
+    计数器已从 callbacks 迁到 EventBus：counts 来自子 Agent 私有总线上的
+    AGENT_TOOL_CALL 事件。私有总线（而非共享总线 + session_id 过滤）保证
+    并行多个 task 时不串计数。
+    """
+    from kittymind.tools.base import ToolResult
+    from kittymind.tools.builtin.task_tool import TaskTool, TaskInput
+
+    class _Echo:
+        name = "echo"
+        description = "回显输入。"
+        param_class = None
+        is_async = False
+
+        def run(self, parameters):
+            return ToolResult(True, "echo: ok")
+
+        def to_schema(self):
+            return {"type": "function", "function": {
+                "name": "echo", "description": "echo", "parameters": {}}}
+
+    token = set_root_budget(3, 8)
+    try:
+        tool = TaskTool(llm=_ToolThenTextLLM(), sub_tools=[_Echo()])
+        result = await tool.aexecute(TaskInput(prompt="测试计数"))
+        assert "1 工具" in result.content
+    finally:
+        reset_root_budget(token)

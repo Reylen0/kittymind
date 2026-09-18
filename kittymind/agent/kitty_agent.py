@@ -21,7 +21,6 @@ from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from ..callbacks.base import BaseCallBack
 from ..config import cfg
 from ..context import ContextCompressor, TokenTracker, prune_tool_outputs
 from ..context.compressor import _SUMMARY_MARKER
@@ -87,7 +86,6 @@ class KittyAgent(Agent):
         system_prompt: str | None = None,
         tools: list[BaseTool] | None = None,
         description: str | None = None,
-        callbacks: list[BaseCallBack] | None = None,
         max_iterations: int | None = None,
         # 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）；默认按 LLM_AUX_* 配置自动解析
         aux_llm=_AUX_AUTO,
@@ -100,7 +98,7 @@ class KittyAgent(Agent):
         # 是否是交互式，决定是否启用工具守护栏block（非交互态或全局 HARD_STOP 配置时启用 block）
         interactive: bool = True,
     ):
-        super().__init__(name, llm, system_prompt, description, callbacks)
+        super().__init__(name, llm, system_prompt, description)
         # 默认值在调用时求值，避免写成函数默认参数被 import 期钉死（cfg.reload() 会改不动）
         self.max_iterations = cfg.AGENT_MAX_ITERATIONS if max_iterations is None else max_iterations
         self.tools = tools or []
@@ -227,8 +225,7 @@ class KittyAgent(Agent):
             tools_schema, tracker = setup.tools_schema, setup.tracker
             compressor, ctx = setup.compressor, setup.ctx
 
-            # 记忆召回是 async 路径**独有**的能力，
-            # 作为独立 system 消息插在主 system 之后。
+            # 记忆召回作为独立 system 消息插在主 system 之后。
             await self._inject_memory_recall(messages, input_text, session_id)
 
             final_text: str | None = None
@@ -291,6 +288,10 @@ class KittyAgent(Agent):
                     messages.append(assistant_msg)
                     turn_messages.append(assistant_msg)
 
+                    # 同批工具调用：分区并行执行（executor 内部决策串行、只读区并行、
+                    # 按声明序回灌）。事件按声明序：先推全部 tool_call，执行完再按序推
+                    # tool_result——前端工具卡片按模型声明顺序出现；同进程内的轻量
+                    # 探针（如 task_tool 统计子 Agent 工具数）也订阅这些事件。
                     for tool_call in tool_calls:
                         name = tool_call["function"]["name"]
                         await self.event_bus.emit(AGENT_TOOL_CALL, {
@@ -298,11 +299,9 @@ class KittyAgent(Agent):
                             "args": tool_call["function"].get("arguments"),
                             "session_id": session_id,
                         })
-                        # 同时经 callbacks 分派（EventBus 服务 WS 推送；callbacks 服务
-                        # 同进程内的轻量探针，例如 task_tool 用它统计子 Agent 的工具调用数）。
-                        self._emit("on_tool_start", name, tool_call)
-                        result = await self.tool_executor.execute(tool_call=tool_call, ctx=ctx)
-                        self._emit("on_tool_end", name, result)
+                    results = await self.tool_executor.execute_batch(tool_calls, ctx)
+                    for tool_call, result in zip(tool_calls, results, strict=True):
+                        name = tool_call["function"]["name"]
                         await self.event_bus.emit(AGENT_TOOL_RESULT, {
                             "name": name,
                             "result": result.get("content"),

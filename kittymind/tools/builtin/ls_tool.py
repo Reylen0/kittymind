@@ -25,6 +25,7 @@ class LsTool(BaseTool):
         "自动跳过 .git、node_modules、__pycache__ 等目录。"
     )
     param_class = LsToolParam
+    is_concurrency_safe = True  # 只读，可同批并行
 
     def execute(self, parameters: LsToolParam) -> ToolResult:
         root = resolve_path(parameters.path)
