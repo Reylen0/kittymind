@@ -13,4 +13,3 @@ class BaseCallBack:
     def on_llm_error(self, error: Exception): pass
     def on_tool_start(self, name: str, args: Any): pass
     def on_tool_end(self, name: str, result: dict): pass
-    def on_tool_error(self, name: str, error: Exception): pass

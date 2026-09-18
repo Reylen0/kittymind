@@ -16,13 +16,15 @@ class StreamEvent:
     usage: dict | None = None
 
 
+@dataclass
 class LLMResponse:
-    def __init__(self, content: str | None = None, tool_calls: list[dict] | None = None):
-        self.content = content
-        self.tool_calls = tool_calls or []
+    """非流式调用的返回（与 StreamEvent 同为 dataclass，职责一致）。
+
+    构造点全部用关键字参数且 tool_calls 恒传 list（llm_adapters.py 两处），
+    不会踩 dataclass 不做 `or []` 归一的坑。
+    """
+    content: str | None = None
+    tool_calls: list[dict] = field(default_factory=list)
 
     def is_tool_call(self) -> bool:
         return len(self.tool_calls) > 0
-
-    def __str__(self) -> str:
-        return f"LLMResponse(content={self.content}, tool_calls={self.tool_calls})"

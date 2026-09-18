@@ -6,6 +6,7 @@
 """
 
 import json
+import re
 
 from ..config import cfg
 from ..prompts import MEMORY_RECALL_SECTION_HEADER, build_memory_recall_select_prompt
@@ -71,8 +72,30 @@ class MemoryRecall:
             pass
         return None
 
+    # 拉丁词（≥3 字符整词）；CJK 连续段（中文无空格，须另切 2-gram，见 _extract_keywords）
+    _TOKEN_RE = re.compile(r"[a-z0-9_]{3,}|[\u4e00-\u9fff]+")
+
+    def _extract_keywords(self, text: str) -> set[str]:
+        """从输入里提取可用于匹配的关键词。
+
+        旧实现 `text.split()` 按**空格**切词，中文整句变成一个 token 且
+        `len(w) > 2` 过滤后直接为空——LLM 选择失败时中文召回必然为空。
+        现在：拉丁词整词保留；CJK 连续段切 2-gram（单字噪声太大，
+        2-gram 与中文词的粒度最接近）。
+        """
+        words: set[str] = set()
+        for m in self._TOKEN_RE.finditer(text.lower()):
+            tok = m.group()
+            if tok[0].isascii():
+                words.add(tok)
+            elif len(tok) == 1:
+                words.add(tok)  # 用户只敲了一个汉字：只能拿它匹配
+            else:
+                words.update(tok[i:i + 2] for i in range(len(tok) - 1))
+        return words
+
     def _keyword_select(self, user_input: str, memories: list[dict]) -> list[int]:
-        words = {w for w in user_input.lower().split() if len(w) > 2}
+        words = self._extract_keywords(user_input)
         if not words:
             return []
         scored = []

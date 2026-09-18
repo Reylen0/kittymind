@@ -275,8 +275,9 @@ class _Config:
         if load_error:
             _warn(load_error)
         for raw_key, value in overrides.items():
+            # 弃用别名（BASH_MAX_OUTPUT → TOOL_MAX_OUTPUT）：旧名仍生效但必须告警
             key = _DEPRECATED_ALIASES.get(raw_key, raw_key)
-            if key in _DEPRECATED_ALIASES:
+            if raw_key in _DEPRECATED_ALIASES:
                 _warn(
                     f"settings.json 中的 {raw_key!r} 已改名为 "
                     f"{_DEPRECATED_ALIASES[raw_key]!r}，本次仍生效，请更新配置文件"

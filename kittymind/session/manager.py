@@ -12,6 +12,10 @@ class SessionManager:
     def __init__(self, db_path: Path | None = None) -> None:
         self.store = SqliteSessionStore(db_path or cfg.SESSIONS_DB)
 
+    def close(self) -> None:
+        """进程收尾时关闭底层 SQLite 连接（幂等，见 SqliteSessionStore.close）。"""
+        self.store.close()
+
     def create_session(self, title: str | None = None, session_id: str | None = None,
                        workspace_id: str | None = None) -> str:
         sid = session_id or str(uuid.uuid4())
@@ -55,8 +59,8 @@ class SessionManager:
         )
         return {"header": header, "messages": display_records}
 
-    def delete_session(self, session_id: str) -> None:
-        self.store.delete(session_id)
+    def delete_session(self, session_id: str) -> bool:
+        return self.store.delete(session_id)
 
     def append_turn(self, session_id: str, turn_messages: list[dict],
                     first_input: str | None = None,

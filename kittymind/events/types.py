@@ -1,5 +1,3 @@
-from dataclasses import dataclass, field
-
 AGENT_START = "agent.start"
 AGENT_THINKING = "agent.thinking"
 AGENT_CHUNK = "agent.chunk"
@@ -11,9 +9,3 @@ AGENT_CONTEXT_USAGE = "agent.context_usage"
 
 SUBAGENT_START = "subagent.start"
 SUBAGENT_DONE  = "subagent.done"
-
-
-@dataclass
-class AgentEvent:
-    type: str
-    data: dict = field(default_factory=dict)

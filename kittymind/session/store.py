@@ -30,6 +30,7 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -78,6 +79,13 @@ class SqliteSessionStore:
         )
         self._lock = threading.Lock()
         self._init_db()
+
+    def close(self) -> None:
+        """关闭 SQLite 连接（幂等）。进程收尾时调用；WAL 的 checkpoint 随之完成。"""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def _init_db(self) -> None:
         with self._lock:
@@ -135,7 +143,6 @@ class SqliteSessionStore:
     # ── 内部辅助 ──────────────────────────────────────────────────
 
     def _now_iso(self) -> str:
-        from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
 
     def _ts(self) -> int:
@@ -374,9 +381,11 @@ class SqliteSessionStore:
             ).fetchone()
         return row is not None
 
-    def delete(self, session_id: str) -> None:
+    def delete(self, session_id: str) -> bool:
+        """删除会话（连带 messages 的 ON DELETE CASCADE）。返回是否真的存在并删除。"""
         with self._lock:
-            self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            cur = self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
+            return cur.rowcount > 0
 
     def list_ids(self) -> list[str]:
         with self._lock:

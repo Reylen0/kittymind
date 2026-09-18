@@ -69,8 +69,8 @@ class BashTool(BaseTool):
             return ToolResult(False, f"错误: {e}")
 
         parts = [f"[工作目录: {cwd}]"]
-        if proc.stdout: parts.append(proc.stdout[:cfg.BASH_MAX_OUTPUT])
-        if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:cfg.BASH_MAX_OUTPUT]}")
+        if proc.stdout: parts.append(proc.stdout[:cfg.TOOL_MAX_OUTPUT])
+        if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:cfg.TOOL_MAX_OUTPUT]}")
         if proc.returncode != 0: parts.append(f"[退出码: {proc.returncode}]")
         content = "\n".join(parts) if len(parts) > 1 else parts[0] + "\n(无输出)"
         return ToolResult(proc.returncode == 0, content)

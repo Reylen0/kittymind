@@ -24,6 +24,19 @@ class RpcHandler:
         self.ws = ws
         self._tasks: dict[str, asyncio.Task] = {}
         self._bridge = bridge
+        # 方法路由表：每个连接建一次即可，不必每次 dispatch 重建
+        self._handlers: dict[str, Any] = {
+            "turn/run":                 self._turn_run,
+            "turn/cancel":              self._turn_cancel,
+            "session/create":           self._session_create,
+            "session/list":             self._session_list,
+            "session/get":              self._session_get,
+            "session/delete":           self._session_delete,
+            "agent/status":             self._agent_status,
+            "workspace/list":           self._workspace_list,
+            "workspace/create":         self._workspace_create,
+            "tool/permission_response": self._permission_response,
+        }
         # 本连接的审批通道 id：bridge 是进程级单例，靠它区分多连接
         self.conn_id: str | None = None
         if bridge is not None and loop is not None:
@@ -38,20 +51,7 @@ class RpcHandler:
         method = request.get("method", "")
         params = request.get("params") or {}
 
-        handlers = {
-            "turn/run":                self._turn_run,
-            "turn/cancel":             self._turn_cancel,
-            "session/create":          self._session_create,
-            "session/list":            self._session_list,
-            "session/get":             self._session_get,
-            "session/delete":          self._session_delete,
-            "agent/status":            self._agent_status,
-            "workspace/list":          self._workspace_list,
-            "workspace/create":        self._workspace_create,
-            "tool/permission_response": self._permission_response,
-        }
-
-        fn = handlers.get(method)
+        fn = self._handlers.get(method)
         if fn is None:
             await self._error(req_id, f"unknown method: {method}")
             return
@@ -249,8 +249,9 @@ class RpcHandler:
         session_id = params.get("session_id")
         if session_id in self._tasks:
             self._tasks[session_id].cancel()
-        mgr.delete_session(session_id)
-        await self._result(req_id, {"deleted": True})
+        # 如实返回：删不存在的会话给 {"deleted": false}，不再谎报成功
+        deleted = mgr.delete_session(session_id)
+        await self._result(req_id, {"deleted": deleted})
 
     # ──────────────────────────────────────────────────────────────
     # agent/status
@@ -299,4 +300,5 @@ class RpcHandler:
             # 显式带 conn_id：审批只在本连接的挂起请求里查找，
             # 避免两个连接同时弹窗时 request_id 撞车或跨连接误批
             hit = self._bridge.respond(request_id, approved, conn_id=self.conn_id)
-        await self._result(req_id, {"ok": True, "matched": hit})
+        # ok = 是否真的有桥可路由：bridge 为 None 时谎报 ok:true 会掩盖「审批没人接」
+        await self._result(req_id, {"ok": self._bridge is not None, "matched": hit})

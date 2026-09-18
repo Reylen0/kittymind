@@ -26,6 +26,9 @@ from ..config import cfg
 
 
 # ── 工具分类常量（不入 settings.json） ──────────────────────────
+# 两集合必须互斥：幂等（只读、重复调用无害）与变更类是两种互斥的归类。
+# test_guardrails.py 有 disjoint 断言——若日后出现跨集合的工具，说明分类错了，
+# 而不是给下面的判断加回 `and name not in MUTATING_TOOLS`（那是恒真冗余）。
 
 IDEMPOTENT_TOOLS: frozenset[str] = frozenset({
     "file_read", "glob", "grep", "ls", "get_current_time",
@@ -156,7 +159,7 @@ class GuardrailController:
             return self._make("block", "same_tool_failure_block", name, same)
 
         # 无进展 block（hard_stop 态，仅幂等工具）
-        if name in IDEMPOTENT_TOOLS and name not in MUTATING_TOOLS:
+        if name in IDEMPOTENT_TOOLS:
             rec = state.no_progress.get(sig)
             if rec is not None and rec[1] >= cfg.GUARD_NO_PROGRESS_BLOCK:
                 return self._make("block", "no_progress_block", name, rec[1])
@@ -214,7 +217,7 @@ class GuardrailController:
             state.same_tool_failure_counts.pop(name, None)
 
         # 幂等只读工具：无进展检测
-        if name in IDEMPOTENT_TOOLS and name not in MUTATING_TOOLS:
+        if name in IDEMPOTENT_TOOLS:
             prev = state.no_progress.get(sig)
             repeat = (prev[1] + 1) if (prev is not None and prev[0] == result_hash) else 1
             state.no_progress[sig] = (result_hash, repeat)

@@ -40,10 +40,12 @@ class BaseAgentLLM:
         self._client = create_adapter(self.model, self.api_key, self.base_url, self.timeout)
 
     def _base_kwargs(self, kwargs: dict) -> dict:
-        call_kwargs = {"temperature": kwargs.pop("temperature", self.temperature)}
+        """合并调用级参数与默认值；**不修改调用方传入的 kwargs**（此前用 pop 原地改）。"""
+        rest = dict(kwargs)
+        call_kwargs = {"temperature": rest.pop("temperature", self.temperature)}
         if self.max_tokens:
-            call_kwargs["max_tokens"] = kwargs.pop("max_tokens", self.max_tokens)
-        call_kwargs.update(kwargs)
+            call_kwargs["max_tokens"] = rest.pop("max_tokens", self.max_tokens)
+        call_kwargs.update(rest)
         return call_kwargs
 
     def invoke(self, messages: list[dict], **kwargs) -> LLMResponse:

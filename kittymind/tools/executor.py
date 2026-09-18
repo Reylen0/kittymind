@@ -68,8 +68,9 @@ class ToolExecutor:
             tool = self.registry.get(name=name)
             tool_result = tool.run(args)
             ok, content = tool_result.ok, str(tool_result.content)
-            if len(content) > cfg.BASH_MAX_OUTPUT:
-                content = content[:cfg.BASH_MAX_OUTPUT] + f"\n…[输出过长，已截断至 {cfg.BASH_MAX_OUTPUT} 字符]"
+            # 全局统一截断（对所有工具生效，故配置名是 TOOL_ 而非 BASH_）
+            if len(content) > cfg.TOOL_MAX_OUTPUT:
+                content = content[:cfg.TOOL_MAX_OUTPUT] + f"\n…[输出过长，已截断至 {cfg.TOOL_MAX_OUTPUT} 字符]"
         except Exception as e:
             content = str(e)
             ok = False

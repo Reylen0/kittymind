@@ -119,20 +119,25 @@ async def main() -> None:
     bridge = PermissionBridge()
     agent = build_agent(bridge)
 
-    port = base_port
-    for _ in range(cfg.PORT_RETRY_COUNT):
-        try:
-            await start_server(agent, host, port, bridge=bridge)
-            return
-        except OSError as e:
-            if e.errno in (10048, 98):
-                logger.warning("端口 %d 被占用，尝试 %d", port, port + 1)
-                port += 1
-            else:
-                raise
+    try:
+        port = base_port
+        for _ in range(cfg.PORT_RETRY_COUNT):
+            try:
+                await start_server(agent, host, port, bridge=bridge)
+                return
+            except OSError as e:
+                if e.errno in (10048, 98):
+                    logger.warning("端口 %d 被占用，尝试 %d", port, port + 1)
+                    port += 1
+                else:
+                    raise
 
-    logger.error("端口 %d-%d 全部不可用，退出", base_port, port - 1)
-    sys.exit(1)
+        logger.error("端口 %d-%d 全部不可用，退出", base_port, port - 1)
+        sys.exit(1)
+    finally:
+        # 正常退出 / Ctrl-C / 端口耗尽，都把 SQLite 连接关干净（WAL checkpoint 随之完成）
+        if agent.session_manager is not None:
+            agent.session_manager.close()
 
 
 if __name__ == "__main__":
