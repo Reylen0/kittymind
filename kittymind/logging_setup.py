@@ -1,22 +1,4 @@
-"""统一日志配置（报告 §3.4）。
-
-**为什么要从 `print` 换成 `logging`**：`print` 没有级别（打包后无法只看 warn 以上）、
-没有时间戳（排查时序问题没有锚点）、无法重定向、也无法统一脱敏。而日志在本项目里
-是排查"模型为什么这么干"的主要手段，值得一个正经通道。
-
-**两条通道的划分（重要，别混用）**
-  - **stdout**：给人和"外部程序契约"看的。
-    · `server/ws_server.py` 的 `[ready] ws://host:port` —— Electron 主进程靠监听
-      stdout 这一行判断服务端就绪，**这是契约，不能挪到日志里**。
-    · `server/app.py` 的 `[aux] ...` 自检行与端口重试告警 —— 启动横幅，用户要"一眼看到"。
-    · `chat.py` / `chat_async.py` 的对话输出与提示符。
-    · `tools/permission.py` 的 `_cli_ask()` 交互提示（要和随后的 input() 贴在一起）。
-  - **stderr（logging）**：诊断与业务日志（压缩、记忆提取、后台任务异常等）。
-
-**例外**：`config.py` 的 `_warn()` 刻意保留 stderr 直写，不走 logging —— 配置在
-`setup_logging()` 之前就被 import 并解析，此时日志尚未配置；更重要的是「你的配置被
-忽略了」这类信息**不应该被日志级别过滤掉**，必须无条件可见。
-"""
+"""统一日志配置"""
 
 import logging
 import sys

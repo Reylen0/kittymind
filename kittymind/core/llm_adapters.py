@@ -24,9 +24,6 @@ class BaseLLMAdapter(ABC):
     @abstractmethod
     def invoke(self, messages: list[dict], **kwargs) -> LLMResponse: pass
 
-    @abstractmethod
-    def invoke_stream(self, messages: list[dict], **kwargs) -> iter: pass
-
     async def async_stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         raise NotImplementedError
 
@@ -57,19 +54,6 @@ class OpenAIAdapter(BaseLLMAdapter):
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}
                 })
         return LLMResponse(content=msg.content, tool_calls=tool_calls)
-
-    def invoke_stream(self, messages: list[dict], **kwargs) -> iter:
-        if not self._client:
-            self._client = self._create_client()
-        resp = self._client.chat.completions.create(
-            model=self.model, messages=messages, stream=True, **kwargs
-        )
-        for chunk in resp:
-            if not chunk.choices:
-                continue
-            content = chunk.choices[0].delta.content or ""
-            if content:
-                yield content
 
     async def async_stream_with_tools(
         self, messages: list[dict], tools: list[dict] | None = None, **kwargs
@@ -313,14 +297,6 @@ class AnthropicAdapter(BaseLLMAdapter):
         resp = self._client.messages.create(**params)
         text, tool_calls = self._parse_content_blocks(resp.content)
         return LLMResponse(content=text, tool_calls=tool_calls)
-
-    def invoke_stream(self, messages: list[dict], **kwargs) -> iter:
-        if not self._client:
-            self._client = self._create_client()
-        params = self._make_params(messages, None, kwargs)
-        for event in self._client.messages.create(**params, stream=True):
-            if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                yield event.delta.text
 
     async def async_stream_with_tools(
         self, messages: list[dict], tools: list[dict] | None = None, **kwargs

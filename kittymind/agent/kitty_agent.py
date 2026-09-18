@@ -8,18 +8,12 @@
 
 子 Agent 调 run(session_id=None)，不触发任何集成层副作用。
 
-  - 每轮从 SQLite active 视图重建上下文。
-  - _build_messages 返回 (messages, loaded_seqs)；历史消息带瞬态 _seq 标记。
-  - LLM 调用前剥离 _seq / _compressed_summary（_strip_internal）。
-  - _commit_turn：有压缩时走 archive_and_compact 落库，否则 append_turn。
-
 ReAct 循环的组织方式：
   - run() 是纯同步方法：子 Agent 委派走 ToolExecutor → asyncio.to_thread → run()，
     这条链路上没有事件循环，run() 不能依赖 asyncio。
   - async_stream_run() 是独立的异步生成器（需要 await / EventBus 广播），
     与 run() 共用 _begin_turn / _assistant_message / _ensure_final_text 等轮次规则，
     但循环体不共享。
-  - 两条路径的能力差异是**刻意保留**的，见 _CAPABILITY_MATRIX。
 """
 
 import asyncio
@@ -73,26 +67,6 @@ def _fresh_tracker() -> TokenTracker:
     """新建 TokenTracker：上限与保留额取自配置（调用时求值，cfg.reload() 后生效）。"""
     return TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
 
-
-# ── 两条 ReAct 路径的能力对照 ──────────────────────────────────────
-# 这张表描述的是**刻意保留**的差异，不是疏漏。不要在改动时顺手抹平：
-# test/test_react_loops.py 的「已知漂移」区块会在你抹平时变红，逼先做决策
-# （子 Agent 该不该拿到父级的记忆召回？该不该落库？last_messages 该不该含最终答复？）。
-#
-#   能力                     run()         async_stream_run()
-#   记忆召回                   ✗             ✓
-#   落库到 SessionManager      ✗             ✓（session_id 非空时）
-#   后台记忆提取               ✗             ✓（配了 memory 时）
-#   usage / 反抖动冷却         ✗             ✓
-#   EventBus 事件广播          ✗（只走 callbacks）✓
-#   压缩是否丢线程池           ✗             ✓
-#   last_messages 尾部         含最终答复    不含
-#
-# 记一笔现状：run() 的实际调用方（子 Agent）不带集成层，所以上表左侧的 ✗ 在其上
-# 按构造就是 no-op（_memory_recall is None、session_manager is None、memory is None）；
-# 差异只在"将来给这条路径配上集成层"时才会显形。
-
-
 @dataclass(frozen=True)
 class _TurnSetup:
     """每轮开始时的共用运行态（run / async_stream_run 两处同构）。"""
@@ -124,6 +98,7 @@ class KittyAgent(Agent):
         workspace_manager=None,
         memory: MemoryStore | None = None,
         ask_fn=None,
+        # 是否是交互式，决定是否启用工具守护栏block（非交互态或全局 HARD_STOP 配置时启用 block）
         interactive: bool = True,
     ):
         super().__init__(name, llm, system_prompt, description, callbacks)
@@ -145,9 +120,6 @@ class KittyAgent(Agent):
             get_aux_llm() if aux_llm is _AUX_AUTO else aux_llm
         )
 
-        # 冻结的记忆召回段（session_id -> 文本 | _RECALL_STALE）
-        self._recall_cache: OrderedDict[str, object] = OrderedDict()
-
         # 后台任务强引用：asyncio 只持弱引用，create_task 的返回值若不保存，
         # 任务可能在执行途中被 GC 掉（且异常被静默吞掉）。
         self._bg_tasks: set[asyncio.Task] = set()
@@ -159,6 +131,8 @@ class KittyAgent(Agent):
         self._memory_recall: MemoryRecall | None = (
             MemoryRecall(memory, self.aux_model) if memory else None
         )
+        # 冻结的记忆召回段（session_id -> 文本 | _RECALL_STALE）
+        self._recall_cache: OrderedDict[str, object] = OrderedDict()
 
     @property
     def aux_model(self) -> BaseAgentLLM:
@@ -307,7 +281,7 @@ class KittyAgent(Agent):
             tools_schema, tracker = setup.tools_schema, setup.tracker
             compressor, ctx = setup.compressor, setup.ctx
 
-            # 记忆召回是 async 路径**独有**的能力（见 _CAPABILITY_MATRIX），
+            # 记忆召回是 async 路径**独有**的能力，
             # 作为独立 system 消息插在主 system 之后。
             await self._inject_memory_recall(messages, input_text, session_id)
 
@@ -391,7 +365,7 @@ class KittyAgent(Agent):
 
                 final_text = self._ensure_final_text(final_text)
 
-                # 与 run() 一致：暴露本轮完整消息（不含最终 assistant 答复，见 _CAPABILITY_MATRIX）。
+                # 与 run() 一致：暴露本轮完整消息（不含最终 assistant 答复）。
                 self.last_messages = messages
 
                 turn_messages.append({"role": "assistant", "content": final_text})
@@ -419,7 +393,7 @@ class KittyAgent(Agent):
             reset_root_budget(budget_token)
             reset_root_session(session_token)
 
-    # ── 记忆召回（async 路径独有的能力，见 _CAPABILITY_MATRIX）────
+    # ── 记忆召回（async 路径独有的能力）────
 
     async def _inject_memory_recall(
         self, messages: list[dict], input_text: str, session_id: str | None
