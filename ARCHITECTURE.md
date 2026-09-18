@@ -6,10 +6,7 @@
 2. [整体架构](#2-整体架构)
 3. [技术选型](#3-技术选型)
 4. [模块与目录结构](#4-模块与目录结构)
-5. [核心机制](#5-核心机制)
-6. [MVP 完成状态（Phase 1-9）](#6-mvp-完成状态phase-1-9)
-7. [对标 hermes 的能力差距分析](#8-对标-hermes-的能力差距分析)
-8. [进阶开发路线（Phase 10+）](#9-进阶开发路线phase-10)
+5. [开发路线与实现状态（Phase 1-30）](#5-开发路线与实现状态phase-1-30)
 
 ---
 
@@ -39,13 +36,14 @@ KittyMind 是一个**通用桌面 Agent**（Windows 优先，预留跨平台）�
 │  ┌──────────────────────────────────────────────────────┐  │
 │  │  KittyAgent — 全程流式 ReAct + 记忆召回 + 上下文压缩  │  │
 │  └──────────────────────────────────────────────────────┘  │
-│  LLM(多厂商) │ Tool Registry │ Session Manager │ Memory Store│
-│  ────────────── asyncio Event Bus ──────────────           │
-│  MCP Manager │ Compactor │ Task/子Agent │ Cron（规划中）    │
+│  LLM(多厂商) │ Tool Registry │ Session Manager(SQLite)      │
+│  Memory Store │ Guardrails │ Permission Bridge │ Audit      │
+│  ────────────── asyncio Event Bus（唯一事件出口）────────     │
+│  MCP Manager │ Task/子Agent │ Cron（规划中）                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-> 图中 MCP / Compactor / Cron 为目标态，属进阶路线（§9）范畴。
+> 图中 MCP / Cron 为目标态，属第 5 章（Phase 20 / 27）范畴。
 
 ---
 
@@ -55,16 +53,15 @@ KittyMind 是一个**通用桌面 Agent**（Windows 优先，预留跨平台）�
 |------|------|------|
 | 桌面容器 | **Electron 36+** | 透明窗口、全局热键、系统托盘；跨平台 |
 | 前端 | **React 18 + TypeScript** | 生态完善 |
-| 桌宠动画 | **Canvas API** | 精灵帧动画，支持透明背景 |
+| 桌宠动画 | **Canvas API + 精灵分层** | 透明背景，按情绪切换图层 |
 | Agent 核心 | **Python 3.10+ + asyncio** | LLM 生态最完整 |
 | IPC | **websockets（JSON-RPC）** | 全双工流式推送 |
-| LLM 调用 | **OpenAI SDK（兼容多厂商）** | DeepSeek/Qwen/Ollama 全支持 |
-| 工具扩展 | **MCP** | 标准生态，stdio + SSE |
+| LLM 调用 | **OpenAI SDK（兼容多厂商）** | DeepSeek/Qwen/Ollama 全支持；Anthropic 适配器含 cache_control |
+| 工具扩展 | **MCP** | 标准生态，stdio + SSE（未实现，Phase 20-21） |
 | 长期记忆 | **Markdown + YAML frontmatter** | 零依赖，人类可读 |
-| 会话持久化（MVP） | **JSONL 追加写入** | 崩溃安全，实现简单 |
-| 会话持久化（进阶） | **SQLite + FTS5 + WAL** | 全文搜索（含 CJK）、用量统计、并发健壮（见 §5.3） |
-| 上下文压缩 | **多层阈值管线 + 辅助模型摘要** | 解决长任务撞墙（见 Phase 10） |
-| 打包 | **electron-builder** | Windows NSIS + 自动更新 |
+| 会话持久化 | **SQLite + WAL** | 单文件 `~/.kittymind/sessions.db`；压缩原子落库、双视图读取、状态跨轮持久化 |
+| 上下文压缩 | **多层阈值管线 + 辅助模型摘要** | 微压缩 + 轨迹压缩 + 反抖动 |
+| 打包 | **PyInstaller + electron-builder** | Python 单 exe（spec 已有）；Electron NSIS + 自动更新（未做） |
 
 ---
 
@@ -74,440 +71,188 @@ KittyMind 是一个**通用桌面 Agent**（Windows 优先，预留跨平台）�
 kittymind/                      # 项目根目录
 ├── kittymind/                  # Python 统一包
 │   ├── core/                   # LLM 层：llm / llm_adapters / llm_response / message / exceptions
-│   ├── agent/                  # base / tool_agent（流式 ReAct）/ kitty_agent（EventBus+Session 集成）
-│   ├── context/                # token_counter / micro_compaction / compressor（上下文压缩管线）
-│   ├── tools/                  # base / registry / executor / permission + builtin/（13 个工具）
+│   ├── agent/                  # base / kitty_agent（唯一 ReAct 入口）/ delegation / verify/
+│   ├── context/                # token_counter / micro_compaction / compressor（压缩管线）
+│   ├── tools/                  # base / registry / executor / permission / guardrails / audit
+│   │                           #   / redaction + builtin/（14 个工具 + _paths/_fmt/_dangerous 辅助）
 │   ├── memory/                 # store / extract / recall（LLM 驱动的长期记忆）
-│   ├── events/                 # bus（asyncio Pub/Sub）/ types
-│   ├── session/                # store（JSONL）/ manager
+│   ├── events/                 # bus（asyncio Pub/Sub，唯一事件出口）/ types
+│   ├── session/                # store（SQLite）/ manager
 │   ├── workspace/              # manager（cwd 上下文隔离）
-│   ├── callbacks/              # base（回调接口）
 │   ├── config.py               # 统一配置（~/.kittymind/settings.json 覆盖）
 │   └── prompts.py              # 集中管理 system_prompt
-├── server/                     # app（启动入口）/ ws_server / rpc_handler / permission_bridge
+├── server/                     # app（装配）/ ws_server / rpc_handler / permission_bridge
 ├── electron/                   # Electron 主进程 & 前端
-│   ├── main.js                 # 主进程：子进程管理 / 多窗口 / 热键 / 托盘
-│   ├── preload.js              # 聊天窗口 preload（IPC 桥）
-│   ├── preload-pet.js          # 桌宠窗口 preload
-│   ├── preload-overlay.js      # 悬浮层 preload
+│   ├── main.js                 # 主进程：子进程管理 / 多窗口 / 热键 / 托盘 / 事件白名单
+│   ├── preload*.js             # 聊天 / 桌宠 / 悬浮层三份 contextBridge
 │   ├── src/
-│   │   ├── renderer/           # React 聊天界面（App / ChatView / SessionList / TopBar…）
-│   │   ├── pet/                # 桌宠窗口（精灵图分层动画）
+│   │   ├── renderer/           # React 聊天界面（ChatView / SessionList / TopBar / WorkspaceSelector…）
+│   │   ├── pet/                # 桌宠窗口（分层精灵动画）
 │   │   └── overlay/            # 全局悬浮覆盖层
-│   ├── scripts/                # 开发辅助脚本（dev / analyze-bounds / screenshot…）
-│   ├── vite.config.ts          # Vite 构建配置
+│   ├── vite.config.ts
 │   └── package.json
-├── test/                       # Python 单元测试
-│   ├── test_event_bus.py       # EventBus pub/sub 测试
-│   ├── test_rpc_handler.py     # WebSocket RPC 协议测试
-│   └── test_session.py         # JSONL 会话读写测试
+├── test/                       # 25 个测试文件 / 409 个用例（特征测试 + 回归）
 ├── assets/                     # 应用图标 / 托盘图
-├── chat_async.py                # CLI 演示
+├── chat_async.py               # CLI 演示入口
+├── build-python.spec           # PyInstaller 打包配置
 └── ARCHITECTURE.md
 ```
 
-内置工具（13）：`bash` `file_read/write/edit` `glob` `grep` `ls` `git` `screenshot` `clipboard` `get_current_time` `write_memory` `task`（子任务）。
+内置工具（14）：`bash` `file_read/write/edit` `glob` `grep` `ls` `git` `screenshot` `clipboard` `get_current_time` `write_memory` `verify`（自我验证）`task`（子任务）。
 
-运行时数据目录 `~/.kittymind/`：`sessions/`（会话）、`memory/`（长期记忆）、`workspaces.json`、`settings.json`、`mcp.json`（规划）。
-
----
-
-## 5. 核心机制
-
-### 5.1 全程流式 ReAct 循环
-
-参考 deepseek-harness：**每步都流式，工具调用也在流里检测**，不存在"非流式工具循环 + 流式最终回答"的分离。
-
-- `AnthropicAdapter`/`OpenAIAdapter.async_stream_with_tools()` 在同一 stream 里同时 yield `text_delta` 和累积 `tool_call_delta`，流结束时输出 `tool_calls_done`。
-- 循环每步：文字 delta 实时 `yield` 给用户 + emit `agent.chunk`；流结束若有 tool_calls 则执行并追加结果、继续下一步；无则本步即最终回答（已推完）。
-- `async_stream_run()` 本身就是一个原生异步生成器（`async def ... yield`），直接被 WebSocket 处理协程 `async for` 消费，不需要额外的线程或队列桥接。子 Agent（`task_tool`）复用同一个方法（`root=False`），不是另一套实现。
-- 实现见 `agent/kitty_agent.py`、`core/llm_adapters.py`。
-
-### 5.2 IPC 通信协议（WebSocket JSON-RPC）
-
-**客户端请求**：`turn/run`、`turn/cancel`、`session/create`、`session/list`、`session/get`、`session/delete`。
-
-**服务端推送（无 id，驱动 UI 与桌宠）**：
-
-| 事件 | 载荷 | 用途 |
-|------|------|------|
-| `agent.chunk` | `{delta, session_id}` | 流式文字 |
-| `agent.thinking` | `{session_id}` | LLM 推理中 → 桌宠 THINKING |
-| `agent.tool_call` | `{name, args, session_id}` | 工具调用 → UI 卡片 / 桌宠 WORKING |
-| `agent.tool_result` | `{name, result, session_id}` | 工具结果 |
-| `agent.done` | `{session_id, text}` | 本轮完成 → 桌宠 HAPPY |
-| `agent.error` | `{error, session_id}` | 出错 → 桌宠 SAD |
-
-Electron Main ↔ Renderer 经 `contextBridge` 暴露 `kitty.*`（sendMessage / onChunk / onToolCall / onDone / onPetEmotion …）。
-
-### 5.3 会话持久化
-
-**MVP（JSONL）**：每会话一个 `~/.kittymind/sessions/{id}/session.jsonl`，第 1 行 header，后续每消息一行，append-only。读时遇不完整行直接 break（torn tail 崩溃恢复）。
-
-**进阶（SQLite + FTS5，Phase 14-17）**：JSONL 在会话变多后无法全文搜索、无用量统计、并发靠文件锁。参考 hermes `hermes_state_*` 迁移 SQLite，作为主存储 + 索引，JSONL 保留为可选导出格式。桌面单机无需 hermes 的读连接池/多进程 generation/网关路由，大幅精简。
-
-```sql
-CREATE TABLE sessions (
-  id TEXT PRIMARY KEY, title TEXT, title_source TEXT,
-  workspace_id TEXT, parent_session_id TEXT,          -- 压缩链 / 子 Agent 血缘
-  created_at INTEGER, updated_at INTEGER,
-  message_count INTEGER, tool_call_count INTEGER,
-  input_tokens INTEGER, output_tokens INTEGER,
-  cache_read_tokens INTEGER, cache_write_tokens INTEGER,
-  archived INTEGER DEFAULT 0
-);
-CREATE TABLE messages (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, seq INTEGER,
-  role TEXT, content TEXT, tool_calls TEXT, tool_call_id TEXT, tool_name TEXT,
-  token_count INTEGER, ts INTEGER,
-  active INTEGER DEFAULT 1, compacted INTEGER DEFAULT 0   -- 压缩标记
-);
-CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages');
-CREATE VIRTUAL TABLE messages_fts_cjk USING fts5(content, tokenize='trigram');
-```
-
-要点：**WAL**（网络盘失败降级 DELETE）｜**FTS5 三层搜索** MATCH→trigram→CJK 二元组回退（中文必需）｜`active`/`compacted` 支持压缩后只取活跃消息、历史仍可查｜`session_model_usage` 表做成本追踪｜迁移脚本导入现有 JSONL，`SessionStore` 抽象双实现配置切换｜健壮性精简为启动 `integrity_check` + 损坏备份重建。
-
-### 5.4 桌宠情绪映射（事件 → 状态）
-
-| Agent 事件 | 情绪状态 | 动画 |
-|-----------|---------|------|
-| `agent.thinking` | THINKING | 摸下巴 |
-| `agent.tool_call(shell/file)` | WORKING | 敲键盘/翻文件 |
-| `agent.tool_call(web)` | SEARCHING | 望远镜 |
-| `agent.done` | HAPPY | 跳起来 |
-| `agent.error` | SAD | 低头 |
-| 用户 30min 无操作 | SLEEPY | 打哈欠 |
-| 00:00-06:00 | NIGHT | 戴睡帽 |
-| idle | IDLE | 随机小动作 |
-
-Pet 窗口：`BrowserWindow` + `transparent/frame:false/alwaysOnTop/skipTaskbar`，`setIgnoreMouseEvents` 点击穿透（可切换）；Canvas 按帧号从精灵图截取绘制。
+运行时数据目录 `~/.kittymind/`：`sessions.db`（SQLite 会话库）、`memory/`（长期记忆）、`workspaces.json`、`settings.json`。
 
 ---
 
-## 6. MVP 完成状态（Phase 1-9）
+## 5. 开发路线与实现状态（Phase 1-30）
 
-MVP 目标：跑通"输入 → 流式显示 → 工具卡片 → 桌宠动画 → 历史持久化"闭环。
-
-| Phase | 主题 | 状态 | 产出 |
-|-------|------|:----:|------|
-| 1 | Agent Core（全程流式工具调用 + async） | ✅ | `tool_agent.py`、`stream_with_tools()` |
-| 2 | 事件总线（asyncio Pub/Sub） | ✅ | `events/bus.py`、7 类事件 |
-| 3 | 会话持久化（JSONL + torn-tail 恢复） | ✅ | `session/store.py`、`manager.py` |
-| 4 | WebSocket JSON-RPC Server | ✅ | `server/`（turn/session/agent 方法） |
-| 5 | 桌面工具集（bash/文件/git/截图/剪贴板 + 权限） | ✅ 大部分 | `tools/builtin/`、`permission.py` |
-| 6 | Electron 主进程骨架（子进程/窗口/热键/托盘） | 🟡 骨架 | `electron/main.js`、`preload` |
-| 7 | React 聊天界面（流式/工具卡片/会话侧栏） | 🟡 骨架 | `electron/src/renderer/` |
-| 8 | 桌宠窗口（透明浮窗/精灵动画/情绪机） | 🟡 骨架 | `electron/src/pet/` |
-| 9 | 端到端联调与打包 | ⬜ 待办 | 见 Phase 26 |
-
-MVP 之外已额外落地：长期记忆系统（`memory/`：提取/整合/召回）、工作区 cwd 隔离（`workspace/`）、子任务工具（`task`）、统一配置（`settings.json`）。
-
----
-
-## 7. 对标 hermes 的能力差距分析
-
-以 `E:\class\roadmap\Agent\resource\hermes-agent`（Nous Research 的成熟自进化 Agent 产品）为标杆。hermes 规模：**Agent 核心 ~94K 行**、**工具实现 255 个文件**、**状态层 22 个模块 ~700KB**、**23+ 消息平台适配器**、**~39K 测试**。kittymind **不追求 1:1 复制**（尤其多平台网关、多租户等重型服务端能力，与"桌面为主"定位不符），而是识别出**最能提升 Agent 智能与产品成熟度**的能力，务实补齐。
-
-### 7.1 能力差距矩阵
-
-| 能力域 | kittymind 现状 | hermes 成熟做法 | 差距等级 | 计划阶段 |
-|--------|---------------|----------------|:------:|:------:|
-| **上下文压缩** | ❌ 无，messages 无限增长到 `max_iterations` 撞墙 | 多层阈值（50%/85%）+ 微压缩 + 辅助模型摘要 + 缓存不变量保护 | 🔴 关键 | Phase 10 |
-| **子 Agent 编排** | ⚠️ `task_tool` 雏形：同步 `run`、无隔离、无深度/并发限制、无用量追踪 | `delegate_task`：隔离沙箱、角色（leaf/orchestrator）、深度限制、后台委派、usage 回传 | 🔴 关键 | Phase 11 |
-| **工具守护栏** | ❌ 无失败循环检测 | 精确失败/相同失败/幂等无进展/限额四重守护，交互态警告、非交互态硬停 | 🟠 重要 | Phase 12 |
-| **自我验证** | ❌ 无 | `verify/runner` 后台验证（bootstrap→build→test→probe），收集证据决定重试 | 🟡 增强 | Phase 13 |
-| **会话持久化** | JSONL 纯追加，无搜索/无用量 | SQLite + FTS5（含 CJK trigram）+ WAL + 自动修复 + 成本追踪 | 🟠 重要 | Phase 14-17 |
-| **核心工具广度** | 13 个（bash/文件/git/截图/剪贴板/时间/记忆/task） | 120+：web_search/web_extract/browser_*/process_manage/vision/image_gen/todo/computer_use… | 🟠 重要 | Phase 18-19 |
-| **工具分组分发** | 扁平列表，全量下发 | `TOOLSETS`（60+）按平台/场景动态启停，MCP 运行时注册 | 🟡 增强 | Phase 18 |
-| **MCP 扩展** | ❌ 无（架构曾规划未实现） | MCP 客户端（stdio+SSE 接入外部工具）+ MCP 服务端（暴露自身能力） | 🟠 重要 | Phase 20-21 |
-| **Skills 技能系统** | ❌ 无 | YAML frontmatter 技能、agent 自创建、curator 自动策展/归档、open standard | 🟡 增强 | Phase 22 |
-| **长期记忆系统** | ✅ **已实现**（Markdown+frontmatter、LLM 提取/自动整合/召回）；但召回全量喂 LLM、中文关键词兜底失效、注入破坏缓存 | provider 插件化（honcho/mem0）+ 辩证式用户建模 + 向量语义召回 | 🟡 增强 | Phase 17M + 25 |
-| **可观测性** | ⚠️ `print` 日志 | Observer hooks（never-block）+ OTLP + 健康检查 + 关联 ID 全链路 | 🟠 重要 | Phase 23-24 |
-| **提示词缓存** | ⚠️ 每轮改 `messages[0]` 破坏缓存前缀 | 系统提示字节稳定，压缩是唯一合法破坏点，记忆变更推迟到下一会话 | 🟠 重要 | Phase 25 |
-| **打包分发** | ❌ 未完成 | PyInstaller + electron-builder + 自动更新 + bootstrap installer | 🟠 重要 | Phase 26 |
-| **定时/后台** | ❌ 无 | Cron（自然语言定义 + 多目标投递）+ 后台委派 + Serverless 常驻 | 🟡 增强 | Phase 27-28 |
-| **多渠道网关** | ❌ 仅 Electron 本地 | 单进程 23+ 平台 + profile 多路复用 + 密钥隔离 | ⚪ 预留 | Phase 29 |
-| **桌宠情绪系统** | ⚠️ 事件已具备，动画/状态机待完善 | hermes 有终端 pet（多协议精灵渲染）+ 桌面浮窗 | 🟡 增强 | Phase 30 |
-
-图例：🔴 关键（阻碍长任务/核心体验）｜🟠 重要（成熟产品必备）｜🟡 增强（锦上添花）｜⚪ 预留（架构留位，暂不实现）
-
-### 7.2 关键洞察
-
-1. **上下文压缩是当前最大瓶颈**：`kitty_agent.py` 的 ReAct 循环无任何压缩，一旦长任务累积消息就会撞 `max_iterations` 而中断——这是 kittymind 目前**唯一会导致任务失败**的结构性缺陷，故列为 Phase 10 最高优先。
-2. **子 Agent 已有雏形但太弱**：`task_tool` 能隔离 context 是正确方向，但缺隔离沙箱、深度限制、用量回传，容易递归爆炸或失控。
-3. **hermes 的"重"大多在服务端**：多平台、多租户、读连接池、generation 管理、网关路由——这些是它作为**云端多用户产品**的需求。kittymind 桌面单机场景可**大幅精简**，把省下的复杂度投入 Agent 智能本身。
-4. **架构分解是可借鉴的工程财富**：hermes 把 94K 行拆成 40+ 个 `turn_*.py` 阶段模块、22 个 `hermes_state_*.py`，避免 god file。kittymind 在补能力时应同步保持模块化。
-
----
-
-## 8. 进阶开发路线（Phase 10+）
-
-**总原则**：桌面为主、架构预留网关；按「Agent 核心智能 → 健壮持久化 → 工具生态 → 可观测与交付 → 定时后台 → 网关预留」推进。每个里程碑可独立交付、独立验证。
+> 依据**当前代码**（2026-09，409 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
+> 对标参照：Nous Research 的 hermes-agent（仅借鉴其 Agent 侧设计，服务端重型能力不在路线内）。
 
 ### 里程碑总览
 
-| 里程碑 | 主题 | 优先级 | 包含 Phase | 一句话目标 |
-|--------|------|:------:|-----------|-----------|
-| **M-A** | Agent 核心智能 | P0 | 10-13 | 让 Agent 能扛住长任务不崩、子任务可控、失败不空转 |
-| **M-B** | 健壮持久化 + 记忆检索 | P0 | 14-17M | 会话可全文搜索、用量可统计、并发安全、记忆向量召回 |
-| **M-C** | 工具与扩展生态 | P1 | 18-22 | 能力边界大幅扩张 + 接入 MCP/技能生态 |
-| **M-D** | 可观测与产品化交付 | P1 | 23-26 | 可观测、缓存省钱、能打包发给真实用户 |
-| **M-E** | 定时与后台自动化 | P2 | 27-28 | 无人值守定时任务 + 后台委派 |
-| **M-F** | 网关预留与桌宠深化 | P2 | 29-30 | 为未来多渠道铺抽象层 + 桌宠体验完善 |
+| 里程碑 | 主题 | 包含 Phase | 状态 |
+|--------|------|-----------|:----:|
+| MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
+| **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 检索升级 ⬜ |
+| **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
+| **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
+| **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
+| **M-F** | 网关预留与桌宠深化 | 29-30 | ⬜ |
 
 ---
 
-### 里程碑 M-A：Agent 核心智能（P0）
+### MVP（Phase 1-9）
 
-#### Phase 10 — 上下文压缩管线 🔴
+**Phase 1 — Agent Core（全程流式 ReAct）✅**
+单一流式路径：LLM 适配器在同一 stream 里同时 yield `text_delta` 与 `tool_calls_done`，循环每步文字实时外推、流结束有工具则执行后继续、无则本步即最终回答。`async_stream_run()` 是**唯一入口**（原同步 `run()` 已删除）：根 Agent 正常调用，子 Agent 传 `root=False` 复用父级作用域（cwd / 委派预算 / 根 session 标签），不是另一套实现。同批 tool_calls 由执行器**分区并行**：决策段整批按声明序串行、只读工具区段内 `gather`、变更工具自成屏障，结果按声明序回灌。
 
-**目标**：Agent 处理长任务时自动压缩历史，永不因上下文溢出而中断；压缩不破坏工具调用/响应配对，不破坏提示缓存前缀。
+**Phase 2 — 事件总线 ✅**
+`EventBus`：asyncio Pub/Sub，支持通配符订阅，异常不中断其他处理器。现为**全链路唯一事件出口**——WS 推送、task_tool 生命周期事件（subagent.start/done）、子 Agent 工具计数（订阅子 Agent 私有总线实现 per-run 隔离）都走它（原 callbacks 双通道机制已删除）。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 10.1 | Token 计量 | `kittymind/context/token_counter.py` | 用 tiktoken 或模型 usage 字段估算上下文占用比 |
-| 10.2 | 微压缩（工具输出修剪） | `kittymind/context/micro_compaction.py` | 超长工具结果就地截断/摘要，保留头尾与关键行 |
-| 10.3 | 轨迹压缩器 | `kittymind/context/compressor.py` | 保护头部（system+首轮）与尾部（最近 N 轮），中间段调辅助模型摘要为合成消息 |
-| 10.4 | 阈值触发 | `kittymind/agent/kitty_agent.py` | 循环内检查占用比 > 阈值（默认 75%）则触发压缩；从不分裂 tool_call/tool 对 |
-| 10.5 | 压缩标记落库 | 配合 Phase 14 | 旧消息标 `compacted`，重建对话只取 `active`（Phase 14 前先内存标记） |
+**Phase 3 — 会话持久化 ✅**
+已由原 JSONL 方案升级为 **SQLite**（见 Phase 14）：WAL、压缩原子落库、模型/完整双视图、session state 跨轮持久化。
 
-**参考 hermes**：`agent/context_compressor.py`、`agent/micro_compaction.py`、`agent/turn_context_compaction.py`
+**Phase 4 — WebSocket JSON-RPC Server ✅**
+`turn/run`（流式消费 async_stream_run）、`turn/cancel`、`session/create|list|get|delete`；服务端推送经 RpcHandler 按 session_id 过滤转发 EventBus 事件（子 Agent 的 `session_id=None` 事件天然不透传，前端只见 subagent.start/done）。`PermissionBridge`（asyncio.Future 单事件循环实现）负责审批往返。
 
-#### Phase 11 — 子 Agent 编排强化 🔴
+**Phase 5 — 桌面工具集 + 权限 ✅**
+14 个工具；`ToolExecutor` 六段式管线（前置守护栏 → 三道权限闸门 → `to_thread` 执行 → 输出截断 → 敏感信息脱敏 → 审计落库）。权限三道闸门：硬拒绝黑名单（shell 类工具组合）→ `_RULES` 软规则 → 审批桥（超时 fail-closed，超时推送 `tool.permission_expired` 撤回前端弹窗）。拒绝以 tool result 文本返回（模型可换策略），审计记 decision。
 
-**目标**：把 `task_tool` 从"雏形"升级为可控的委派系统。
+**Phase 6 — Electron 主进程 ✅（基础）**
+子进程拉起 Python（就绪探测 + 端口获取）、三窗口管理（聊天 / 桌宠透明置顶 / 悬浮层）、全局热键、系统托盘、崩溃处理、事件推送白名单。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 11.1 | 委派上下文 | `kittymind/agent/delegation.py` | `subagent_id` / `parent_session_id` / `depth` 血缘追踪 |
-| 11.2 | 深度与并发限制 | `kittymind/agent/delegation.py` | 最大深度（默认 3）、单轮最大子 Agent 数，防爆炸 |
-| 11.3 | 角色区分 | `task_tool.py` | leaf（干活）/ orchestrator（再委派）；leaf 不含 task 工具（已实现） |
-| 11.4 | 用量回传 | `task_tool.py` | 子 Agent 结果附带 token/耗时/工具数，父 Agent 可见 |
-| 11.5 | 异步流式委派 | `task_tool.py` | 用 `async_stream_run`，子任务进度可 emit 事件驱动桌宠 |
-| 11.6 | 可选工具集约束 | `task_tool.py` | `allowed_tools` / `blocked_tools` 限制子 Agent 能力面 |
+**Phase 7 — React 聊天界面 ✅（基础）**
+流式 Markdown 渲染、工具卡片（按模型声明序出现）、会话侧栏、工作区选择器、上下文占用环（ctx-ring）、审批队列（并发审批排队展示 +N，`permission_expired` 自动移除）。
 
-**参考 hermes**：`agent/subagent_lifecycle.py`、`agent/delegation_context.py`
+**Phase 8 — 桌宠窗口 🟡**
+透明浮窗 + 分层精灵动画（`src/pet/layers/`）+ 事件→情绪基础映射（thinking/working/done/error）。完整情绪状态机与交互深化见 Phase 30。
 
-#### Phase 12 — 工具守护栏 🟠
-
-**目标**：检测并阻断工具失败循环、无进展空转。
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 12.1 | 调用历史追踪 | `kittymind/tools/guardrails.py` | 记录 (工具名, 参数指纹, 结果指纹) 序列 |
-| 12.2 | 精确失败循环 | `guardrails.py` | 同工具+同参+同错误：第 2 次警告、第 5 次阻断（可配） |
-| 12.3 | 幂等无进展 | `guardrails.py` | 工具执行但无状态变化：累计告警/阻断 |
-| 12.4 | 限额 | `guardrails.py` | 单轮 web/子 Agent 调用上限 |
-| 12.5 | 交互态区分 | `kitty_agent.py` | 桌面交互态默认警告并提示用户；后台/cron 态硬停 |
-
-**参考 hermes**：`agent/tool_guardrails.py`
-
-#### Phase 13 — 自我验证（增强）🟡
-
-**目标**：修改类操作后可选自动验证（跑测试/启动探针），失败则重试或上报。
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 13.1 | 验证器接口 | `kittymind/agent/verify/runner.py` | 可插拔：命令验证器（跑 lint/test）、就绪探针 |
-| 13.2 | 证据收集 | `verify/evidence.py` | 记录验证输出，供 Agent 决策 |
-| 13.3 | 触发策略 | `kitty_agent.py` | 写文件/改代码后可选触发，异步不阻塞主对话 |
-
-**参考 hermes**：`agent/verify/runner.py`、`agent/verification_evidence.py`
+**Phase 9 — 端到端联调与打包 🟡**
+日常开发联调已通（应用可用）；分发打包见 Phase 26（Python 侧 spec 已有，Electron 侧未做）。
 
 ---
 
-### 里程碑 M-B：健壮持久化 + 记忆检索（P0）
+### 里程碑 M-A：Agent 核心智能（Phase 10-13）✅
 
-> 详细 schema 与设计见 **§5.3**。
+**Phase 10 — 上下文压缩管线 ✅**
+架构：双轨 token 计量（字符估算 + usage 真值校准）→ 微压缩（超长工具输出就地截断保头尾）→ 轨迹压缩（保头部 system+首轮、护尾部最近 N 轮，中间段调辅助模型摘要为合成消息，从不分裂 tool_call/tool 配对）→ 阈值触发（默认 75%）→ 压缩标记落库 + 反抖动（无效压缩冷却）。压缩状态 per-session 落库，跨轮延续。关键文件：`context/`、`agent/kitty_agent.py`。
+已知边界：`LLM_CONTEXT_WINDOW` 需按实际模型配置，默认值过大时阈值永不触发。
 
-#### Phase 14 — SQLite 会话存储
+**Phase 11 — 子 Agent 编排 ✅**
+架构：`DelegationBudget`（深度/总数上限，ContextVar 携带）+ `child_scope` 血缘递进；leaf/orchestrator 角色（leaf 不含 task 工具）；`allowed_tools` 约束能力面；子 Agent 走 `async_stream_run(root=False)` 异步流式委派，同批多个 task 真并发；用量回传（工具数/token/耗时）以脚注进父 context，`subagent.start/done` 事件驱动前端。关键文件：`agent/delegation.py`、`tools/builtin/task_tool.py`。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 14.1 | Store 接口抽象 | `kittymind/session/store.py` | 抽象 `SessionStore`，保留 `JsonlSessionStore` |
-| 14.2 | SQLite 实现 | `kittymind/session/sqlite_store.py` | sessions/messages 表 + WAL + schema 版本；messages 表含 `active`/`compacted`/`_compressed_summary` 三个软标记字段（见 §5.3 schema） |
-| 14.3 | 压缩落库原子操作 | `kittymind/session/sqlite_store.py` | `archive_and_compact(session_id, summary_msg, tail_msgs)`：单事务内将旧活跃消息标记 `active=0, compacted=1`（不删除），摘要+尾部作为新 `active=1` 行写入；**压缩视图持久化后重启无需重压** |
-| 14.4 | 双视图读取 | `sqlite_store.py` | 模型视图 `WHERE active=1`（摘要+尾部）；完整视图 `WHERE active=1 OR compacted=1`（原始历史+摘要，供审计/回溯）；重启加载 session 走模型视图，直接得到已压缩状态 |
-| 14.5 | 迁移脚本 | `kittymind/session/migrate.py` | 扫描现有 JSONL 导入 SQLite，所有行写入时 `active=1, compacted=0` |
-| 14.6 | 配置切换 | `config.py` | `SESSION_BACKEND = jsonl \| sqlite` |
-| 14.7 | 压缩状态跨轮持久化 | `kitty_agent.py` | 现 `TokenTracker`/`ContextCompressor` 是单轮局部对象，`_compressed_once`/反抖动冷却/token 校准基线每轮重置。改为 per-session 实例属性并落库，使衰减、冷却、校准跨轮（乃至跨重启）延续 |
-| 14.8 | 上下文占用环恢复 | `sqlite_store.py`、`server/rpc_handler.py`、`electron/src/renderer/ChatView.tsx` | 依赖 14.7 落库的 per-session `prompt_tokens`。`session/get` 返回当前占用比（或加载时推 `agent.context_usage` 事件），前端切换/重启会话后正确恢复 ctx-ring，取代当前"切走即归零"的临时行为。**验收点：会话切换/重启后上下文占用环能正确恢复** |
-| 14.9 | 移除 `_history` 内存缓存 | `agent/base.py`、`kitty_agent.py` | `_history` 是 JSONL 阶段的过渡设计：因存储层不可改写+读慢，才在 Agent 层维护内存镜像。SQLite 落地后 `WHERE active=1` 读取足够快，`archive_and_compact` 直接落库，`_history`/`replace_history`/`_loaded_sessions`/`_load_session_history` 可整体删除，`_build_messages` 改为每轮从 SQLite 读活跃消息 |
+**Phase 12 — 工具守护栏 ✅**
+架构：per-turn 顺序状态机，记录 (工具， 参数指纹， 结果指纹) 序列；相同失败 streak 逐个升级 warn→block、幂等无进展检测、web/子 Agent 限额；交互态警告、非交互态（`interactive=False`）硬停。MUTATING/IDEMPOTENT 分类与并发分区协同：决策段串行保证记账看得到同批前序结果（跨屏障）；同并行区内的失败升级是分区模型的已知代价。
 
-#### Phase 15 — FTS5 全文搜索
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 15.1 | FTS 索引 | `sqlite_store.py` | `messages_fts` + CJK trigram 表，触发器同步 |
-| 15.2 | 三层搜索 | `kittymind/session/search.py` | MATCH → trigram → CJK 二元组回退 |
-| 15.3 | 搜索 RPC | `server/rpc_handler.py` | `session/search` 方法 |
-| 15.4 | 前端搜索 UI | `electron/src/renderer/` | 会话搜索框 + 结果高亮 |
-
-#### Phase 16 — 用量与成本追踪
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 16.1 | usage 表 | `sqlite_store.py` | `session_model_usage`：按模型/任务汇总 token |
-| 16.2 | 成本估算 | `kittymind/usage/cost.py` | 模型价目表 + 估算成本 |
-| 16.3 | 用量面板 | `electron/src/renderer/` | 会话/全局 token 与成本展示 |
-
-#### Phase 17 — 维护与健壮性（精简）
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 17.1 | 完整性检查 | `sqlite_store.py` | 启动 `PRAGMA integrity_check`，损坏则备份重建 |
-| 17.2 | schema 迁移 | `kittymind/session/schema.py` | 版本号驱动的迁移链 |
-| 17.3 | 归档/清理 | `kittymind/session/maintenance.py` | 旧会话 archived 标记 + 可选 VACUUM |
-
-#### Phase 17M — 长期记忆检索升级 🟡
-
-**目标**：长期记忆系统 MVP 已可用（提取/整合/召回齐全），本阶段解决三个规模化短板——召回不随记忆量膨胀、支持中文、不破坏提示缓存。复用 M-B 的 SQLite 底座（embedding 用 sqlite-vec 存储）。
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 17M.1 | 向量语义召回 | `kittymind/memory/recall.py` | embedding 检索取代"全量 catalog 喂 LLM 选序号"，记忆多时不撑爆 prompt、不增延迟 |
-| 17M.2 | 向量存储 | `kittymind/memory/vector_store.py` | sqlite-vec 存记忆 embedding，写入记忆时同步向量化 |
-| 17M.3 | 中文召回修复 | `recall.py` | 现 `_keyword_select` 用 `split()` 对中文无效；向量召回天然跨语言，兜底改用字符 n-gram |
-| 17M.4 | 缓存友好注入 | `kittymind/agent/kitty_agent.py` | 召回结果**不再改 `messages[0]`**，改为独立消息（与 Phase 25.1 协同，保护缓存前缀） |
-| 17M.5 | 记忆 provider 抽象（可选） | `kittymind/memory/provider.py` | 抽象接口，本地文件为默认实现，预留 honcho/mem0 式后端 |
-| 17M.6 | 辩证式用户建模（可选） | `memory/user_model.py` | 持续更新 user 类型记忆，追踪偏好演化，对标 hermes Honcho |
-
-**参考 hermes**：`plugins/memory/`（honcho/mem0/hindsight）、`agent/memory_provider.py`、Honcho 辩证式建模
+**Phase 13 — 自我验证 ✅（基础）**
+`verify` 工具 + `CommandVerifier`（跑 lint/test 等命令收集证据）；后台验证 runner（bootstrap→build→test→probe）已有骨架。触发策略目前依赖模型主动调用 verify，未做「写后自动触发」。
 
 ---
 
-### 里程碑 M-C：工具与扩展生态（P1）
+### 里程碑 M-B：健壮持久化 + 记忆检索（Phase 14-17M）🟡
 
-#### Phase 18 — 核心工具补齐 + 工具集分组
+**Phase 14 — SQLite 会话存储 ✅（核心）**
+架构：单文件 `~/.kittymind/sessions.db`，sessions/messages 表 + WAL；`archive_and_compact` 单事务原子压缩落库（旧消息 `active=0,compacted=1` 不删除，摘要+尾部作为新活跃行写入）——压缩视图持久化，**重启无需重压**；双视图读取：模型视图 `WHERE active=1`（加载即已压缩状态）、完整视图含 compacted 行（审计/回溯）；session_state 跨轮保存压缩冷却/校准基线。JSONL 后端已移除。
+剩余：会话切换/重启后前端 ctx-ring 的恢复（`agent.context_usage` 事件链路已具备，加载时回推未做）。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 18.1 | `web_search` | `tools/builtin/web_search_tool.py` | 可插拔搜索后端（Bing/SearXNG/Tavily） |
-| 18.2 | `web_extract` | `tools/builtin/web_extract_tool.py` | URL 正文提取 |
-| 18.3 | `process_manage` | `tools/builtin/process_tool.py` | 后台进程启动/查看/终止 |
-| 18.4 | `todo_list` | `tools/builtin/todo_tool.py` | Agent 任务清单 |
-| 18.5 | 工具集分组 | `kittymind/tools/toolsets.py` | `TOOLSETS` 字典，按场景启停，动态过滤 schema |
+**Phase 15 — FTS5 全文搜索 ⬜**
+思路：`messages_fts`（contentless）+ CJK 场景 trigram/二元组回退表，触发器同步；`session/search` RPC + 前端搜索框与结果高亮；搜索走完整视图（含已压缩历史）。
 
-#### Phase 19 — 浏览器自动化（重型，可选）
+**Phase 16 — 用量与成本追踪 ⬜**
+思路：`session_model_usage` 表按模型/任务聚合 token（usage 数据源已具备——TokenTracker 每轮拿真值）；价目表估成本；前端用量面板。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 19.1 | 浏览器工具组 | `tools/builtin/browser/` | Playwright 驱动：导航/点击/填写/截图/提取 |
-| 19.2 | 会话复用 | `browser/session.py` | 持久 browser context，跨工具调用复用 |
+**Phase 17 — 维护与健壮性 ⬜**
+思路：启动 `integrity_check` + 损坏备份重建；schema 版本号迁移链；旧会话 archived 归档 + 可选 VACUUM。
 
-#### Phase 20 — MCP 客户端集成
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 20.1 | MCP Manager | `kittymind/mcp/manager.py` | 读 `~/.kittymind/mcp.json`，管理 stdio + SSE server 生命周期 |
-| 20.2 | 工具动态注册 | `mcp/manager.py` | 把 MCP 工具注册进 registry，schema 合并下发 |
-| 20.3 | 前端管理 | `electron/src/renderer/` | MCP server 增删改查 UI |
-
-#### Phase 21 — MCP 服务端模式
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 21.1 | MCP server | `mcp_serve.py` | 把 kittymind 会话/工具暴露为 MCP，供 Claude Code/Cursor 连接 |
-
-#### Phase 22 — Skills 技能系统
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 22.1 | 技能格式 | `kittymind/skills/loader.py` | YAML frontmatter + Markdown，`~/.kittymind/skills/` |
-| 22.2 | 发现与注入 | `skills/loader.py` | 按需把技能说明注入 system prompt（保持缓存稳定，见 Phase 25） |
-| 22.3 | 自动策展 | `skills/curator.py` | 使用计数 + 过期归档（可恢复），对标 hermes curator |
-| 22.4 | Agent 自创建 | `skills/loader.py` | Agent 可写入新技能，标 `created_by: agent` |
+**Phase 17M — 长期记忆检索升级 ⬜**
+现状基础：Markdown+frontmatter 记忆、LLM 提取/整合/召回已可用，召回以独立消息注入（缓存友好）。
+思路：sqlite-vec 向量语义召回取代「全量 catalog 喂 LLM 选序号」；修中文关键词兜底（现 `split()` 对中文无效，改字符 n-gram）；可选 provider 抽象（honcho/mem0 式后端）。
 
 ---
 
-### 里程碑 M-D：可观测与产品化交付（P1）
+### 里程碑 M-C：工具与扩展生态（Phase 18-22）⬜
 
-#### Phase 23 — Observer Hooks + 结构化日志
+**Phase 18 — 核心工具补齐 + 工具集分组 ⬜**
+思路：`web_search`（可插拔后端 Bing/SearXNG/Tavily）、`web_extract`、`process_manage`（后台进程）、`todo_list`；`TOOLSETS` 分组字典按场景动态过滤 schema 下发。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 23.1 | Hook 总线 | `kittymind/observability/hooks.py` | never-block 只读钩子 + **超时保护**（借鉴 hermes 对 Pi/OpenCode 的教训） |
-| 23.2 | 事件族 | `hooks.py` | pre/post_llm_call、pre/post_tool_call、session 生命周期 |
-| 23.3 | 关联 ID | `kitty_agent.py` | session_id/turn_id/tool_call_id 贯穿全链路 |
-| 23.4 | 结构化日志 | `kittymind/observability/logging.py` | 替换散落的 print，分级 + 文件轮转 |
+**Phase 19 — 浏览器自动化 ⬜（重型，可选）**
+思路：Playwright 驱动的浏览器工具组（导航/点击/填写/截图/提取）+ 持久 browser context 跨调用复用。
 
-#### Phase 24 — 健康检查与遥测（轻量）
+**Phase 20 — MCP 客户端集成 ⬜**
+思路：MCP Manager 读 `~/.kittymind/mcp.json`，管理 stdio/SSE server 生命周期；MCP 工具动态注册进 registry 合并下发；前端管理 UI。注意与工具分组（Phase 18）协同做能力面控制。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 24.1 | 健康检查 | `server/health.py` | 模型延迟/连通性探针，RPC `agent/health` |
-| 24.2 | 可选 OTLP | `observability/otlp.py` | 接 Langfuse/Jaeger（默认关闭，进阶用户开启） |
+**Phase 21 — MCP 服务端模式 ⬜**
+思路：把 kittymind 的会话/工具经 MCP 暴露，供 Claude Code/Cursor 等外部宿主连接。
 
-#### Phase 25 — 提示词缓存优化 🟠
-
-**目标**：修复当前"每轮改 `messages[0]` 破坏缓存前缀"的问题，显著降本降延迟。
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 25.1 | 系统提示字节稳定 | `kitty_agent.py` | 记忆召回**不再直接改 system 内容**，改为独立消息或推迟到下一会话 |
-| 25.2 | 缓存不变量 | `kitty_agent.py` | 压缩是唯一合法的前缀破坏点；断言前缀稳定 |
-| 25.3 | provider 缓存标记 | `core/llm_adapters.py` | 支持 Anthropic/OpenAI 的 prompt caching 参数 |
-
-#### Phase 26 — 打包分发
-
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 26.1 | Python 打包 | `build-python.spec` | PyInstaller 打 server 为单 exe（已有 spec，需完善） |
-| 26.2 | Electron 打包 | `electron/package.json` | electron-builder → Windows NSIS |
-| 26.3 | 首启引导 | `electron/` | 首次运行配置模型/API key 的 onboarding |
-| 26.4 | 自动更新 | `electron/main.js` | electron-updater |
+**Phase 22 — Skills 技能系统 ⬜**
+思路：YAML frontmatter + Markdown 技能格式；按需注入 system prompt（追加尾部，保持缓存前缀稳定）；使用计数 + 过期归档策展；Agent 自创建技能。
 
 ---
 
-### 里程碑 M-E：定时与后台自动化（P2）
+### 里程碑 M-D：可观测与产品化交付（Phase 23-26）🟡
 
-#### Phase 27 — Cron 定时任务
+**Phase 23 — Observer Hooks + 结构化日志 ⬜（有基础）**
+现有基础：EventBus + 审计 SQLite 已覆盖 tool 生命周期记录。
+思路：never-block 只读钩子总线（超时保护）、pre/post_llm_call 事件族、session/turn/tool_call 关联 ID 贯穿、结构化日志替换散落 print（分级 + 轮转）。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 27.1 | Job 存储与调度 | `kittymind/cron/scheduler.py` | `~/.kittymind/cron/jobs.json`，60s ticker |
-| 27.2 | 自然语言定义 | `tools/builtin/cron_tool.py` | Agent 可创建/暂停/删除定时任务 |
-| 27.3 | 结果投递 | `kittymind/cron/delivery.py` | 投递到聊天窗 / 系统通知 / 本地文件 |
-| 27.4 | 失败连击提醒 | `scheduler.py` | 连续失败 N 次 → 提示暂停修复 |
+**Phase 24 — 健康检查与遥测 ⬜**
+思路：模型连通性/延迟探针 + `agent/health` RPC；可选 OTLP 导出（默认关闭）。
 
-#### Phase 28 — 后台任务委派
+**Phase 25 — 提示词缓存优化 ✅**
+架构：记忆召回以独立 system 消息注入，**不改主 system 字节**；压缩是唯一合法的前缀破坏点（且压缩后主动标记缓存失效）；Anthropic 适配器在 content block 上打 `cache_control` 断点（OpenAI 自动前缀缓存）。`PERMISSION_ASK_TIMEOUT` 等长等待均已 async 化，不影响缓存。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 28.1 | 后台委派 | `kittymind/agent/background.py` | 长任务不等待返回，完成后事件通知 + 桌宠提示 |
-| 28.2 | 任务列表 UI | `electron/src/renderer/` | 后台任务进度/结果查看 |
+**Phase 26 — 打包分发 🟡**
+已有：PyInstaller spec（`build-python.spec`）。
+思路：electron-builder → Windows NSIS；首启 onboarding（配置模型/API key）；electron-updater 自动更新。
 
 ---
 
-### 里程碑 M-F：网关预留与桌宠深化（P2）
+### 里程碑 M-E：定时与后台自动化（Phase 27-28）⬜
 
-#### Phase 29 — 网关抽象层（预留，不实现具体平台）
+**Phase 27 — Cron 定时任务 ⬜**
+思路：`jobs.json` + 60s ticker 调度器；Agent 经 `cron_tool` 自然语言创建/暂停/删除；结果投递到聊天窗/系统通知/文件；连续失败 N 次提示暂停。审批语义需明确：无人值守态 = `interactive=False`（守护栏硬停生效）。
 
-**目标**：为未来接入 Telegram/飞书/企业微信留出干净接口，当前只落地抽象 + 复用现有 Electron 通道，**不实现任何第三方平台适配器**。
+**Phase 28 — 后台任务委派 ⬜**
+思路：task 委派不等待返回，完成事件通知 + 桌宠提示；前端后台任务列表。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 29.1 | SessionSource 模型 | `kittymind/gateway/session_source.py` | platform/chat_id/user_id/thread_id 描述符 + session_key 生成 |
-| 29.2 | 平台适配器接口 | `kittymind/gateway/adapter.py` | `BasePlatformAdapter` 抽象，Electron 作为首个实现 |
-| 29.3 | 消息路由 | `kittymind/gateway/router.py` | 入站消息 → session_key → Agent；预留 profile 字段 |
+---
 
-**说明**：多租户 profile 多路复用、密钥 ContextVar 隔离、23+ 平台实现均**明确不在本路线内**（与桌面单机定位不符），仅保留概念占位，未来若转向按需再启。
+### 里程碑 M-F：网关预留与桌宠深化（Phase 29-30）⬜
 
-#### Phase 30 — 桌宠情绪系统深化
+**Phase 29 — 网关抽象层 ⬜（预留，不实现具体平台）**
+思路：SessionSource 描述符（platform/chat_id/user_id/thread_id → session_key）+ `BasePlatformAdapter` 抽象（Electron 为首个实现）+ 消息路由。多租户/多平台实现明确不在路线内。
 
-| # | 任务 | 文件 | 关键点 |
-|---|------|------|--------|
-| 30.1 | 情绪状态机 | `electron/src/pet/EmotionMachine.ts` | 订阅 §5.4 事件表，完整状态转移 |
-| 30.2 | 精灵帧动画 | `electron/src/pet/SpriteRenderer.tsx` | Canvas 帧动画，各情绪动画序列 |
-| 30.3 | 对话气泡 | `electron/src/pet/SpeechBubble.tsx` | 回复摘要气泡 |
-| 30.4 | 交互 | `electron/src/pet/PetApp.tsx` | 拖拽、边缘吸附、右键菜单、点击唤起主窗 |
+**Phase 30 — 桌宠情绪系统深化 🟡**
+现状基础：透明浮窗、分层精灵动画、基础事件→情绪映射。
+思路：完整情绪状态机（含 SLEEPY/NIGHT/idle 小动作与状态转移）、各情绪动画序列补全、对话气泡（回复摘要）、交互（拖拽/边缘吸附/右键菜单/点击唤起主窗）。
 
 ---
 
 ### 推进建议
 
-- **立即启动 Phase 10（上下文压缩）**：它是当前唯一会导致长任务失败的结构性缺陷，投入产出比最高。
-- **M-A 与 M-B 可交错**：Phase 10 的压缩标记落库依赖 Phase 14 的 SQLite，可先内存标记、后落库。
-- **每个 Phase 配套测试**：hermes 用 ~39K 测试保障质量；kittymind 应对每个核心能力（压缩、守护栏、SQLite 迁移）建立回归测试。
-- **保持模块化**：补能力时避免让 `kitty_agent.py` 膨胀成 god file，参考 hermes 的阶段化拆分。
+- **近期优先 Phase 14 收尾 + 15**：ctx-ring 恢复与全文搜索直接提升日常可用性，且 SQLite 底座已就绪。
+- **M-C 之前先做 18 的工具分组**：工具数即将扩张，先有 TOOLSETS 分组与能力面控制，再接 MCP（Phase 20），避免扁平列表失控。
+- **Phase 27 依赖 12/25 的语义**：无人值守 = 非交互态硬停 + 缓存纪律，这两块已就绪，Cron 可直接叠加。
+- **每个 Phase 配套测试**：当前 409 用例的「特征测试钉行为」模式（`test_react_loops.py` 等）应延续到新模块。
