@@ -13,9 +13,7 @@ ReAct 循环的组织方式：
     这条链路上没有事件循环，run() 不能依赖 asyncio。
   - async_stream_run() 是独立的异步生成器（需要 await / EventBus 广播），
     与 run() 共用 _begin_turn / _assistant_message / _ensure_final_text 等轮次规则，
-    但循环体不共享——**刻意不做二合一**：让 run() 走 async 需要 task_tool.run
-    变 async、ToolExecutor 与权限审批整条管线支持异步工具，属架构变更；
-    而同步侧只剩一个消费者后，间接层的收益已小于成本（2026-09-18 决策）。
+    但循环体不共享
 
 线程模型：
   - 异步路径的工具执行（含审批等待）跑在独立线程池 _get_tool_pool()，
@@ -249,7 +247,7 @@ class KittyAgent(Agent):
 
         不注入记忆召回、不落库、不起后台提取；压缩冷却固定 0.0（同步路径收不到
         usage 事件，反抖动无从判断）；事件只经 callbacks，不走 EventBus——
-        这些差异一律显式保留，见 `_CAPABILITY_MATRIX`。
+        这些差异一律显式保留。
         """
         try:
             self._emit("on_agent_start", self.name, input_text)

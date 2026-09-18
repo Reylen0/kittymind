@@ -102,8 +102,6 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         memory=memory_store,
         ask_fn=bridge.ask,
     )
-    # 启动横幅，刻意留在 stdout（与 [ready] 同类）：配了 LLM_AUX_MODEL_ID 却没生效
-    # （凭据缺失等）时要能一眼看出。业务日志走 logging → stderr。
     print(
         "[aux] 压缩摘要 / 记忆任务使用: "
         + (agent.aux_llm.model if agent.aux_llm else "未配置（回退主模型）"),
