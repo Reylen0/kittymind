@@ -3,11 +3,12 @@
 单连接 + threading.Lock 保证线程安全。
 WAL 模式（失败则降级 DELETE）。
 
-schema 版本 5（PRAGMA user_version=5）:
+schema 版本 6（PRAGMA user_version=6）:
   sessions(id, title, workspace_id, created_at, updated_at,
            compressed_once, last_prompt_tokens)
   messages(id, session_id, seq REAL, role, content, tool_calls, tool_call_id, ts,
            active, compacted, is_summary)
+  messages_fts(body)  —— 全文检索索引，rowid 对齐 messages.id（见 _ensure_fts）
 
 seq 用 REAL 支持压缩摘要行的小数序（被压中段末尾与首条保留行 seq 的中点）。
 active=1 → 模型视图（摘要+尾部，用于构建 LLM 上下文）。
@@ -33,8 +34,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ._search_text import to_match_expr, to_search_text
 
-_SCHEMA_VERSION = 5
+
+_SCHEMA_VERSION = 6
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -65,6 +68,33 @@ CREATE INDEX IF NOT EXISTS idx_msg_session_seq ON messages(session_id, seq);
 """
 
 _LEGACY_COLS = ("used_tokens", "total_tokens", "context_ratio")
+
+# ── 全文检索（v5 → v6）────────────────────────────────────────────
+# body 存的是二元组预处理文本（见 _search_text.py），不是原文；rowid 对齐
+# messages.id（该列是 INTEGER PRIMARY KEY AUTOINCREMENT，天然就是 rowid）。
+#
+# 删除侧用纯 SQL 触发器，于是 sessions 的 ON DELETE CASCADE 能顺带清掉 FTS 行
+# （已验证级联删除会触发 AFTER DELETE）。写入侧**不能**也做成触发器：二元组要
+# 靠 Python 算，触发器里只能经 create_function 调宿主函数，而那样一来任何外部
+# 工具（DB Browser、sqlite3 CLI）打开这个库时都找不到该函数，连 INSERT 都会失败。
+_FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body, tokenize='unicode61');
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE rowid = old.id;
+END;
+"""
+
+# 只索引真正的对话正文。role='tool' 的 content 是工具原始输出（文件全文、
+# bash stdout、grep 结果），索引进去会让索引比 messages 表本身还大，而且搜索
+# 结果会被工具输出淹没——搜「压缩」命中一堆 grep 回显，真正的对话反而沉底。
+_INDEXED_ROLES = ("user", "assistant")
+
+# 回填/索引时跳过空正文（assistant 只发工具调用的那一轮 content 为 NULL）
+_INDEXABLE_WHERE = (
+    "role IN ('user','assistant') AND is_summary=0"
+    " AND content IS NOT NULL AND content <> ''"
+)
 
 # 展示视图的行/条件：原始消息（compacted=1）+ 活跃非摘要消息（active=1, is_summary=0）
 _DISPLAY_COLS = "seq, role, content, tool_calls, tool_call_id"
@@ -125,6 +155,68 @@ class SqliteSessionStore:
         with contextlib.suppress(Exception):
             self._conn.execute(
                 "DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+        # v5 → v6：全文检索索引
+        self._ensure_fts()
+
+    def _ensure_fts(self) -> None:
+        """建全文检索表与删除触发器；仅在本次真的新建了表时回填存量消息。
+
+        调用方（_migrate ← _init_db）已持有 self._lock，本方法及其下游不再取锁。
+
+        判断「是否新建」用 sqlite_master 而不是 user_version：用户可能在某个
+        中间版本上跑过、也可能手工删过这张表，以表的实际存在与否为准最可靠。
+
+        一致性前提：消息正文目前没有 UPDATE 路径——只有 INSERT、标记 compacted
+        （不改 content）、级联删除三种。**若将来新增「编辑历史消息」功能，
+        必须在那条路径上同步更新 FTS 行**，否则索引会与原文悄悄漂移。
+        """
+        exists = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone() is not None
+        try:
+            self._conn.executescript(_FTS_DDL)
+        except Exception:
+            # FTS5 未编译进本机 SQLite：搜索能力降级为不可用，但不能拖垮整个会话库
+            return
+        if not exists:
+            self._backfill_fts()
+
+    def _backfill_fts(self) -> None:
+        """把存量消息一次性灌进索引（调用方已持锁）。
+
+        显式包事务：连接是 isolation_level=None（autocommit），逐条 INSERT
+        会变成几万次 fsync，几秒钟的事能拖成几分钟。
+        """
+        rows = self._conn.execute(
+            f"SELECT id, content FROM messages WHERE {_INDEXABLE_WHERE}"
+        ).fetchall()
+        if not rows:
+            return
+        try:
+            self._conn.execute("BEGIN")
+            self._conn.executemany(
+                "INSERT INTO messages_fts(rowid, body) VALUES (?, ?)",
+                ((r[0], to_search_text(r[1])) for r in rows),
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._conn.execute("ROLLBACK")
+            raise
+
+    def _index_message(self, row_id: int, role: str, content: str | None) -> None:
+        """把一条刚写入的消息加进索引（调用方必须已持有 self._lock）。
+
+        索引失败不应该让「消息落库」这件事失败——搜索是增强能力，
+        丢一条索引只是这条消息搜不到，丢一条消息是数据损坏。
+        """
+        if role not in _INDEXED_ROLES or not content:
+            return
+        with contextlib.suppress(Exception):
+            self._conn.execute(
+                "INSERT INTO messages_fts(rowid, body) VALUES (?, ?)",
+                (row_id, to_search_text(content)),
             )
 
     def _columns(self, table: str) -> set:
@@ -202,7 +294,7 @@ class SqliteSessionStore:
     def append(self, session_id: str, record: dict) -> None:
         tc = record.get("tool_calls")
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 "INSERT INTO messages(session_id, seq, role, content, tool_calls, tool_call_id, ts)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -215,6 +307,7 @@ class SqliteSessionStore:
                     self._ts(),
                 ),
             )
+            self._index_message(cur.lastrowid, record["role"], record.get("content"))
 
     def read_header(self, session_id: str) -> dict | None:
         """只读 sessions 表的 header（不触碰 messages 表）。
@@ -407,6 +500,59 @@ class SqliteSessionStore:
             records.append(msg)
         return records
 
+    # ── 全文检索 ──────────────────────────────────────────────────
+
+    def search(
+        self, query: str, session_id: str | None = None, limit: int = 50
+    ) -> list[dict]:
+        """全文搜索消息正文，按相关度（bm25）排序。
+
+        走**完整视图**（active=1 OR compacted=1）：被压缩掉的中段消息仍在库里，
+        而那恰恰是用户最想找、界面上又最难翻到的部分——只搜活跃消息，
+        长会话的搜索基本等于失效。
+
+        返回每条命中的 session_id / seq / role / content（原文）/ 会话标题。
+        给 seq 而不是 id：前端整套定位与分页游标（before_seq）都基于 seq。
+        """
+        expr = to_match_expr(query)
+        if not expr:
+            return []                       # 切不出 token：空查询，不是错误
+
+        # 不给 messages_fts 起别名：FTS5 的 MATCH 与 bm25() 都只认表名，
+        # 写成别名会直接报 "no such column"。
+        sql = [
+            "SELECT m.session_id, m.seq, m.role, m.content, s.title",
+            "  FROM messages_fts",
+            "  JOIN messages m ON m.id = messages_fts.rowid",
+            "  JOIN sessions s ON s.id = m.session_id",
+            " WHERE messages_fts MATCH ?",
+            "   AND (m.active=1 OR m.compacted=1)",
+        ]
+        params: list = [expr]
+        if session_id:
+            sql.append("   AND m.session_id = ?")
+            params.append(session_id)
+        sql.append(" ORDER BY bm25(messages_fts) LIMIT ?")
+        params.append(limit)
+
+        with self._lock:
+            try:
+                rows = self._conn.execute("\n".join(sql), params).fetchall()
+            except Exception:
+                return []                   # 索引表缺失（FTS5 不可用）→ 搜索静默降级
+        return [
+            {"session_id": r[0], "seq": r[1], "role": r[2],
+             "content": r[3], "title": r[4]}
+            for r in rows
+        ]
+
+    def fts_row_count(self) -> int:
+        """索引行数（测试与诊断用；FTS5 不可用时返回 0）。"""
+        with self._lock:
+            try:
+                return self._conn.execute("SELECT count(*) FROM messages_fts").fetchone()[0]
+            except Exception:
+                return 0
 
     def archive_and_compact(
         self,
@@ -435,6 +581,8 @@ class SqliteSessionStore:
                     )
 
                 # 2. 插入摘要行（小数 seq，is_summary=1 标记供前端过滤）
+                # 摘要行刻意不进全文索引：它是原文的浓缩，而原文仍以 compacted=1
+                # 留在库里且照常可搜——两边都索引只会让同一段内容命中两次。
                 ts = int(time.time())
                 for s in summary_rows:
                     self._conn.execute(
@@ -453,7 +601,7 @@ class SqliteSessionStore:
                 seq = int(base_seq_row[0]) if base_seq_row else 0
                 for msg in new_active_msgs:
                     tc = msg.get("tool_calls")
-                    self._conn.execute(
+                    cur = self._conn.execute(
                         "INSERT INTO messages"
                         "(session_id, seq, role, content, tool_calls, tool_call_id, ts, active, compacted)"
                         " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)",
@@ -466,6 +614,7 @@ class SqliteSessionStore:
                             ts,
                         ),
                     )
+                    self._index_message(cur.lastrowid, msg["role"], msg.get("content"))
                     seq += 1
 
                 self._conn.execute("COMMIT")

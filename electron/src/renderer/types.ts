@@ -38,3 +38,18 @@ export interface Workspace {
   path: string
   created_at: string
 }
+
+/** session/search 的一条命中。`marks` 是 `text` 内的高亮区间 [起, 止)。 */
+export interface SearchHit {
+  seq: number
+  role: string
+  text: string
+  marks: Array<[number, number]>
+}
+
+/** session/search 的结果按会话分组，组序即相关度序（最相关的会话在前）。 */
+export interface SearchGroup {
+  session_id: string
+  title: string
+  hits: SearchHit[]
+}

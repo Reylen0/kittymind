@@ -77,7 +77,7 @@ kittymind/                      # 项目根目录
 │   │                           #   / redaction + builtin/（14 个工具 + _paths/_fmt/_dangerous 辅助）
 │   ├── memory/                 # store / extract / recall（LLM 驱动的长期记忆）
 │   ├── events/                 # bus（asyncio Pub/Sub，唯一事件出口）/ types
-│   ├── session/                # store（SQLite）/ manager
+│   ├── session/                # store（SQLite + FTS5 全文检索）/ manager / _search_text（CJK 二元组切词）
 │   ├── workspace/              # manager（cwd 上下文隔离）
 │   ├── config.py               # 统一配置（~/.kittymind/settings.json 覆盖）
 │   └── prompts.py              # 集中管理 system_prompt
@@ -91,7 +91,7 @@ kittymind/                      # 项目根目录
 │   │   └── overlay/            # 全局悬浮覆盖层
 │   ├── vite.config.ts
 │   └── package.json
-├── test/                       # 25 个测试文件 / 409 个用例（特征测试 + 回归）
+├── test/                       # 31 个测试文件 / 512 个用例（特征测试 + 回归）
 ├── assets/                     # 应用图标 / 托盘图
 ├── chat_async.py               # CLI 演示入口
 ├── build-python.spec           # PyInstaller 打包配置
@@ -106,7 +106,7 @@ kittymind/                      # 项目根目录
 
 ## 5. 开发路线与实现状态（Phase 1-30）
 
-> 依据**当前代码**（2026-09，409 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
+> 依据**当前代码**（2026-09，512 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
 > 对标参照：Nous Research 的 hermes-agent（仅借鉴其 Agent 侧设计，服务端重型能力不在路线内）。
 
 ### 里程碑总览
@@ -115,7 +115,7 @@ kittymind/                      # 项目根目录
 |--------|------|-----------|:----:|
 | MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
 | **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
-| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 检索升级 ⬜ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 检索升级 ⬜ |
 | **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
 | **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
@@ -177,8 +177,8 @@ kittymind/                      # 项目根目录
 架构：单文件 `~/.kittymind/sessions.db`，sessions/messages 表 + WAL；`archive_and_compact` 单事务原子压缩落库（旧消息 `active=0,compacted=1` 不删除，摘要+尾部作为新活跃行写入）——压缩视图持久化，**重启无需重压**；双视图读取：模型视图 `WHERE active=1`（加载即已压缩状态）、完整视图含 compacted 行（审计/回溯）；session_state 跨轮保存压缩冷却/校准基线。JSONL 后端已移除。
 剩余：会话切换/重启后前端 ctx-ring 的恢复（`agent.context_usage` 事件链路已具备，加载时回推未做）。
 
-**Phase 15 — FTS5 全文搜索 ⬜**
-思路：`messages_fts`（contentless）+ CJK 场景 trigram/二元组回退表，触发器同步；`session/search` RPC + 前端搜索框与结果高亮；搜索走完整视图（含已压缩历史）。
+**Phase 15 — FTS5 全文搜索 ✅**
+架构：原计划的 CJK 方案是「trigram 回退」，实测推翻——trigram 要求查询词 ≥3 字符，「压缩」「阈值」这类 2 字词全部 0 命中，而 2 字词恰恰是中文检索主力。改为自行预处理：CJK 段展开成重叠二元组（`session/_search_text.py`），非 CJK 段交给 `unicode61` 按空白切；入库与查询走同一份切词函数。索引是普通 FTS5 表（`messages_fts`，非 contentless——3.39.4 不支持 `contentless_delete`），`rowid` 对齐 `messages.id`；INSERT 侧在 Python 层显式维护（二元组要现算），DELETE 侧用 `AFTER DELETE` 触发器，借 `sessions` 的 `ON DELETE CASCADE` 自动清干净（已验证级联删除会触发该触发器，无孤儿行）。只索引 `role IN ('user','assistant')`——工具原始输出（文件全文、bash stdout）不进索引，否则搜索结果被回显淹没。搜索走完整视图（`active=1 OR compacted=1`），压缩摘要行不重复索引（原文仍在 compacted 行里）。`session/search` RPC 结果按会话分组，manager 层基于原文计算高亮片段与区间（不用 FTS5 的 `snippet()`——索引里存的是二元组串，不是原文）。前端升级侧栏现有搜索框，标题过滤本地即时、内容搜索防抖 250ms，`<mark>` 高亮（非 `dangerouslySetInnerHTML`）。v5 库升级时一次性回填存量消息。
 
 **Phase 16 — 用量与成本追踪 ⬜**
 思路：`session_model_usage` 表按模型/任务聚合 token（usage 数据源已具备——TokenTracker 每轮拿真值）；价目表估成本；前端用量面板。
@@ -252,7 +252,7 @@ kittymind/                      # 项目根目录
 
 ### 推进建议
 
-- **近期优先 Phase 14 收尾 + 15**：ctx-ring 恢复与全文搜索直接提升日常可用性，且 SQLite 底座已就绪。
+- **近期优先 Phase 14 收尾**：ctx-ring 恢复（15 的全文搜索已完成）直接提升日常可用性，SQLite 底座已就绪。
 - **M-C 之前先做 18 的工具分组**：工具数即将扩张，先有 TOOLSETS 分组与能力面控制，再接 MCP（Phase 20），避免扁平列表失控。
 - **Phase 27 依赖 12/25 的语义**：无人值守 = 非交互态硬停 + 缓存纪律，这两块已就绪，Cron 可直接叠加。
-- **每个 Phase 配套测试**：当前 409 用例的「特征测试钉行为」模式（`test_react_loops.py` 等）应延续到新模块。
+- **每个 Phase 配套测试**：当前 512 用例的「特征测试钉行为」模式（`test_react_loops.py` 等）应延续到新模块。

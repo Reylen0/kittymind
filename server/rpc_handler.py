@@ -22,6 +22,10 @@ from kittymind.agent import KittyAgent
 # 避免一次 RPC 把超长会话整个拖回前端
 _MAX_PAGE_MESSAGES = 200
 
+# 单次 session/search 最多返回的命中条数。比分页上限小一个量级：搜索结果是给人
+# 扫一眼用的，几百条命中在侧栏里既滚不完也没意义，相关度靠前的那些才有价值。
+_MAX_SEARCH_HITS = 100
+
 
 class RpcHandler:
     def __init__(self, agent: KittyAgent, ws, bridge=None) -> None:
@@ -36,6 +40,7 @@ class RpcHandler:
             "session/create":           self._session_create,
             "session/list":             self._session_list,
             "session/get":              self._session_get,
+            "session/search":           self._session_search,
             "session/delete":           self._session_delete,
             "agent/status":             self._agent_status,
             "workspace/list":           self._workspace_list,
@@ -260,6 +265,38 @@ class RpcHandler:
             await self._error(req_id, f"session not found: {session_id}")
             return
         await self._result(req_id, session)
+
+    async def _session_search(self, req_id: Any, params: dict) -> None:
+        """全文搜索历史消息。结果按会话分组，每组带若干命中片段。
+
+        空查询回空数组而不是报错：输入框被清空是正常状态，不是调用错误。
+
+        和其余 session/* 一样直接同步调 SQLite，不裹 asyncio.to_thread ——
+        本项目的界线是「LLM / 工具体进线程，SQLite 裸调」，FTS 查询是毫秒级，
+        为它单独破例只会让 RPC 层多出一个不一致的特例。
+        """
+        mgr = self._mgr()
+        if not mgr:
+            await self._error(req_id, "no session manager configured")
+            return
+
+        query = (params.get("query") or "").strip()
+        if not query:
+            await self._result(req_id, [])
+            return
+
+        kwargs: dict = {}
+        limit = params.get("limit")
+        # not isinstance(bool) 是刻意的：True 是 int 的子类，会被当成 limit=1
+        if isinstance(limit, (int, float)) and not isinstance(limit, bool) and int(limit) > 0:
+            kwargs["limit"] = min(int(limit), _MAX_SEARCH_HITS)
+        else:
+            kwargs["limit"] = _MAX_SEARCH_HITS
+        session_id = params.get("session_id")
+        if session_id:
+            kwargs["session_id"] = session_id
+
+        await self._result(req_id, mgr.search_messages(query, **kwargs))
 
     async def _session_delete(self, req_id: Any, params: dict) -> None:
         mgr = self._mgr()

@@ -32,7 +32,7 @@ asyncio_mode = "auto"
 # 与 requires-python 对齐（UP 规则按此推断可用的新语法）
 target-version = "py310"
 line-length = 120
-extend-exclude = [".venv", "build", "dist", "electron", ".ruff_cache"]
+extend-exclude = [".venv", "build", "dist", "electron", ".ruff_cache", "test"]
 
 [tool.ruff.lint]
 # 只开高信号规则集。刻意不含 bandit（S）—— 本项目大量 subprocess / exec 是设计意图，

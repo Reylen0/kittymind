@@ -37,6 +37,18 @@ contextBridge.exposeInMainWorld('kitty', {
     }),
   deleteSession: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'session/delete', params: { session_id: sessionId } }),
+  // 全文搜索历史消息（结果按会话分组）
+  // opts.sessionId → 只搜这个会话（省略 = 搜全部会话）
+  // opts.limit     → 命中条数上限（省略 = 服务端默认上限）
+  searchSessions: (query, opts = {}) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/search',
+      params: {
+        query,
+        ...(opts.sessionId ? { session_id: opts.sessionId } : {}),
+        ...(opts.limit ? { limit: opts.limit } : {}),
+      },
+    }),
 
   // Workspace management
   listWorkspaces: () =>

@@ -23,3 +23,14 @@
 .load-older-btn:disabled{opacity:.6;cursor:default}
 /* ── 历史消息不做入场动画：打开会话 / 前插更早一页时，内容应立刻呈现，不逐条淡入 ── */
 .no-anim{animation:none}
+
+/* ── 全文搜索结果（侧栏「内容匹配」段） ─────────────────────────── */
+/* 不能复用 .session-title：那是 nowrap+ellipsis 的单行样式，片段需要多行。 */
+.search-group{margin:2px 4px 8px}
+.search-group-title{padding:4px 10px 2px;font-family:var(--font-sidebar);font-size:11.5px;color:#70717a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-hit{margin:1px 0;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px;line-height:1.5;color:var(--text-2);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;transition:background .12s var(--ease)}
+.search-hit:hover{background:#1619220e}
+.search-hit.active{background:var(--accent-soft)}
+.search-hit mark{background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:0 1px;font-weight:600}
+[data-theme=dark] .search-hit:hover{background:#ffffff0f}
+[data-theme=dark] .search-group-title{color:#9294a0}

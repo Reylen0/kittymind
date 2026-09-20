@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from kittymind.session.store import SqliteSessionStore
+from kittymind.session.store import SqliteSessionStore, _SCHEMA_VERSION
 from kittymind.session.manager import SessionManager
 
 
@@ -523,7 +523,9 @@ def test_legacy_db_migration_adds_is_summary(tmp_path, version):
 
     cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(messages)")}
     assert "is_summary" in cols, f"v{version} 迁移后缺 is_summary 列"
-    assert sqlite3.connect(str(db)).execute("PRAGMA user_version").fetchone()[0] == 5
+    # 断言常量而非字面量：schema 每次升版都要改这行的话，迟早改漏
+    ver = sqlite3.connect(str(db)).execute("PRAGMA user_version").fetchone()[0]
+    assert ver == _SCHEMA_VERSION
 
     store.write_header("s1", {"title": "t", "created_at": _CREATED})
     store.append("s1", {"seq": 0, "role": "user", "content": "hi"})

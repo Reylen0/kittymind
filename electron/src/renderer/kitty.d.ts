@@ -1,5 +1,7 @@
 export {}
 
+import type { SearchGroup } from './types'
+
 // Injected by electron/preload.js via contextBridge
 declare global {
   interface Window {
@@ -37,6 +39,8 @@ declare global {
         cursor?: number | null
       } | null>
       deleteSession(sessionId: string): Promise<{ deleted: boolean }>
+      /** 全文搜索历史消息；结果按会话分组，每组带若干命中片段 */
+      searchSessions(query: string, opts?: { sessionId?: string; limit?: number }): Promise<SearchGroup[]>
 
       listWorkspaces(): Promise<Array<{ id: string; name: string; path: string; created_at: string }>>
       createWorkspace(name: string, path: string): Promise<{ id: string; name: string; path: string; created_at: string }>

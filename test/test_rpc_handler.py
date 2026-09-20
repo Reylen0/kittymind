@@ -122,6 +122,96 @@ async def test_session_get_limit_invalid_falls_back_to_full(tmp_path):
     assert len(ws.sent[0]["result"]["messages"]) == 6
 
 
+# ── session/search ────────────────────────────────────────────────
+
+async def _search(handler, ws, params):
+    ws.sent.clear()
+    await handler.dispatch({"id": 1, "method": "session/search", "params": params})
+    return ws.sent[0]
+
+
+async def test_session_search_groups_hits_by_session(tmp_path):
+    """跨会话搜索：结果按会话分组，每组带标题与命中片段。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+
+    s1 = mgr.create_session(title="聊压缩的会话")
+    mgr.append_turn(s1, [{"role": "user", "content": "上下文压缩是怎么做的"}])
+    s2 = mgr.create_session(title="聊别的会话")
+    mgr.append_turn(s2, [{"role": "user", "content": "这里也提到了压缩"}])
+
+    groups = (await _search(handler, ws, {"query": "压缩"}))["result"]
+
+    assert {g["session_id"] for g in groups} == {s1, s2}
+    group = next(g for g in groups if g["session_id"] == s1)
+    assert group["title"] == "聊压缩的会话"
+    hit = group["hits"][0]
+    start, end = hit["marks"][0]
+    assert hit["text"][start:end] == "压缩"
+    assert hit["seq"] == 0
+
+
+async def test_session_search_can_narrow_to_one_session(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+
+    s1 = mgr.create_session(title="A")
+    mgr.append_turn(s1, [{"role": "user", "content": "都提到了缓存"}])
+    s2 = mgr.create_session(title="B")
+    mgr.append_turn(s2, [{"role": "user", "content": "这里也有缓存"}])
+
+    groups = (await _search(handler, ws, {"query": "缓存", "session_id": s1}))["result"]
+    assert [g["session_id"] for g in groups] == [s1]
+
+
+async def test_session_search_empty_query_returns_empty_array(tmp_path):
+    """输入框清空是正常状态，应当回空数组而不是 error。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+    sid = mgr.create_session(title="t")
+    mgr.append_turn(sid, [{"role": "user", "content": "内容"}])
+
+    for blank in ("", "   ", None):
+        msg = await _search(handler, ws, {"query": blank})
+        assert msg["result"] == []
+        assert "error" not in msg
+
+
+async def test_session_search_invalid_limit_falls_back(tmp_path):
+    """limit 非法时回退默认上限，与 session/get 的既有口径一致（不报错）。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+    sid = mgr.create_session(title="t")
+    mgr.append_turn(sid, [{"role": "user", "content": "谈到了索引"}])
+
+    for bad in (0, -3, "abc", None, True):
+        msg = await _search(handler, ws, {"query": "索引", "limit": bad})
+        assert "error" not in msg
+        assert len(msg["result"][0]["hits"]) == 1
+
+
+async def test_session_search_hostile_query_does_not_error(tmp_path):
+    """用户打的 FTS5 语法字符必须被当字面量，不能让 MATCH 报错回前端。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+    sid = mgr.create_session(title="t")
+    mgr.append_turn(sid, [{"role": "user", "content": "正常内容"}])
+
+    for hostile in ('foo*', 'a AND b', '"', '((', 'NEAR(x y)'):
+        msg = await _search(handler, ws, {"query": hostile})
+        assert "error" not in msg, f"{hostile!r} 让 RPC 报错了"
+
+
 async def test_session_get_not_found(tmp_path):
     ws = FakeWs()
     agent = make_mock_agent(tmp_path)

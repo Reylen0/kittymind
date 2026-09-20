@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import type { Session, Workspace } from './types'
+import { useState, useRef, useEffect, useLayoutEffect, type ReactNode } from 'react'
+import type { SearchGroup, Session, Workspace } from './types'
 import { getTheme, toggleTheme, type Theme } from './theme'
 
 interface Props {
@@ -121,6 +121,25 @@ function SessionItem({ s, currentId, onSelect, onDelete }: {
   )
 }
 
+/** 按 marks 把片段切成普通文字 + <mark>。
+ *
+ * 刻意用节点数组而不是 dangerouslySetInnerHTML：片段内容来自历史消息，
+ * 里面什么字符都可能有，全项目零 innerHTML 的姿态在这里尤其不该破例。
+ * marks 由后端保证已排序且互不重叠。
+ */
+function Highlight({ text, marks }: { text: string; marks: Array<[number, number]> }) {
+  if (!marks.length) return <>{text}</>
+  const parts: ReactNode[] = []
+  let at = 0
+  marks.forEach(([start, end], i) => {
+    if (start > at) parts.push(text.slice(at, start))
+    parts.push(<mark key={i}>{text.slice(start, end)}</mark>)
+    at = end
+  })
+  if (at < text.length) parts.push(text.slice(at))
+  return <>{parts}</>
+}
+
 export default function SessionList({
   sessions, workspaces, currentId, sidebarOpen,
   onSelect, onCreate, onDelete, onToggle,
@@ -133,7 +152,10 @@ export default function SessionList({
   const [dialogCollapsed,   setDialogCollapsed]   = useState(true)   // 「对话」「工作区」默认折叠
   const [spacesCollapsed,   setSpacesCollapsed]   = useState(true)
   const [theme,             setTheme]             = useState<Theme>(getTheme())
+  const [hits,              setHits]              = useState<SearchGroup[]>([])
+  const [searchBusy,        setSearchBusy]        = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
+  const reqRef    = useRef(0)      // 请求序号：丢弃过期响应，见下面的防抖 effect
 
   // ── 定位当前会话 ────────────────────────────────────────────────
   // 侧栏两级默认全收起，当前会话很可能藏在折叠的工作区里。会话切换（含启动时
@@ -192,10 +214,49 @@ export default function SessionList({
     else           setQuery('')
   }, [searching])
 
+  // ── 全文搜索（防抖打后端）────────────────────────────────────
+  // 标题过滤是本地即时的（下面的 filteredFree），这里只管内容检索。
+  // 退出搜索态时上面那个 effect 会把 query 清空，本 effect 随即清掉结果。
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) {
+      setHits([])
+      setSearchBusy(false)
+      return
+    }
+    setSearchBusy(true)
+    const timer = setTimeout(async () => {
+      // 序号在真正发请求时才递增，被防抖掐掉的那些不占号
+      const seq = ++reqRef.current
+      let groups: SearchGroup[] = []
+      try {
+        const r = await window.kitty?.searchSessions(q)
+        if (Array.isArray(r)) groups = r
+      } catch {
+        /* 未连接 / RPC 超时：按无结果处理，不打断输入 */
+      }
+      // 快速连续输入时响应可能乱序返回，只认最后发出的那次
+      if (seq !== reqRef.current) return
+      setHits(groups)
+      setSearchBusy(false)
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [query])
+
   const freeSessions = sessions.filter(s => !s.workspace_id)
   const filteredFree = query.trim()
     ? freeSessions.filter(s => (s.title || '新对话').toLowerCase().includes(query.toLowerCase()))
     : freeSessions
+  const hitCount = hits.reduce((n, g) => n + g.hits.length, 0)
+  // 工作区区块是否至少有一个标题命中——与「对话」区块用同一套判断，搜索时
+  // 没有任何标题匹配就整体隐藏区块，而不是留一个展开了却空空如也的标题行
+  // （原来只在 workspaces.map 内部逐组过滤，标题行自己不受影响，视觉上像是
+  // 「工作区」区块被搜索莫名清空了）。
+  const hasAnyWorkspaceTitleMatch = !query.trim() || workspaces.some(ws =>
+    sessions
+      .filter(s => s.workspace_id === ws.id)
+      .some(s => (s.title || '新对话').toLowerCase().includes(query.toLowerCase()))
+  )
 
   function toggleSpace(id: string) {
     setExpandedSpaces(prev => {
@@ -245,7 +306,7 @@ export default function SessionList({
             ref={searchRef} className="sidebar-search-input"
             value={query} onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Escape' && setSearching(false)}
-            placeholder="搜索对话名称…"
+            placeholder="搜索对话名称或内容…"
           />
         </div>
       )}
@@ -292,7 +353,7 @@ export default function SessionList({
       )}
 
       {/* ── 空间 section（有工作区） ── */}
-      {workspaces.length > 0 && (
+      {workspaces.length > 0 && hasAnyWorkspaceTitleMatch && (
         <>
           <button
             className="session-section-label collapsible"
@@ -328,6 +389,38 @@ export default function SessionList({
               </div>
             )
           })}
+        </>
+      )}
+      {/* ── 内容匹配 section（全文搜索，仅搜索态出现） ── */}
+      {query.trim() && (
+        <>
+          <div className="session-section-label">
+            <span>内容匹配{hitCount > 0 ? ` (${hitCount})` : ''}</span>
+          </div>
+          {hitCount === 0 ? (
+            <div className="session-empty">{searchBusy ? '搜索中…' : '无匹配内容'}</div>
+          ) : (
+            <div className="session-items">
+              {hits.map(g => (
+                <div key={g.session_id} className="search-group">
+                  <div className="search-group-title" title={g.title}>
+                    {g.title || '新对话'}
+                  </div>
+                  {g.hits.map(h => (
+                    <div
+                      key={h.seq}
+                      className={`search-hit${g.session_id === currentId ? ' active' : ''}`}
+                      onClick={() => onSelect(g.session_id)}
+                      onDoubleClick={() => { onSelect(g.session_id); setSearching(false) }}
+                      title="双击跳转到会话列表中的该对话"
+                    >
+                      <Highlight text={h.text} marks={h.marks} />
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
       </div>  {/* /session-scroll */}

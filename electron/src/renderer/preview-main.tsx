@@ -106,6 +106,26 @@ const deepSessions = [
   { id: 'deep-sib-1', title: '同组：兄弟会话 1', created_at: new Date(now - 500).toISOString(), workspace_id: 'ws-23' },
   { id: 'deep-sib-2', title: '同组：兄弟会话 2（切换目标）', created_at: new Date(now - 400).toISOString(), workspace_id: 'ws-23' },
 ]
+// 预览用：?search —— 给 searchSessions 一份固定结果，用于脱离 Python 后端调
+// 「内容匹配」段的渲染（分组、片段截断、高亮区间、命中数）。marks 与 text 的
+// 对应关系按真实后端的口径手写：偏移相对 text，含省略号在内。
+const searchView = new URLSearchParams(window.location.search).has('search')
+const mockSearchGroups = [
+  {
+    session_id: 'demo-1', title: '演示：写诗与代码高亮',
+    hits: [
+      { seq: 3, role: 'user',      text: '我们来聊聊上下文压缩的实现思路', marks: [[8, 10]] as Array<[number, number]> },
+      { seq: 7, role: 'assistant', text: '…多层阈值触发的压缩管线，先做微压缩再做轨迹压缩…', marks: [[8, 10], [16, 18], [22, 24]] as Array<[number, number]> },
+    ],
+  },
+  {
+    session_id: 'demo-2', title: '修复 WebSocket 重连逻辑',
+    hits: [
+      { seq: 12, role: 'user', text: '这里也提到了压缩，不过是另一个意思', marks: [[6, 8]] as Array<[number, number]> },
+    ],
+  },
+]
+
 // 预览用：强制主题，如 preview.html?theme=dark
 const themeParam = new URLSearchParams(window.location.search).get('theme')
 if (themeParam === 'dark') document.documentElement.dataset.theme = 'dark'
@@ -183,6 +203,13 @@ w.kitty = {
   sendMessage: async () => {},
   cancelTurn: async () => {},
   deleteSession: async () => {},
+  // ?search 场景给固定结果；其余场景返回空数组（等价于「没搜到」）。
+  // 带 200ms 延迟，好观察防抖与「搜索中…」占位。
+  searchSessions: async (query: string) => {
+    await new Promise(r => setTimeout(r, 200))
+    if (!searchView || !query.trim()) return []
+    return mockSearchGroups
+  },
   createWorkspace: async () => null,
   selectWorkspace: async () => null,
   respondPermission: async (id: string) => {
