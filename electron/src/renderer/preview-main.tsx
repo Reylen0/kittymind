@@ -85,6 +85,24 @@ const mockOlderMessages = [
 let olderServed = false
 
 const emptyView = new URLSearchParams(window.location.search).has('empty')
+// 预览用：?deep —— 当前会话藏在「最后一个工作区」里，上方还有一整列折叠的工作区组，
+// 用于验证「启动/切换会话时自动展开路径 + 滚到当前会话」
+const deepView = new URLSearchParams(window.location.search).has('deep')
+const deepWorkspaces = Array.from({ length: 24 }, (_, i) => ({
+  id: `ws-${i}`, name: `工作区 ${String(i + 1).padStart(2, '0')}`,
+  path: `E:\\ws\\${i}`, created_at: '',
+}))
+const deepSessions = [
+  // 列表首条 = App 启动自动选中的那条；它落在最后一个工作区里
+  { id: 'deep-target', title: '当前会话：藏在最后一个工作区', created_at: new Date(now).toISOString(), workspace_id: 'ws-23' },
+  ...deepWorkspaces.map((ws, i) => ({
+    id: `deep-${i}`, title: `折叠分组 ${i + 1} 的对话`,
+    created_at: new Date(now - (i + 1) * 1000).toISOString(), workspace_id: ws.id,
+  })),
+  // 与当前会话同组的兄弟项，用于验证「点选另一个会话时重新定位」
+  { id: 'deep-sib-1', title: '同组：兄弟会话 1', created_at: new Date(now - 500).toISOString(), workspace_id: 'ws-23' },
+  { id: 'deep-sib-2', title: '同组：兄弟会话 2（切换目标）', created_at: new Date(now - 400).toISOString(), workspace_id: 'ws-23' },
+]
 // 预览用：强制主题，如 preview.html?theme=dark
 const themeParam = new URLSearchParams(window.location.search).get('theme')
 if (themeParam === 'dark') document.documentElement.dataset.theme = 'dark'
@@ -103,6 +121,8 @@ const w = window as any
 w.kitty = {
   listSessions: async () => emptyView
     ? []
+    : deepView
+    ? deepSessions
     : [
     { id: 'demo-1', title: '演示：写诗与代码高亮', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
     { id: 'demo-2', title: '修复 WebSocket 重连逻辑', created_at: new Date(now - 86400000).toISOString(), workspace_id: 'ws-1' },
@@ -110,6 +130,7 @@ w.kitty = {
   ],
   listWorkspaces: async () => [
     { id: 'ws-1', name: 'kittymind', path: 'E:\\class\\roadmap\\Agent\\code\\kittymind', created_at: '' },
+    ...(deepView ? deepWorkspaces : []),
   ],
   getSession: async (id: string, opts: { limit?: number; beforeSeq?: number } = {}) => {
     const header = {

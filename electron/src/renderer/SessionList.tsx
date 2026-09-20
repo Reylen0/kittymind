@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import type { Session, Workspace } from './types'
 import { getTheme, toggleTheme, type Theme } from './theme'
 
@@ -89,6 +89,21 @@ function IcoSun() {
   )
 }
 
+/** 在侧栏里按 id 找到会话项（用数据集比对，避开 id 需转义的问题）。 */
+function findSessionItem(box: HTMLElement, id: string): HTMLElement | undefined {
+  return Array.from(box.querySelectorAll<HTMLElement>('[data-sid]'))
+    .find(n => n.dataset.sid === id)
+}
+
+/** 把会话项滚进 box 的可视区（只改 box.scrollTop）。已完全可见时不做任何事。 */
+function revealSessionItem(box: HTMLElement, el: HTMLElement) {
+  const MARGIN = 6
+  const r = el.getBoundingClientRect()
+  const c = box.getBoundingClientRect()
+  if (r.top < c.top)            box.scrollTop += r.top - c.top - MARGIN
+  else if (r.bottom > c.bottom) box.scrollTop += r.bottom - c.bottom + MARGIN
+}
+
 function SessionItem({ s, currentId, onSelect, onDelete }: {
   s: Session; currentId: string | null
   onSelect: (id: string) => void; onDelete: (id: string) => void
@@ -96,6 +111,7 @@ function SessionItem({ s, currentId, onSelect, onDelete }: {
   return (
     <div
       className={`session-item${s.id === currentId ? ' active' : ''}`}
+      data-sid={s.id}
       onClick={() => onSelect(s.id)}
     >
       <span className="session-title">{s.title || '新对话'}</span>
@@ -118,6 +134,58 @@ export default function SessionList({
   const [spacesCollapsed,   setSpacesCollapsed]   = useState(true)
   const [theme,             setTheme]             = useState<Theme>(getTheme())
   const searchRef = useRef<HTMLInputElement>(null)
+
+  // ── 定位当前会话 ────────────────────────────────────────────────
+  // 侧栏两级默认全收起，当前会话很可能藏在折叠的工作区里。会话切换（含启动时
+  // 自动选中最近一条）时展开它所在的那一条路径，然后把它滚进可视区——保证任何
+  // 时候左侧都能看出「中间正在看哪个会话」。
+  // locatedRef 保证每个 currentId 只自动展开一次：用户随后手动收起分组、
+  // 或会话列表因标题更新而刷新时，都不会再被强行展开（只有切会话才会重新定位）。
+  const scrollRef  = useRef<HTMLDivElement>(null)
+  const locatedRef = useRef<string | null>(null)
+  const pendingRef = useRef<string | null>(null)   // 等待滚入视野的会话 id
+
+  useLayoutEffect(() => {
+    pendingRef.current = null                    // 上一次遗留的待定位作废
+    if (!currentId || locatedRef.current === currentId) return
+    const s = sessions.find(x => x.id === currentId)
+    if (!s) return                               // 新建但尚未落库的会话：列表里还没有它
+    locatedRef.current = currentId
+    pendingRef.current = currentId
+    if (s.workspace_id) {
+      setSpacesCollapsed(false)
+      setExpandedSpaces(prev => prev.has(s.workspace_id!)
+        ? prev
+        : new Set(prev).add(s.workspace_id!))
+    } else {
+      setDialogCollapsed(false)
+    }
+  }, [currentId, sessions])
+
+  // 目标进入 DOM 后再滚动（工作区列表异步到达、或刚由上面展开，会晚一两次渲染）。
+  // 只动 .session-scroll 自己的 scrollTop：用 rect 差值而不是 scrollIntoView，
+  // 免得带动外层容器，也免得命中那个 overflow:auto 的 .session-items。
+  useLayoutEffect(() => {
+    const id  = pendingRef.current
+    const box = scrollRef.current
+    if (!id || !box) return
+    const el = findSessionItem(box, id)
+    if (!el) return                              // 还没进 DOM：下一次渲染再试
+    revealSessionItem(box, el)
+    if (document.fonts?.status === 'loaded') {
+      pendingRef.current = null
+      return
+    }
+    // 网络字体（Noto Sans SC）就绪后行高会变，上面那次按「加载中」行高算的落点
+    // 会差十几像素（实测 scrollHeight 884→913）。等字体就绪再校正一次。
+    document.fonts.ready.then(() => {
+      if (pendingRef.current !== id) return      // 已被新的定位或用户操作取代
+      const b = scrollRef.current
+      const e = b ? findSessionItem(b, id) : undefined
+      if (b && e) revealSessionItem(b, e)
+      pendingRef.current = null
+    })
+  })
 
   useEffect(() => {
     if (searching) searchRef.current?.focus()
@@ -191,7 +259,15 @@ export default function SessionList({
         </button>
       </div>
 
-      <div className="session-scroll">
+      <div
+        className="session-scroll"
+        ref={scrollRef}
+        // 用户自己动这个列表（滚轮 / 拖滚动条 / 触摸）→ 放弃待定位，
+        // 否则目标稍后渲染出来会把列表拽走。用这两类事件而不是 onScroll：
+        // 定位本身会程序化改 scrollTop，onScroll 会把自己的定位取消掉。
+        onWheel={() => { pendingRef.current = null }}
+        onPointerDown={() => { pendingRef.current = null }}
+      >
       {/* ── 对话 section（无工作区） ── */}
       {(!query || filteredFree.length > 0) && (
         <>
