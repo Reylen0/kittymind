@@ -123,13 +123,6 @@ class MemoryStore:
             (self._dir / filename).write_text(content, encoding="utf-8")
         self._rebuild_index()
 
-    def delete_all(self):
-        if not self._dir.is_dir():
-            return
-        for path in self._dir.glob("*.md"):
-            if path.name != _INDEX_FILE:
-                path.unlink()
-
     # ── 内部工具 ──────────────────────────────────────────────────
 
     def _rebuild_index(self):
