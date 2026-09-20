@@ -13,8 +13,6 @@ class ToolResult:
 
 
 class BaseTool(ABC):
-    # 子类必须以类属性（或经 __init__）提供 name / description / param_class，
-    # 因此基类占位值是 None——标注必须如实写 Optional，别写 str（RUF013 曾报过）。
     name: str | None = None
     description: str | None = None
     param_class: type[BaseModel] | None = None

@@ -153,7 +153,7 @@ class ToolExecutor:
     async def execute_batch(self, tool_calls: list[dict], ctx: TurnContext) -> list[dict]:
         """同批 tool_calls 的分区并行执行，结果按声明序返回。
 
-        分区规则（对标 Claude Code 的「连续同类」模型）：
+        分区规则：
           - 决策段对整批**按声明序串行**：守护栏记账看得到前序结果，审批逐个弹出；
           - 连续的 `is_concurrency_safe=True` 调用划入同一并行区（asyncio.gather）；
           - 非安全调用、被拦截调用自成一串行屏障——模型声明的顺序天然表达依赖

@@ -1,52 +1,5 @@
-r"""危险命令黑名单 —— 全仓唯一事实源（P1-4）。
-
-## 为什么单独一个模块
-
-仓库里曾经有两份**互不一致**的黑名单：
-
-  - A `permission._BASH_HARD_DENY`：8 条明文子串。有 `rm -rf /`、`format c:`，
-    **没有** `mkfs` / `dd` / `shutdown` / `reboot`。
-  - B `bash_tool._DANGEROUS_PATTERNS`：13 条正则。有 `mkfs` / `dd` / `shutdown`，
-    但缺 A 里的 Windows 写法（`rd /s /q c:\`、`del /f /s /q c:\`）。
-
-两份都只在「bash 工具」生效——**`verify` 的 `type=command` 一份都不走**，而它同样把模型给的
-字符串交给 `subprocess(shell=True)`，能力等同 bash。于是 `verify` 成了 bash 的无防护镜像：
-`mkfs` / `shutdown` / `dd` 在这里一路放行。
-
-现在两边都从这里取表：`DANGEROUS_COMMANDS` 是旧两份的**并集**（只收紧、不放松），
-`find_dangerous()` 是唯一判定入口，`permission` 闸门 1 与 `bash_tool` 工具层共用。
-
-本模块**不 import 任何项目内模块**，是叶子模块——`permission` 已经依赖 `bash_tool`
-（取 `bash_cwd`），表若放在任一方都会形成循环导入。
-
-## 定位：这是「明显误触」护栏，不是安全边界
-
-必须说清楚它**不是**什么：明文字符串/正则匹配天然可绕——
-
-    rm  -rf  /            （多空格）
-    rm -rf --no-preserve-root /
-    r''m -rf /            （引号拼接）
-    $IFS 拼接、base64 解码后执行、写脚本再跑
-
-这些一条都拦不住，也不该指望能拦住。真正的兜底是**结构性规则**，不在字符串匹配上：
-
-  - `permission._RULES`：工作区之外的任何写操作、删除类命令、系统路径写入
-    → 一律走用户审批（`_SHELL_TOOLS` 全体生效）
-  - 工作区隔离（`builtin/_paths.py:resolve_path`，唯一基准 `bash_cwd`）
-
-把黑名单继续加长是假安全感：条目越多，越容易让人误以为「危险命令已经被挡住了」。
-
-## 已知的过宽点（有意保留，不是疏漏）
-
-取并集意味着 `rm\s+-\S*r` 这条也进了闸门 1，于是 **`rm -rf build` 这类工作区内的合法清理
-会被硬拒绝、连审批机会都没有**。这是刻意选择：
-
-  - 取并集**只收紧、不放松**——任何旧版本能拦住的命令，现在在任何路径上仍然被拦住；
-  - 反过来（把递归删除降为闸门 2 的审批项）会让 `ask_fn=None` 的子 Agent 路径
-    静默放行 `rm -rf`，那是一次真实的**放松**，不该在"修复不一致"的批次里顺手做。
-
-若日后要改成"可审批"，正确做法是把 `rm\s+-\S*r` 从本表移到 `permission._RULES`，
-同时接受子 Agent 路径的放松——那是一个需要单独决策的变更，不是清理动作。
+"""
+危险命令黑名单 —— 全仓唯一事实源。
 """
 
 import re
