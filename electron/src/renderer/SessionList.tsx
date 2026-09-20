@@ -111,7 +111,9 @@ export default function SessionList({
 }: Props) {
   const [searching,         setSearching]         = useState(false)
   const [query,             setQuery]             = useState('')
-  const [collapsedSpaces,   setCollapsedSpaces]   = useState<Set<string>>(new Set())
+  // 记录「已手动展开」的工作区：默认空集合 = 每个工作区下的对话都收起。
+  // 用展开集而非收起集，workspaces 异步到达时新工作区天然是收起态，无需同步。
+  const [expandedSpaces,    setExpandedSpaces]    = useState<Set<string>>(new Set())
   const [dialogCollapsed,   setDialogCollapsed]   = useState(true)   // 「对话」「工作区」默认折叠
   const [spacesCollapsed,   setSpacesCollapsed]   = useState(true)
   const [theme,             setTheme]             = useState<Theme>(getTheme())
@@ -128,7 +130,7 @@ export default function SessionList({
     : freeSessions
 
   function toggleSpace(id: string) {
-    setCollapsedSpaces(prev => {
+    setExpandedSpaces(prev => {
       const next = new Set(prev)
       next.has(id) ? next.delete(id) : next.add(id)
       return next
@@ -229,7 +231,7 @@ export default function SessionList({
               ? wsSessions.filter(s => (s.title || '新对话').toLowerCase().includes(query.toLowerCase()))
               : wsSessions
             if (query && filteredWs.length === 0) return null
-            const collapsed = collapsedSpaces.has(ws.id)
+            const collapsed = !expandedSpaces.has(ws.id)
             return (
               <div key={ws.id} className="workspace-group">
                 <button className="workspace-group-header" onClick={() => toggleSpace(ws.id)}>
