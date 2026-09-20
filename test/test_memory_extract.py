@@ -224,10 +224,13 @@ def test_to_cjk_quotes_alternates():
 
 
 def test_llm_extract_logs_failure(caplog):
+    """提取失败必须留痕（旧实现 `except Exception: return []` 完全静默）。"""
     llm = FakeLLM('[\n  {"name": "x" "type": "user"}\n]')
-    with caplog.at_level("WARNING", logger="kittymind.memory.extract"):
+    with caplog.at_level("WARNING", logger="kittymind.core.llm_json"):
         assert ex._llm_extract("对话内容", llm) == []
-    assert any("记忆提取失败" in r.message for r in caplog.records)
+    messages = [r.message for r in caplog.records]
+    assert any("记忆提取" in m and "解析失败" in m for m in messages)
+    assert any("Expecting ',' delimiter" in m and "原始输出" in m for m in messages)
 
 
 def test_extract_triggers_consolidate_at_threshold(store, monkeypatch):

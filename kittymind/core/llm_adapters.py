@@ -1,9 +1,13 @@
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
+from .llm_json import parse_tool_arguments
 from .llm_response import LLMResponse, StreamEvent
 from ..config import cfg
+
+logger = logging.getLogger(__name__)
 
 
 class BaseLLMAdapter(ABC):
@@ -197,12 +201,18 @@ class AnthropicAdapter(BaseLLMAdapter):
                 if msg.get("content"):
                     content.append({"type": "text", "text": msg["content"]})
                 for tc in msg["tool_calls"]:
-                    args = tc["function"].get("arguments", "{}")
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            args = {}
+                    raw_args = tc["function"].get("arguments", "{}")
+                    args, args_error = parse_tool_arguments(raw_args)
+                    if args_error is not None:
+                        # 这里只重建历史消息、不执行调用，Anthropic 的 tool_use.input
+                        # 必须是对象，所以仍回退成 {}；但必须留痕，否则模型会在
+                        # 「自己上次调用的输入是空的」这种错误上下文里继续推理。
+                        logger.warning(
+                            "重建历史工具调用时参数解析失败（%s）：%s | 原文：%s",
+                            tc["function"].get("name", "?"), args_error,
+                            str(raw_args)[:200],
+                        )
+                        args = {}
                     content.append({
                         "type": "tool_use",
                         "id": tc["id"],

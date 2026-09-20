@@ -18,16 +18,14 @@
 
 import json
 import logging
-import re
 from pathlib import Path
 
 from .store import MEMORY_TYPES
 from ..config import cfg
+from ..core.llm_json import extract_json_text, log_parse_failure
 from ..prompts import build_memory_extract_prompt, build_memory_consolidate_prompt
 
 logger = logging.getLogger(__name__)
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def extract_memories(messages: list[dict], llm, memory_store) -> bool:
@@ -102,13 +100,13 @@ def _consolidate(llm, memory_store) -> None:
 
         payload = _extract_json_array(text)
         if payload is None:
-            logger.warning("记忆整合：模型输出里找不到 JSON 数组，跳过本次整合")
+            log_parse_failure("记忆整合", text, "输出里找不到 JSON 数组，跳过本次整合")
             _dump_raw(text, "no-json-array")
             return
 
         ops = json.loads(payload)
         if not isinstance(ops, list):
-            logger.warning("记忆整合：模型输出不是 JSON 数组，跳过本次整合")
+            log_parse_failure("记忆整合", text, "输出不是 JSON 数组，跳过本次整合")
             _dump_raw(text, "not-an-array")
             return
 
@@ -230,15 +228,8 @@ def _to_cjk_quotes(text: str) -> str:
 
 
 def _extract_json_array(text: str) -> str | None:
-    """从模型输出里取出 JSON 数组文本（容忍 ``` 围栏与前后说明文字）。"""
-    stripped = text.strip()
-    fence = _FENCE_RE.search(stripped)
-    if fence:
-        stripped = fence.group(1).strip()
-    start, end = stripped.find("["), stripped.rfind("]") + 1
-    if start == -1 or end <= start:
-        return None
-    return stripped[start:end]
+    """从模型输出里取出 JSON 数组文本（见 core.llm_json 的统一实现）。"""
+    return extract_json_text(text)
 
 
 def _dump_raw(text: str, reason: str) -> None:
@@ -253,18 +244,19 @@ def _dump_raw(text: str, reason: str) -> None:
 
 def _llm_extract(history_text: str, llm, existing_catalog: str = "") -> list[dict]:
     prompt = build_memory_extract_prompt(history_text, existing_catalog)
+    text = ""
     try:
         response = llm.invoke([{"role": "user", "content": prompt}])
         text = response.content or ""
         payload = _extract_json_array(text)
         if payload is None:
-            logger.debug("记忆提取：模型输出里找不到 JSON 数组")
+            log_parse_failure("记忆提取", text, "输出里找不到 JSON 数组")
             return []
         candidates = json.loads(payload)
         return [c for c in candidates if isinstance(c, dict)]
     except Exception as e:
-        # 旧实现静默吞掉异常，提取失败完全不可见；这里至少留下一条日志。
-        logger.warning("记忆提取失败: %s: %s", type(e).__name__, e)
+        # 旧实现静默吞掉异常，提取失败完全不可见；这里至少留下一条带原文的日志。
+        log_parse_failure("记忆提取", text, f"{type(e).__name__}: {e}")
         return []
 
 

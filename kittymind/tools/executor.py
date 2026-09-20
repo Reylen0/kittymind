@@ -22,16 +22,20 @@
 import asyncio
 import contextlib
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
 from ..config import cfg
+from ..core.llm_json import parse_tool_arguments
 from .audit import ToolAuditLog
 from .base import BaseTool
 from .guardrails import GuardrailController, GuardrailTurnState
 from .permission import check_permission
 from .redaction import redact, redact_args_for_audit
 from .registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,10 +80,20 @@ class ToolExecutor:
         tool_call_id = tool_call.get("id", "")
         function = tool_call.get("function", {})
         name = function.get("name", "")
-        try:
-            args = json.loads(function.get("arguments", "{}") or "{}")
-        except Exception:
+        args, args_error = parse_tool_arguments(function.get("arguments"))
+        if args_error is not None:
+            # fail-closed：参数解析失败时兜底成 {} 会让工具在空参数下跑，而守护栏
+            # 与权限判定也是按 args 做的 —— 静默失败等于既绕过检查又执行了错调用。
             args = {}
+            logger.warning("工具 %s 的参数解析失败，已拒绝执行：%s", name, args_error)
+            return _Decision(
+                tool_call_id, name, args, t0, tool=None,
+                blocked=_tool_result(
+                    tool_call_id,
+                    f"工具 {name} 的参数不是合法 JSON，已拒绝执行：{args_error}。"
+                    "请重新发起该调用，并确保 arguments 是合法的 JSON 对象。",
+                ),
+            )
 
         # ── 1. 守护栏前置：循环/无进展 block ──────────────────
         if self._guardrail is not None:

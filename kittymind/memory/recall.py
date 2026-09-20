@@ -9,6 +9,7 @@ import json
 import re
 
 from ..config import cfg
+from ..core.llm_json import extract_json_text, log_parse_failure
 from ..prompts import MEMORY_RECALL_SECTION_HEADER, build_memory_recall_select_prompt
 
 
@@ -59,17 +60,21 @@ class MemoryRecall:
         if not catalog:
             return []
         prompt = build_memory_recall_select_prompt(catalog, user_input, self.MAX_RELEVANT)
+        text = ""
         try:
             response = self._llm.invoke([{"role": "user", "content": prompt}])
             text = (response.content or "").strip()
-            start, end = text.find("["), text.rfind("]") + 1
-            if start == -1 or end == 0:
+            payload = extract_json_text(text)
+            if payload is None:
+                log_parse_failure("记忆召回选择", text, "输出里找不到 JSON 数组")
                 return None
-            indices = json.loads(text[start:end])
+            indices = json.loads(payload)
             if isinstance(indices, list):
                 return [int(i) for i in indices if isinstance(i, (int, float))]
-        except Exception:
-            pass
+            log_parse_failure("记忆召回选择", text, "输出不是数组")
+        except Exception as e:
+            # 记下来再降级到关键词匹配：静默吞掉会让「召回长期为空」无从排查
+            log_parse_failure("记忆召回选择", text, f"{type(e).__name__}: {e}")
         return None
 
     # 拉丁词（≥3 字符整词）；CJK 连续段（中文无空格，须另切 2-gram，见 _extract_keywords）

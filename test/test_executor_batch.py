@@ -203,6 +203,76 @@ async def test_permission_denied_short_circuits_execution():
     assert cfg is not None  # 保持导入不失效
 
 
+# ── 非法参数：fail-closed ────────────────────────────────────────────
+
+class _ArgRecorder(_ProbeTool):
+    """记录真实收到的 args，用于断言"工具是否执行、用什么参数执行"。"""
+
+    def __init__(self, sink: list[dict], **kwargs):
+        super().__init__(**kwargs)
+        self._sink = sink
+
+    def run(self, args: dict) -> ToolResult:
+        self._sink.append(args)
+        return ToolResult(True, "ok")
+
+
+def _raw_call(name: str, arguments, call_id: str = "c1") -> dict:
+    return {"id": call_id, "function": {"name": name, "arguments": arguments}}
+
+
+async def test_invalid_arguments_are_rejected_without_running_tool():
+    """参数不是合法 JSON → 拒绝执行，绝不带着兜底的 {} 跑。
+
+    旧实现 `except: args = {}`：工具照常执行，而守护栏与权限判定同样按 args
+    做判断——静默失败等于既绕过参数检查、又真的执行了一次错误调用。
+    """
+    seen: list[dict] = []
+    executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
+
+    results = await executor.execute_batch(
+        [_raw_call("probe", '{"a": 1,')], ctx=TurnContext()
+    )
+
+    assert seen == [], "参数解析失败时工具不得执行"
+    assert len(results) == 1 and results[0]["tool_call_id"] == "c1"
+    assert results[0]["role"] == "tool" and "JSON" in results[0]["content"]
+
+
+async def test_empty_and_missing_arguments_are_legitimate():
+    """无参工具（arguments 缺省 / 空串）是合法调用，不能被误伤。"""
+    seen: list[dict] = []
+    executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
+
+    await executor.execute_batch([
+        _raw_call("probe", None, "c1"),
+        _raw_call("probe", "", "c2"),
+    ], ctx=TurnContext())
+
+    assert seen == [{}, {}]
+
+
+async def test_non_object_arguments_are_rejected():
+    """arguments 是合法 JSON 但不是对象（如数组）同样拒绝：工具体只吃对象。"""
+    seen: list[dict] = []
+    executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
+
+    results = await executor.execute_batch(
+        [_raw_call("probe", "[1, 2]")], ctx=TurnContext()
+    )
+
+    assert seen == [] and "JSON" in results[0]["content"]
+
+
+async def test_valid_arguments_reach_tool_unchanged():
+    seen: list[dict] = []
+    executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
+
+    await executor.execute_batch([_call("probe", {"x": [1, 2]})], ctx=TurnContext())
+
+    assert seen == [{"x": [1, 2]}]
+
+
 # ── 分类一致性（真实内置工具）───────────────────────────────────────
 
 def test_builtin_concurrency_flags_match_guardrail_classification():
