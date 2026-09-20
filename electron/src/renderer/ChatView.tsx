@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import MessageItem from './MessageItem'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import MessageItem, { ToolGroup } from './MessageItem'
 import WorkspaceSelector from './WorkspaceSelector'
 import type { Message, Workspace } from './types'
 
@@ -12,6 +12,8 @@ interface Props {
 
 // 预览辅助：?loading 初始即处于"思考中"状态，便于截图验证取消按钮（生产环境无参数，恒为 false）
 const INIT_LOADING = new URLSearchParams(window.location.search).has('loading')
+// 预览辅助：?tools 强制展开工具调用组，便于截图验证展开态（生产环境无参数，恒为 false）
+const INIT_TOOLS_OPEN = new URLSearchParams(window.location.search).has('tools')
 
 interface PermRequest {
   request_id: string
@@ -25,6 +27,44 @@ const fmtK = (n: number) =>
   : n >= 1_000   ? `${Math.round(n / 1_000)}k`
   : String(n)
 
+/** 工具入参格式化：兼容「JSON 字符串 / 已解析对象 / 非 JSON 文本」；空入参返回空串。 */
+function formatToolArgs(args: unknown): string {
+  if (args === null || args === undefined) return ''
+  let value: unknown = args
+  if (typeof args === 'string') {
+    const raw = args.trim()
+    if (!raw) return ''
+    try { value = JSON.parse(raw) } catch { return raw }
+  }
+  if (typeof value === 'object') {
+    const text = JSON.stringify(value, null, 2)
+    return text === '{}' ? '' : text
+  }
+  return String(value)
+}
+
+type RenderUnit =
+  | { kind: 'single'; message: Message }
+  | { kind: 'tools'; id: string; items: Message[] }
+
+/**
+ * 相邻的 tool 消息合并为一个渲染单元（= 同一批工具调用），其余消息各自成单元。
+ * 只依赖「相邻」这一事实：跨批次的工具消息之间必然隔着 assistant 文本，故不会被误并。
+ */
+function toRenderUnits(messages: Message[]): RenderUnit[] {
+  const units: RenderUnit[] = []
+  for (const m of messages) {
+    const last = units[units.length - 1]
+    if (m.role === 'tool') {
+      if (last?.kind === 'tools') last.items.push(m)
+      else units.push({ kind: 'tools', id: `g-${m.id}`, items: [m] })
+    } else {
+      units.push({ kind: 'single', message: m })
+    }
+  }
+  return units
+}
+
 export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
   const [messages,            setMessages]            = useState<Message[]>([])
   const [input,               setInput]               = useState('')
@@ -36,6 +76,8 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   const [isHistoryLoading,    setIsHistoryLoading]    = useState(true)
   // 审批队列：并发多个审批时排队展示，不互相覆盖；队首可交互
   const [permQueue, setPermQueue] = useState<PermRequest[]>([])
+  // 相邻 tool 消息分组合并（必须在任何提前 return 之前调用 hook）
+  const units = useMemo(() => toRenderUnits(messages), [messages])
   const permRequest = permQueue[0] ?? null
   const bottomRef = useRef<HTMLDivElement>(null)
   const inputRef  = useRef<HTMLTextAreaElement>(null)
@@ -69,16 +111,18 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
         if (!data?.messages?.length) return
 
         const msgs: Message[] = []
-        // tool_call_id -> 工具名。一次 turn 可能返回一批 tool_calls（并行执行），
-        // 后续每条 tool 消息各带自己的 tool_call_id，必须按 id 精确配对，
+        // tool_call_id -> 该次调用的名字与入参。一次 turn 可能返回一批 tool_calls
+        //（并行执行），后续每条 tool 消息各带自己的 tool_call_id，必须按 id 精确配对，
         // 不能按位置取「上一条消息的 tool_calls[0]」（同批第二个会配错/配不到）。
-        const toolNames = new Map<string, string>()
+        const toolCalls = new Map<string, { name: string; args: string }>()
         for (let i = 0; i < data.messages.length; i++) {
           const m = data.messages[i]
           if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
             for (const tc of m.tool_calls) {
-              const t = tc as { id?: string; function?: { name?: string } }
-              if (t?.id && t.function?.name) toolNames.set(t.id, t.function.name)
+              const t = tc as { id?: string; function?: { name?: string; arguments?: unknown } }
+              if (t?.id && t.function?.name) {
+                toolCalls.set(t.id, { name: t.function.name, args: formatToolArgs(t.function.arguments) })
+              }
             }
           }
           if (m.role === 'user' && m.content) {
@@ -86,8 +130,13 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
           } else if (m.role === 'assistant' && m.content) {
             msgs.push({ id: `h-${i}`, role: 'assistant', content: m.content })
           } else if (m.role === 'tool' && m.content) {
-            const name = (m.tool_call_id && toolNames.get(m.tool_call_id)) || 'tool'
-            msgs.push({ id: `h-${i}`, role: 'tool', content: '', toolName: name, toolArgs: '', toolResult: m.content })
+            const call = m.tool_call_id ? toolCalls.get(m.tool_call_id) : undefined
+            msgs.push({
+              id: `h-${i}`, role: 'tool', content: '',
+              toolName: call?.name ?? 'tool',
+              toolArgs: call?.args ?? '',
+              toolResult: m.content,
+            })
           }
         }
         setMessages(msgs)
@@ -114,7 +163,7 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
       if (d.session_id !== sessionId) return
       setMessages(prev => [
         ...prev,
-        { id: `tc-${Date.now()}`, role: 'tool', content: '', toolName: d.name, toolArgs: d.args },
+        { id: `tc-${Date.now()}`, role: 'tool', content: '', toolName: d.name, toolArgs: formatToolArgs(d.args) },
       ])
     }
 
@@ -385,7 +434,9 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   return (
     <div className="chat-view">
       <div className="messages">
-        {messages.map(m => <MessageItem key={m.id} message={m} />)}
+        {units.map(u => u.kind === 'tools'
+          ? <ToolGroup key={u.id} items={u.items} forceOpen={INIT_TOOLS_OPEN} />
+          : <MessageItem key={u.message.id} message={u.message} />)}
         {thinkingBubble}
         <div ref={bottomRef} />
       </div>

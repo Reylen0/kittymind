@@ -42,14 +42,23 @@ const mockMessages = [
   {
     role: 'assistant',
     content: '',
-    tool_calls: [{ id: 'c1', type: 'function', function: { name: 'file_write', arguments: '{}' } }],
+    tool_calls: [
+      { id: 'c1', type: 'function', function: { name: 'glob', arguments: '{"pattern": "*.txt", "path": "E:\\\\workspace\\\\kittymind\\\\ws1"}' } },
+      { id: 'c2', type: 'function', function: { name: 'file_read', arguments: '{"path": "E:\\\\workspace\\\\kittymind\\\\ws1\\\\poem.txt"}' } },
+    ],
     ts: now - 55000,
   },
   {
     role: 'tool',
     tool_call_id: 'c1',
-    content: '已写入: E:\\workspace\\kittymind\\ws1\\poem.txt (8 行, 113 字节)',
+    content: 'E:\\workspace\\kittymind\\ws1\\poem.txt\n\n共 1 个文件',
     ts: now - 54000,
+  },
+  {
+    role: 'tool',
+    tool_call_id: 'c2',
+    content: '静夜思\n床前明月光，疑是地上霜。\n举头望明月，低头思故乡。\n\n(4 行, 46 字节)',
+    ts: now - 53500,
   },
   {
     role: 'assistant',

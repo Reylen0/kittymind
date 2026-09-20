@@ -312,8 +312,6 @@ class KittyAgent(Agent):
 
                 final_text = self._ensure_final_text(final_text)
 
-                # 与子 Agent 路径统一：末尾含本轮最终 assistant 答复（task_tool 拿它
-                # estimate_tokens，要的就是整轮产出，不只是喂给 LLM 的那部分）。
                 self.last_messages = messages + [self._assistant_message(final_text, [])]
 
                 turn_messages.append({"role": "assistant", "content": final_text})
