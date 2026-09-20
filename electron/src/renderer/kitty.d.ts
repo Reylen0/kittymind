@@ -48,6 +48,16 @@ declare global {
       setNativeTheme?(opts: { color: string; symbolColor: string }): Promise<unknown>
 
       respondPermission(requestId: string, approved: boolean): Promise<unknown>
+      /** 切回会话 / 重载窗口时补拉仍在等待确认的审批（审批事件是一次性推送） */
+      getPendingPermissions(sessionId: string): Promise<{
+        pending: Array<{
+          request_id: string
+          tool: string
+          args: Record<string, unknown>
+          reason: string
+          session_id: string | null
+        }>
+      }>
 
       // on() returns an unsubscribe function — call it in useEffect cleanup
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

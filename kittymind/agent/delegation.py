@@ -76,6 +76,16 @@ def reset_root_session(token) -> None:
     _root_session_id.reset(token)
 
 
+def current_root_session() -> str | None:
+    """当前上下文归属的根 session_id（与 current_budget 对称的只读访问）。
+
+    子 Agent 复用父级作用域，所以拿到的始终是父级真实会话。审批事件靠它给
+    payload 打 session_id，前端才能把弹窗归属到正确的会话——缺这个字段时，
+    多会话并行会把 A 的审批弹在 B 的界面上。
+    """
+    return _root_session_id.get()
+
+
 def can_delegate(budget: DelegationBudget | None) -> bool:
     """None = CLI 无预算，允许一次委派作为兜底。"""
     if budget is None:

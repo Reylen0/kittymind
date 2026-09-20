@@ -18,6 +18,7 @@ import asyncio
 
 import pytest
 
+from kittymind.agent.delegation import reset_root_session, set_root_session
 from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
 
@@ -239,3 +240,112 @@ async def test_expired_push_failure_is_suppressed(monkeypatch):
     task = _ask_task(bridge, cid_a)
     await a.wait_requests(1)
     assert await task is False, "推送失败不得改变超时拒绝的返回值"
+
+
+# ── 会话归属与待审批补拉（切会话弹窗消失的回归）──────────────────
+#
+# 症状：会话 A 弹出审批 → 切到 B 再切回 A → 弹窗消失、界面像已结束。
+# 两个成因都在这里钉住：
+#   1) payload 缺 session_id → 前端无法过滤，B 的弹窗会串到 A 的界面上；
+#   2) 只有「推一次」没有可查询的待审批状态 → 错过就再也拿不回来。
+
+
+def _ask_task_in_session(
+    bridge: PermissionBridge, conn_id: str, session_id: str
+) -> asyncio.Task:
+    """起一个 task：set_root_session + bind + ask，模拟某会话里工具触发的审批。"""
+    async def worker() -> bool:
+        session_token = set_root_session(session_id)
+        conn_token = bridge.bind(conn_id)
+        try:
+            return await bridge.ask("bash", {"command": "rm -rf build"}, "命令包含删除操作")
+        finally:
+            bridge.unbind(conn_token)
+            reset_root_session(session_token)
+
+    return asyncio.create_task(worker())
+
+
+async def test_permission_payload_carries_session_id():
+    """审批请求必须带 session_id —— 前端靠它把弹窗归属到发起它的会话。"""
+    bridge = PermissionBridge()
+    a = _FakeConn("A")
+    cid_a = bridge.set_connection(a.push)
+
+    task = _ask_task_in_session(bridge, cid_a, "sess-1")
+    req = (await a.wait_requests(1))[0]
+    assert req["session_id"] == "sess-1"
+
+    assert bridge.respond(req["request_id"], True, conn_id=cid_a) is True
+    assert await task is True
+
+
+async def test_pending_for_returns_only_matching_session():
+    """补拉按会话过滤：查 sess-2 不得把 sess-1 的待审批一并带回来。
+
+    反例就是「切回会话看到别的会话的弹窗」——比弹窗消失更难排查。
+    """
+    bridge = PermissionBridge()
+    a = _FakeConn("A")
+    cid_a = bridge.set_connection(a.push)
+
+    task1 = _ask_task_in_session(bridge, cid_a, "sess-1")
+    task2 = _ask_task_in_session(bridge, cid_a, "sess-2")
+    await a.wait_requests(2)
+
+    only2 = bridge.pending_for("sess-2", conn_id=cid_a)
+    assert len(only2) == 1
+    assert only2[0]["session_id"] == "sess-2"
+    # 快照字段必须完整，否则前端拿到也重放不出弹窗
+    assert only2[0]["tool"] == "bash"
+    assert only2[0]["args"] == {"command": "rm -rf build"}
+    assert only2[0]["reason"] == "命令包含删除操作"
+    assert only2[0]["request_id"]
+
+    assert bridge.respond(only2[0]["request_id"], True, conn_id=cid_a) is True
+    assert await task2 is True
+    assert bridge.pending_for("sess-2", conn_id=cid_a) == [], "已作答的审批不该还在列表里"
+
+    still = bridge.pending_for("sess-1", conn_id=cid_a)
+    assert len(still) == 1, "sess-1 未被作答，其待审批必须保留"
+
+    assert bridge.respond(still[0]["request_id"], False, conn_id=cid_a) is True
+    assert await task1 is False
+
+
+async def test_pending_for_does_not_cross_connections():
+    """A 的待审批不能被 B 查到：bridge 是进程级单例，必须按 conn_id 限定。"""
+    bridge = PermissionBridge()
+    a, b = _FakeConn("A"), _FakeConn("B")
+    cid_a = bridge.set_connection(a.push)
+    cid_b = bridge.set_connection(b.push)
+
+    task = _ask_task_in_session(bridge, cid_a, "sess-1")
+    await a.wait_requests(1)
+
+    assert bridge.pending_for("sess-1", conn_id=cid_b) == []
+    req = bridge.pending_for("sess-1", conn_id=cid_a)
+    assert len(req) == 1
+
+    assert bridge.respond(req[0]["request_id"], True, conn_id=cid_a) is True
+    assert await task is True
+
+
+async def test_timeout_clears_pending_and_expired_carries_session(monkeypatch):
+    """超时后待审批列表必须清空，且撤回推送同样带会话归属。
+
+    不清空的话，切回会话会补拉出一个早已作废的弹窗，用户点了却没反应。
+    """
+    monkeypatch.setattr(cfg, "PERMISSION_ASK_TIMEOUT", 0.05, raising=False)
+    bridge = PermissionBridge()
+    a = _FakeConn("A")
+    cid_a = bridge.set_connection(a.push)
+
+    task = _ask_task_in_session(bridge, cid_a, "sess-9")
+    await a.wait_requests(1)
+    assert await task is False, "超时应按拒绝处理"
+
+    expired = [e for e in a.events if e[0] == "tool.permission_expired"]
+    assert len(expired) == 1
+    assert expired[0][1]["session_id"] == "sess-9", "撤回推送也必须带会话归属"
+    assert bridge.pending_for("sess-9", conn_id=cid_a) == []

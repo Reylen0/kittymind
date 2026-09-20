@@ -56,6 +56,12 @@ contextBridge.exposeInMainWorld('kitty', {
       method: 'tool/permission_response',
       params: { request_id: requestId, approved },
     }),
+  // 切回会话 / 重载窗口时补拉仍在等待确认的审批（审批事件是一次性推送，错过就没了）
+  getPendingPermissions: (sessionId) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'permission/pending',
+      params: { session_id: sessionId },
+    }),
 
   // Window / edit controls (custom TopBar)
   windowControl: (action) => ipcRenderer.invoke('window:control', action),

@@ -41,6 +41,7 @@ class RpcHandler:
             "workspace/list":           self._workspace_list,
             "workspace/create":         self._workspace_create,
             "tool/permission_response": self._permission_response,
+            "permission/pending":       self._permission_pending,
         }
         # 本连接的审批通道 id：bridge 是进程级单例，靠它区分多连接
         self.conn_id: str | None = None
@@ -321,3 +322,22 @@ class RpcHandler:
             hit = self._bridge.respond(request_id, approved, conn_id=self.conn_id)
         # ok = 是否真的有桥可路由：bridge 为 None 时谎报 ok:true 会掩盖「审批没人接」
         await self._result(req_id, {"ok": self._bridge is not None, "matched": hit})
+
+    # ──────────────────────────────────────────────────────────────
+    # permission/pending
+    # ──────────────────────────────────────────────────────────────
+
+    async def _permission_pending(self, req_id: Any, params: dict) -> None:
+        """列出本连接下某个会话仍在等待用户确认的审批请求。
+
+        前端切回会话（或窗口重新加载）时调用，用返回值重放弹窗——审批事件是
+        一次性推送，错过了就再也收不到，必须能按需补拉。
+
+        必须按 conn_id 限定：bridge 是进程级单例，不加限定会把别的窗口的
+        待审批一并带回来。
+        """
+        session_id = params.get("session_id")
+        pending: list = []
+        if self._bridge is not None:
+            pending = self._bridge.pending_for(session_id, conn_id=self.conn_id)
+        await self._result(req_id, {"pending": pending})

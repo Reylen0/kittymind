@@ -85,6 +85,9 @@ const mockOlderMessages = [
 let olderServed = false
 
 const emptyView = new URLSearchParams(window.location.search).has('empty')
+// 预览用：?switch —— 两个自由会话（同在「对话」组，当前会话所在组会自动展开），
+// 用于验证「切走再切回」时审批弹窗 / 输入草稿 / 消息是否保留
+const switchView = new URLSearchParams(window.location.search).has('switch')
 // 预览用：?deep —— 当前会话藏在「最后一个工作区」里，上方还有一整列折叠的工作区组，
 // 用于验证「启动/切换会话时自动展开路径 + 滚到当前会话」
 const deepView = new URLSearchParams(window.location.search).has('deep')
@@ -117,12 +120,36 @@ if (new URLSearchParams(window.location.search).has('chat')) {
   }, 60)
 }
 
+// 预览用：mock 的事件订阅真实可分发，并暴露 window.__permFire 供自动化触发。
+// 同时模拟后端「待审批可查询」——会话 B 从未挂载过时事件无处可去，只有补拉
+// 才能救回来（真实后端由 permission/pending 接口承担这个职责）。
+const listeners: Record<string, Array<(d: any) => void>> = {}
+const mockPending: Record<string, any[]> = {}
+;(window as any).__permFire = (event: string, data: any) => {
+  if (event === 'tool.permission_request' && data?.session_id) {
+    (mockPending[data.session_id] ??= []).push({
+      request_id: data.request_id, tool: data.tool,
+      args: data.args, reason: data.reason, session_id: data.session_id,
+    })
+  } else if (event === 'tool.permission_expired') {
+    for (const k of Object.keys(mockPending)) {
+      mockPending[k] = mockPending[k].filter(r => r.request_id !== data.request_id)
+    }
+  }
+  for (const cb of [...(listeners[event] ?? [])]) cb(data)
+}
+
 const w = window as any
 w.kitty = {
   listSessions: async () => emptyView
     ? []
     : deepView
     ? deepSessions
+    : switchView
+    ? [
+      { id: 'demo-1', title: '会话 A：等审批中', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
+      { id: 'demo-2', title: '会话 B：另一个', created_at: new Date(now - 120000).toISOString(), workspace_id: null },
+    ]
     : [
     { id: 'demo-1', title: '演示：写诗与代码高亮', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
     { id: 'demo-2', title: '修复 WebSocket 重连逻辑', created_at: new Date(now - 86400000).toISOString(), workspace_id: 'ws-1' },
@@ -137,7 +164,14 @@ w.kitty = {
       id, title: '演示', created_at: new Date(now - 60000).toISOString(),
       workspace_id: null, used_tokens: 24000, total_tokens: 64000,
     }
-    if (id !== 'demo-1') return { header, messages: [] }
+    if (id !== 'demo-1') {
+      return {
+        header,
+        messages: switchView
+          ? [{ seq: 0, role: 'user', content: '这是会话 B 自己的一条消息', ts: now - 120000 }]
+          : [],
+      }
+    }
     // 模拟分页：首屏给一页 + has_more，带游标回传时给更早的一页
     if (typeof opts.beforeSeq === 'number') {
       if (olderServed) return { header, messages: [], has_more: false, cursor: null }
@@ -151,9 +185,22 @@ w.kitty = {
   deleteSession: async () => {},
   createWorkspace: async () => null,
   selectWorkspace: async () => null,
-  respondPermission: async () => {},
+  respondPermission: async (id: string) => {
+    for (const k of Object.keys(mockPending)) {
+      mockPending[k] = mockPending[k].filter(r => r.request_id !== id)
+    }
+  },
   windowControl: () => {},
-  on: (_: string, __: (d: any) => void) => () => {},
+  agentStatus: async () => ({ name: 'kitty', model: 'demo-model', running_sessions: [] }),
+  getPendingPermissions: async (sessionId: string) => ({
+    pending: mockPending[sessionId] ?? [],
+  }),
+  on: (event: string, cb: (d: any) => void) => {
+    (listeners[event] ??= []).push(cb)
+    return () => {
+      listeners[event] = (listeners[event] ?? []).filter(x => x !== cb)
+    }
+  },
 }
 
 import { StrictMode } from 'react'

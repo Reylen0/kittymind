@@ -5,6 +5,11 @@ import type { Message, SessionMessage, Workspace } from './types'
 
 interface Props {
   sessionId:          string
+  /**
+   * 是否为当前显示的会话。会话视图常驻挂载（切换只是显示/隐藏），隐藏期间
+   * autoFocus 不生效，所以切回时要靠它重新聚焦。
+   */
+  active:             boolean
   workspaces:         Workspace[]
   onSessionUpdate:    () => void
   onWorkspaceCreated: (ws: Workspace) => void
@@ -25,6 +30,8 @@ interface PermRequest {
   tool: string
   args: Record<string, unknown>
   reason: string
+  /** 发起该审批的会话。前端据此过滤，避免别的会话的弹窗串到当前界面上 */
+  session_id?: string | null
 }
 
 const fmtK = (n: number) =>
@@ -98,7 +105,7 @@ function toRenderUnits(messages: Message[]): RenderUnit[] {
   return units
 }
 
-export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
+export default function ChatView({ sessionId, active, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
   const [messages,            setMessages]            = useState<Message[]>([])
   const [input,               setInput]               = useState('')
   const [isLoading,           setIsLoading]           = useState(INIT_LOADING)
@@ -280,18 +287,59 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
   }, [sessionId])
 
   useEffect(() => {
+    // 按会话过滤：payload 现在带 session_id，别的会话的审批不会再串到这个界面上
+    // （此前该事件是全局订阅且 payload 无归属，会话 B 的弹窗会弹在会话 A 里）。
+    const mine = (d: { session_id?: string | null }) => d.session_id === sessionId
+
     const unsubReq = window.kitty?.on('tool.permission_request', (data: PermRequest) => {
-      // 同一 request_id 只入队一次（后端推送与前端订阅的重连场景可能重复）
+      if (!mine(data)) return
+      // 同一 request_id 只入队一次（补拉与推送可能拿到同一条）
       setPermQueue(prev =>
         prev.some(r => r.request_id === data.request_id) ? prev : [...prev, data],
       )
     })
     // 超时/作废：后端等待超时后会推此事件，把对应弹窗从队列移除
-    const unsubExp = window.kitty?.on('tool.permission_expired', (data: { request_id: string }) => {
+    const unsubExp = window.kitty?.on('tool.permission_expired', (data: { request_id: string; session_id?: string | null }) => {
+      if (!mine(data)) return
       setPermQueue(prev => prev.filter(r => r.request_id !== data.request_id))
     })
+    // 补拉兜底：审批事件是一次性推送，错过就再也收不到（订阅生效前的极小窗口、
+    // 窗口重载都会漏），所以挂载时按会话问一次后端，把仍在等待的摆回来。
+    window.kitty?.getPendingPermissions(sessionId)
+      .then(res => {
+        const items = res?.pending ?? []
+        if (items.length === 0) return
+        setPermQueue(prev => {
+          const seen = new Set(prev.map(r => r.request_id))
+          return [...prev, ...items.filter(r => !seen.has(r.request_id))]
+        })
+      })
+      .catch(() => undefined)
     return () => { unsubReq?.(); unsubExp?.() }
-  }, [])
+  }, [sessionId])
+
+  // 切回本会话时恢复聚焦：常驻挂载下 autoFocus 只在首次挂载生效，且隐藏期间
+  // （display:none）根本无法聚焦。顺带重算输入框高度——隐藏时 scrollHeight 不可信。
+  useEffect(() => {
+    if (!active) return
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+    el.focus()
+  }, [active])
+
+  // 后端可能仍在跑这个会话（例如窗口重载后重新挂载）：恢复「生成中」，否则界面
+  // 看着像已经结束。只在确实在跑时置位，不干扰用户刚发起的那一轮。
+  useEffect(() => {
+    let alive = true
+    window.kitty?.agentStatus()
+      .then(st => {
+        if (alive && st?.running_sessions?.includes(sessionId)) setIsLoading(true)
+      })
+      .catch(() => undefined)
+    return () => { alive = false }
+  }, [sessionId])
 
   async function handlePermission(approved: boolean) {
     if (!permRequest) return
