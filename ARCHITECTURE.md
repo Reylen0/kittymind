@@ -126,7 +126,7 @@ kittymind/                      # 项目根目录
 ### MVP（Phase 1-9）
 
 **Phase 1 — Agent Core（全程流式 ReAct）✅**
-单一流式路径：LLM 适配器在同一 stream 里同时 yield `text_delta` 与 `tool_calls_done`，循环每步文字实时外推、流结束有工具则执行后继续、无则本步即最终回答。`async_stream_run()` 是**唯一入口**（原同步 `run()` 已删除）：根 Agent 正常调用，子 Agent 传 `root=False` 复用父级作用域（cwd / 委派预算 / 根 session 标签），不是另一套实现。同批 tool_calls 由执行器**分区并行**：决策段整批按声明序串行、只读工具区段内 `gather`、变更工具自成屏障，结果按声明序回灌。
+单一流式路径：LLM 适配器在同一 stream 里同时 yield `text_delta` 与 `tool_calls_done`，循环每步文字实时外推、流结束有工具则执行后继续、无则本步即最终回答。`async_stream_run()` 是**唯一入口**：根 Agent 正常调用，子 Agent 传 `root=False` 复用父级作用域（cwd / 委派预算 / 根 session 标签），不是另一套实现。同批 tool_calls 由执行器**分区并行**：决策段整批按声明序串行、只读工具区段内 `gather`、变更工具自成屏障，结果按声明序回灌。
 
 **Phase 2 — 事件总线 ✅**
 `EventBus`：asyncio Pub/Sub，支持通配符订阅，异常不中断其他处理器。现为**全链路唯一事件出口**——WS 推送、task_tool 生命周期事件（subagent.start/done）、子 Agent 工具计数（订阅子 Agent 私有总线实现 per-run 隔离）都走它（原 callbacks 双通道机制已删除）。

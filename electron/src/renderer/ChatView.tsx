@@ -69,16 +69,24 @@ export default function ChatView({ sessionId, workspaces, onSessionUpdate, onWor
         if (!data?.messages?.length) return
 
         const msgs: Message[] = []
+        // tool_call_id -> 工具名。一次 turn 可能返回一批 tool_calls（并行执行），
+        // 后续每条 tool 消息各带自己的 tool_call_id，必须按 id 精确配对，
+        // 不能按位置取「上一条消息的 tool_calls[0]」（同批第二个会配错/配不到）。
+        const toolNames = new Map<string, string>()
         for (let i = 0; i < data.messages.length; i++) {
           const m = data.messages[i]
+          if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+            for (const tc of m.tool_calls) {
+              const t = tc as { id?: string; function?: { name?: string } }
+              if (t?.id && t.function?.name) toolNames.set(t.id, t.function.name)
+            }
+          }
           if (m.role === 'user' && m.content) {
             msgs.push({ id: `h-${i}`, role: 'user', content: m.content })
           } else if (m.role === 'assistant' && m.content) {
             msgs.push({ id: `h-${i}`, role: 'assistant', content: m.content })
           } else if (m.role === 'tool' && m.content) {
-            const prior = data.messages[i - 1]
-            const tc = Array.isArray(prior?.tool_calls) ? prior.tool_calls[0] : null
-            const name = (tc as { function?: { name?: string } } | null)?.function?.name ?? 'tool'
+            const name = (m.tool_call_id && toolNames.get(m.tool_call_id)) || 'tool'
             msgs.push({ id: `h-${i}`, role: 'tool', content: '', toolName: name, toolArgs: '', toolResult: m.content })
           }
         }

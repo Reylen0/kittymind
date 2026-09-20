@@ -42,7 +42,7 @@ const mockMessages = [
   {
     role: 'assistant',
     content: '',
-    tool_calls: [{ function: { name: 'file_write', arguments: '{}' } }],
+    tool_calls: [{ id: 'c1', type: 'function', function: { name: 'file_write', arguments: '{}' } }],
     ts: now - 55000,
   },
   {
