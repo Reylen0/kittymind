@@ -112,8 +112,8 @@ export default function SessionList({
   const [searching,         setSearching]         = useState(false)
   const [query,             setQuery]             = useState('')
   const [collapsedSpaces,   setCollapsedSpaces]   = useState<Set<string>>(new Set())
-  const [dialogCollapsed,   setDialogCollapsed]   = useState(false)
-  const [spacesCollapsed,   setSpacesCollapsed]   = useState(false)
+  const [dialogCollapsed,   setDialogCollapsed]   = useState(true)   // 「对话」「工作区」默认折叠
+  const [spacesCollapsed,   setSpacesCollapsed]   = useState(true)
   const [theme,             setTheme]             = useState<Theme>(getTheme())
   const searchRef = useRef<HTMLInputElement>(null)
 

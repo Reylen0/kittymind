@@ -40,7 +40,8 @@ export default function App() {
     await window.kitty?.deleteSession(id)
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
-      if (id === currentId) setCurrentId(next[0]?.id ?? null)
+      // 删光后不进空状态页：直接落到新对话的输入框（landing）界面
+      if (id === currentId) setCurrentId(next[0]?.id ?? crypto.randomUUID())
       return next
     })
   }
@@ -65,23 +66,17 @@ export default function App() {
         />
 
         <div className="main">
-          {currentId
-            ? <ChatView
-                key={currentId}
-                sessionId={currentId}
-                workspaces={workspaces}
-                onSessionUpdate={loadSessions}
-                onWorkspaceCreated={handleWorkspaceCreated}
-              />
-            : (
-              <div className="empty-state">
-                <span>🐱 选择或新建一个对话</span>
-                <button className="btn-new-text" onClick={createSession}>
-                  <span>＋ 新建对话</span>
-                </button>
-              </div>
-            )
-          }
+          {/* currentId 在加载完成后恒非空（loadSessions/deleteSession 都会兜底到新 UUID），
+              这里 null 只是启动时 listSessions 未返回的一瞬，渲染空白即可 */}
+          {currentId && (
+            <ChatView
+              key={currentId}
+              sessionId={currentId}
+              workspaces={workspaces}
+              onSessionUpdate={loadSessions}
+              onWorkspaceCreated={handleWorkspaceCreated}
+            />
+          )}
         </div>
       </div>
     </div>
