@@ -35,11 +35,13 @@ for who in ["Kitty", "Mind"]:
 
 const mockMessages = [
   {
+    seq: 0,
     role: 'user',
     content: '创建一个文本文档，写入一首诗，再用一段 python 代码演示输出',
     ts: now - 60000,
   },
   {
+    seq: 1,
     role: 'assistant',
     content: '',
     tool_calls: [
@@ -49,23 +51,38 @@ const mockMessages = [
     ts: now - 55000,
   },
   {
+    seq: 2,
     role: 'tool',
     tool_call_id: 'c1',
+    // 真实后端随行下发名字/入参（分页切段也不丢）；preview 照此契约造数据
+    tool_name: 'glob',
+    tool_args: '{"pattern": "*.txt", "path": "E:\\\\workspace\\\\kittymind\\\\ws1"}',
     content: 'E:\\workspace\\kittymind\\ws1\\poem.txt\n\n共 1 个文件',
     ts: now - 54000,
   },
   {
+    seq: 3,
     role: 'tool',
     tool_call_id: 'c2',
+    tool_name: 'file_read',
+    tool_args: '{"path": "E:\\\\workspace\\\\kittymind\\\\ws1\\\\poem.txt"}',
     content: '静夜思\n床前明月光，疑是地上霜。\n举头望明月，低头思故乡。\n\n(4 行, 46 字节)',
     ts: now - 53500,
   },
   {
+    seq: 4,
     role: 'assistant',
     content: DEMO_MARKDOWN,
     ts: now - 50000,
   },
 ]
+
+// 预览用：模拟「更早的一页」，点「加载更早的消息」时返回
+const mockOlderMessages = [
+  { seq: -2, role: 'user', content: '（更早）帮我把工作区里的 txt 都找出来', ts: now - 120000 },
+  { seq: -1, role: 'assistant', content: '（更早）好的，我先看一下目录结构。', ts: now - 110000 },
+]
+let olderServed = false
 
 const emptyView = new URLSearchParams(window.location.search).has('empty')
 // 预览用：强制主题，如 preview.html?theme=dark
@@ -94,11 +111,20 @@ w.kitty = {
   listWorkspaces: async () => [
     { id: 'ws-1', name: 'kittymind', path: 'E:\\class\\roadmap\\Agent\\code\\kittymind', created_at: '' },
   ],
-  getSession: async (id: string) => ({
-    id,
-    title: '演示',
-    messages: id === 'demo-1' ? mockMessages : [],
-  }),
+  getSession: async (id: string, opts: { limit?: number; beforeSeq?: number } = {}) => {
+    const header = {
+      id, title: '演示', created_at: new Date(now - 60000).toISOString(),
+      workspace_id: null, used_tokens: 24000, total_tokens: 64000,
+    }
+    if (id !== 'demo-1') return { header, messages: [] }
+    // 模拟分页：首屏给一页 + has_more，带游标回传时给更早的一页
+    if (typeof opts.beforeSeq === 'number') {
+      if (olderServed) return { header, messages: [], has_more: false, cursor: null }
+      olderServed = true
+      return { header, messages: mockOlderMessages, has_more: false, cursor: -2 }
+    }
+    return { header, messages: mockMessages, has_more: true, cursor: 0 }
+  },
   sendMessage: async () => {},
   cancelTurn: async () => {},
   deleteSession: async () => {},

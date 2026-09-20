@@ -113,7 +113,7 @@ class _FakeSessionManager:
         self._rows = rows
         self.committed: list[tuple] = []
 
-    def get_session(self, session_id):
+    def get_session_header(self, session_id):
         return None  # 无存量 workspace_id 记录，回退默认工作目录
 
     def load_messages(self, session_id):

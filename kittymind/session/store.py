@@ -66,6 +66,13 @@ CREATE INDEX IF NOT EXISTS idx_msg_session_seq ON messages(session_id, seq);
 
 _LEGACY_COLS = ("used_tokens", "total_tokens", "context_ratio")
 
+# 展示视图的行/条件：原始消息（compacted=1）+ 活跃非摘要消息（active=1, is_summary=0）
+_DISPLAY_COLS = "seq, role, content, tool_calls, tool_call_id"
+_DISPLAY_WHERE = "session_id=? AND ((active=1 AND is_summary=0) OR compacted=1)"
+
+# 页首补齐的防呆上限：向前最多多取多少行（一批工具调用的行数不会接近这个量级）
+_BLOCK_HEAD_SLACK = 200
+
 
 class SqliteSessionStore:
     """SQLite 会话存储。线程安全（Lock + check_same_thread=False）。"""
@@ -209,8 +216,12 @@ class SqliteSessionStore:
                 ),
             )
 
-    def read(self, session_id: str) -> tuple[dict | None, list[dict]]:
-        """读 header + active 消息列表（带 seq，供 agent 打 _seq 标记）。"""
+    def read_header(self, session_id: str) -> dict | None:
+        """只读 sessions 表的 header（不触碰 messages 表）。
+
+        分页入口需要 header（标题/工作目录/上下文占用），但不该顺带把整个会话的
+        消息全查出来——旧实现复用 read()，为了一个 workspace_id 也会加载全量消息。
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT id, title, workspace_id, created_at, compressed_once,"
@@ -219,9 +230,8 @@ class SqliteSessionStore:
                 (session_id,),
             ).fetchone()
         if row is None:
-            return None, []
-
-        header = {
+            return None
+        return {
             "version":            1,
             "id":                 row[0],
             "title":              row[1],
@@ -230,6 +240,12 @@ class SqliteSessionStore:
             "compressed_once":    bool(row[4]),
             "last_prompt_tokens": row[5],
         }
+
+    def read(self, session_id: str) -> tuple[dict | None, list[dict]]:
+        """读 header + active 消息列表（带 seq，供 agent 打 _seq 标记）。"""
+        header = self.read_header(session_id)
+        if header is None:
+            return None, []
 
         with self._lock:
             rows = self._conn.execute(
@@ -280,22 +296,117 @@ class SqliteSessionStore:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT seq, role, content, tool_calls, tool_call_id"
-                " FROM messages"
-                " WHERE session_id=?"
-                "   AND ((active=1 AND is_summary=0) OR compacted=1)"
-                " ORDER BY seq",
+                f"SELECT {_DISPLAY_COLS} FROM messages"
+                f" WHERE {_DISPLAY_WHERE} ORDER BY seq",
                 (session_id,),
             ).fetchall()
+        return self._records_from_rows(rows)
+
+    def read_display_page(
+        self, session_id: str, limit: int = 50, before_seq: float | None = None
+    ) -> dict:
+        """分页读展示视图：取 seq 严格小于 before_seq 的最新 limit 条（首屏不传 before_seq）。
+
+        返回 {"messages": 升序列表, "has_more": 更早是否还有, "cursor": 本页最早一条的 seq}。
+        `cursor` 原样回传给下一次调用即可继续向前翻页。
+
+        两条不变式：
+          1. 页与页严格由 seq 区间切分，不重叠、不遗漏（seq 在会话内唯一，索引
+             idx_msg_session_seq 直接支持这种 DESC + LIMIT 查询）。
+          2. 页首若落在「一批工具调用」的中段（首行是 tool 行），向前补齐到该批的
+             发起行——否则同一批工具调用被切到两页，前端会把它们渲染成两个折叠组。
+             页尾不裁剪：工具行的名字/入参已随行内联（见 _records_from_rows），
+             即使发起行留在下一页，本页首的 tool 行也能独立显示。
+        """
+        limit = max(1, int(limit))
+        where = [_DISPLAY_WHERE]
+        args: list = [session_id]
+        if before_seq is not None:
+            where.append("seq < ?")
+            args.append(before_seq)
+
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT {_DISPLAY_COLS} FROM messages"
+                f" WHERE {' AND '.join(where)} ORDER BY seq DESC LIMIT ?",
+                (*args, limit + 1),
+            ).fetchall()
+            rows = rows[:limit]                      # DESC 头部 = 最新的 limit 条
+            rows = self._extend_to_block_head(session_id, rows)
+            if rows:
+                # 补齐后最早一条之前可能还有行；has_more 以补齐后的边界为准重新判断
+                has_more = self._conn.execute(
+                    f"SELECT 1 FROM messages WHERE {_DISPLAY_WHERE} AND seq < ? LIMIT 1",
+                    (session_id, rows[-1][0]),
+                ).fetchone() is not None
+            else:
+                has_more = False
+
+        messages = self._records_from_rows(reversed(rows))
+        return {
+            "messages": messages,
+            "has_more": has_more,
+            "cursor":    messages[0]["seq"] if messages else None,
+        }
+
+    # ── 展示记录构造（以下两个方法只做内存处理，不再取锁） ─────────
+
+    def _extend_to_block_head(self, session_id: str, rows: list) -> list:
+        """rows 为 seq 降序；若最早一行是 tool 行，向前取到该批的发起行。
+
+        调用方必须已持有 self._lock（threading.Lock 不可重入）。发起行一定是紧邻
+        前面的第一条非 tool 行，故不必解析 tool_calls 去找 id。
+        """
+        if not rows or rows[-1][1] != "tool":
+            return rows
+        extra = []
+        seq = rows[-1][0]
+        for _ in range(_BLOCK_HEAD_SLACK):
+            row = self._conn.execute(
+                f"SELECT {_DISPLAY_COLS} FROM messages"
+                f" WHERE {_DISPLAY_WHERE} AND seq < ? ORDER BY seq DESC LIMIT 1",
+                (session_id, seq),
+            ).fetchone()
+            if row is None:
+                break
+            extra.append(row)
+            seq = row[0]
+            if row[1] != "tool":
+                break
+        return rows + extra
+
+    def _records_from_rows(self, rows) -> list[dict]:
+        """数据库行 → 展示记录，并为 tool 行内联发起行里的名字/入参。
+
+        名字随行下发，而不是让前端按 tool_call_id 跨消息配对：分页把消息切成若干段，
+        单段内看不到发起行时前端只能退化成 'tool'（曾真实出现的历史 bug）。发起行
+        必然与 tool 行同页——页首补齐保证了这一点。
+        """
+        rows = list(rows)
+        calls: dict[str, dict] = {}
+        for r in rows:
+            if r[1] != "assistant" or not r[3]:
+                continue
+            with contextlib.suppress(Exception):
+                for call in json.loads(r[3]):
+                    if isinstance(call, dict) and call.get("id"):
+                        calls.setdefault(call["id"], call)
+
         records = []
         for r in rows:
-            msg: dict = {"role": r[1], "content": r[2]}
+            msg: dict = {"seq": r[0], "role": r[1], "content": r[2]}
             if r[3]:
                 msg["tool_calls"] = json.loads(r[3])
             if r[4]:
                 msg["tool_call_id"] = r[4]
+                fn = (calls.get(r[4]) or {}).get("function") or {}
+                if fn.get("name"):
+                    msg["tool_name"] = fn["name"]
+                if fn.get("arguments") is not None:
+                    msg["tool_args"] = fn["arguments"]
             records.append(msg)
         return records
+
 
     def archive_and_compact(
         self,

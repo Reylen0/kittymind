@@ -4,6 +4,13 @@ import Markdown, { copyText } from './Markdown'
 
 interface Props { message: Message }
 
+/**
+ * 消息的入场动画开关：`.msg` 默认带一条 0.22s 的淡入上浮（新消息进来时很自然），
+ * 但历史（打开会话时的一整页、以及「加载更早」前插的一页）是「本来就在那里」的内容，
+ * 一次渲染几十条一起播就成了加载动画——这些消息在 mapHistory 里标了 noAnim。
+ */
+const animCls = (m?: Message) => (m?.noAnim ? ' no-anim' : '')
+
 function IcoSpinner() {
   return (
     <svg className="spin" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
@@ -114,7 +121,7 @@ export function ToolGroup({ items, forceOpen = false }: { items: Message[]; forc
   const doneCount = items.filter(m => m.toolResult !== undefined).length
 
   return (
-    <div className="msg msg-tool">
+    <div className={`msg msg-tool${animCls(items[0])}`}>
       <div className={`tool-group${open ? ' tool-group-open' : ''}`}>
         <button
           type="button"
@@ -157,7 +164,7 @@ export default function MessageItem({ message }: Props) {
 
   if (message.role === 'user') {
     return (
-      <div className="msg msg-user">
+      <div className={`msg msg-user${animCls(message)}`}>
         <div className="msg-bubble">{message.content}</div>
       </div>
     )
@@ -166,7 +173,7 @@ export default function MessageItem({ message }: Props) {
   if (message.role === 'tool') {
     // 单张工具卡（ToolGroup 之外的兜底路径）：默认展开，点击头部折叠
     return (
-      <div className="msg msg-tool">
+      <div className={`msg msg-tool${animCls(message)}`}>
         <ToolCard message={message} />
       </div>
     )
@@ -174,7 +181,7 @@ export default function MessageItem({ message }: Props) {
 
   // assistant
   return (
-    <div className={`msg msg-assistant${message.isError ? ' msg-error' : ''}`}>
+    <div className={`msg msg-assistant${message.isError ? ' msg-error' : ''}${animCls(message)}`}>
       <div className="msg-avatar">🐱</div>
       <div className="msg-body">
         {message.isError

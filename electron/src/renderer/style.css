@@ -16,3 +16,10 @@
 .tool-chevron{color:var(--text-3);flex-shrink:0;transition:transform .16s var(--ease)}
 .tool-chevron-open{transform:rotate(90deg)}
 .tool-args-inline{flex:0 1 auto;min-width:0;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono);font-size:11px;color:var(--text-3)}
+/* ── 历史分页：顶部「加载更早的消息」 ── */
+.load-older{display:flex;justify-content:center;padding:2px 0 8px}
+.load-older-btn{display:inline-flex;align-items:center;gap:6px;padding:5px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-full);font:inherit;font-size:12.5px;color:var(--text-2);cursor:pointer;box-shadow:0 1px 2px #1018280a;transition:background .12s var(--ease),border-color .12s,color .12s}
+.load-older-btn:hover:not(:disabled){background:var(--surface-2);border-color:var(--border-strong);color:var(--text)}
+.load-older-btn:disabled{opacity:.6;cursor:default}
+/* ── 历史消息不做入场动画：打开会话 / 前插更早一页时，内容应立刻呈现，不逐条淡入 ── */
+.no-anim{animation:none}

@@ -24,8 +24,17 @@ contextBridge.exposeInMainWorld('kitty', {
     }),
   listSessions: () =>
     ipcRenderer.invoke('ws:call', { method: 'session/list',   params: {} }),
-  getSession: (sessionId) =>
-    ipcRenderer.invoke('ws:call', { method: 'session/get',    params: { session_id: sessionId } }),
+  // opts.limit     → 只取最新 limit 条（省略 = 全量）
+  // opts.beforeSeq → 游标：取 seq 比它更早的一页（配合 limit 向前翻页）
+  getSession: (sessionId, opts = {}) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/get',
+      params: {
+        session_id: sessionId,
+        ...(opts.limit ? { limit: opts.limit } : {}),
+        ...(typeof opts.beforeSeq === 'number' ? { before_seq: opts.beforeSeq } : {}),
+      },
+    }),
   deleteSession: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'session/delete', params: { session_id: sessionId } }),
 

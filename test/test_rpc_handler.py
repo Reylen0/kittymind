@@ -71,6 +71,57 @@ async def test_session_get(tmp_path):
     assert ws.sent[0]["result"]["header"]["id"] == sid
 
 
+async def test_session_get_paged(tmp_path):
+    """session/get 带 limit → 只回一页，并给出 has_more/游标供继续前翻。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+    sid = mgr.create_session(title="分页")
+    mgr.append_turn(sid, [{"role": "user", "content": f"m{i}"} for i in range(10)])
+
+    ws.sent.clear()
+    await handler.dispatch({"id": 1, "method": "session/get",
+                            "params": {"session_id": sid, "limit": 4}})
+    page = ws.sent[0]["result"]
+    assert [m["seq"] for m in page["messages"]] == [6, 7, 8, 9]
+    assert page["has_more"] is True
+    assert page["cursor"] == 6
+
+    ws.sent.clear()
+    await handler.dispatch({"id": 2, "method": "session/get",
+                            "params": {"session_id": sid, "limit": 4,
+                                       "before_seq": page["cursor"]}})
+    older = ws.sent[0]["result"]
+    assert [m["seq"] for m in older["messages"]] == [2, 3, 4, 5]
+    assert older["has_more"] is True
+    assert older["cursor"] == 2
+
+
+async def test_session_get_limit_invalid_falls_back_to_full(tmp_path):
+    """limit 非法（0 / 负数 / 非数字）时回退全量，而不是报错或返回空页。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    mgr = agent.session_manager
+    sid = mgr.create_session(title="分页")
+    mgr.append_turn(sid, [{"role": "user", "content": f"m{i}"} for i in range(6)])
+
+    for bad in (0, -3, "abc", None):
+        ws.sent.clear()
+        await handler.dispatch({"id": 1, "method": "session/get",
+                                "params": {"session_id": sid, "limit": bad}})
+        result = ws.sent[0]["result"]
+        assert len(result["messages"]) == 6
+        assert "has_more" not in result
+
+    # 超大 limit 被夹到上限（此处未触顶，仅验证不会因越界而失败）
+    ws.sent.clear()
+    await handler.dispatch({"id": 2, "method": "session/get",
+                            "params": {"session_id": sid, "limit": 10_000}})
+    assert len(ws.sent[0]["result"]["messages"]) == 6
+
+
 async def test_session_get_not_found(tmp_path):
     ws = FakeWs()
     agent = make_mock_agent(tmp_path)

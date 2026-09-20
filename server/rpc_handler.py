@@ -18,6 +18,11 @@ from kittymind.events.types import (
 from kittymind.agent import KittyAgent
 
 
+# 单次 session/get 最多返回的消息条数（分页上限）：请求方传再大的 limit 也不越界，
+# 避免一次 RPC 把超长会话整个拖回前端
+_MAX_PAGE_MESSAGES = 200
+
+
 class RpcHandler:
     def __init__(self, agent: KittyAgent, ws, bridge=None) -> None:
         self.agent = agent
@@ -235,7 +240,21 @@ class RpcHandler:
             await self._error(req_id, "no session manager configured")
             return
         session_id = params.get("session_id")
-        session = mgr.get_session(session_id)
+        if not session_id:
+            await self._error(req_id, "session_id is required")
+            return
+
+        # 可选分页：limit 必须是正整数（缺省 = 全量，保持旧语义）。
+        # before_seq 只在分页模式下有意义——它是不含端点的游标，取「seq 更早」的那一页。
+        kwargs: dict = {}
+        limit = params.get("limit")
+        if isinstance(limit, (int, float)) and not isinstance(limit, bool) and int(limit) > 0:
+            kwargs["limit"] = min(int(limit), _MAX_PAGE_MESSAGES)
+            before_seq = params.get("before_seq")
+            if isinstance(before_seq, (int, float)) and not isinstance(before_seq, bool):
+                kwargs["before_seq"] = before_seq
+
+        session = mgr.get_session(session_id, **kwargs)
         if session is None:
             await self._error(req_id, f"session not found: {session_id}")
             return

@@ -176,9 +176,10 @@ class KittyAgent(Agent):
         """解析本轮工作目录：显式 workspace_id > 会话记录里的 workspace_id > 默认目录。"""
         effective = workspace_id
         if not effective and self.session_manager and session_id:
-            session_data = self.session_manager.get_session(session_id)
-            if session_data:
-                effective = session_data["header"].get("workspace_id")
+            # 只取 header：这里只要 workspace_id，不该顺带加载整个会话的消息
+            header = self.session_manager.get_session_header(session_id)
+            if header:
+                effective = header.get("workspace_id")
         if effective and self.workspace_manager:
             ws = self.workspace_manager.get_workspace(effective)
             if ws and ws.get("path"):

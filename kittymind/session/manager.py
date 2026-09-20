@@ -47,17 +47,51 @@ class SessionManager:
             for h in self.store.list_headers()
         ]
 
-    def get_session(self, session_id: str) -> dict | None:
-        header, _ = self.store.read(session_id)
+    def get_session_header(self, session_id: str) -> dict | None:
+        """只读 header（含派生 token 字段），不加载任何消息。
+
+        给「只需要知道会话归属/标题」的调用方用（如 agent 解析工作目录）：这类调用
+        每轮都会发生，不该顺带把整个会话的消息读出来。
+        """
+        header = self.store.read_header(session_id)
+        return self._with_token_fields(header) if header else None
+
+    def get_session(
+        self, session_id: str, limit: int | None = None, before_seq: float | None = None
+    ) -> dict | None:
+        """会话详情。
+
+        limit 缺省 → 全量消息（旧行为，供内部/审计使用）；
+        limit 给定 → 只返回 seq < before_seq 的最新 limit 条，并附带 has_more / cursor，
+        供前端「加载更早的消息」继续翻页（cursor 原样回传即可）。
+
+        两种模式都返回展示视图（原始消息 + 活跃非摘要消息），摘要行不出现在这里。
+        """
+        header = self.store.read_header(session_id)
         if header is None:
             return None
-        # 前端展示用原始消息（compacted）+ 活跃非摘要消息，不含压缩摘要行
-        display_records = self.store.read_display(session_id)
+        header = self._with_token_fields(header)
+
+        if limit is None:
+            return {"header": header, "messages": self.store.read_display(session_id)}
+
+        page = self.store.read_display_page(session_id, limit, before_seq)
+        return {
+            "header":   header,
+            "messages": page["messages"],
+            "has_more": page["has_more"],
+            "cursor":   page["cursor"],
+        }
+
+    @staticmethod
+    def _with_token_fields(header: dict) -> dict:
+        """把持久化的 used 和按当前配置现算的 total 派进 header。"""
         header["used_tokens"]  = header.get("last_prompt_tokens") or 0
         header["total_tokens"] = max(
             1, cfg.LLM_CONTEXT_WINDOW - cfg.LLM_RESERVED_OUTPUT_TOKENS
         )
-        return {"header": header, "messages": display_records}
+        return header
+
 
     def delete_session(self, session_id: str) -> bool:
         return self.store.delete(session_id)
