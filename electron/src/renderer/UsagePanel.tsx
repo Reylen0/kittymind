@@ -9,12 +9,16 @@ interface UsageGroup {
   completion_tokens: number
   n_calls: number
   cost: number | null
+  /** session 分组专用：会话标题（已删除的会话为 null，回退显示 id） */
+  title?: string | null
+  /** session 分组专用：所在工作区名（未归属为 null） */
+  workspace?: string | null
 }
 
 interface UsageReport {
   group_by: string
   groups: UsageGroup[]
-  total: { prompt_tokens: number; completion_tokens: number; n_calls: number }
+  total: { prompt_tokens: number; completion_tokens: number; n_calls: number; cost?: number | null }
 }
 
 /** 用量成本面板（Phase 16）。group_by 可切换 model/day/session。 */
@@ -86,24 +90,40 @@ export default function UsagePanel({ onClose }: { onClose: () => void }) {
         ) : (
           <>
             <div className="usage-list">
-              {report.groups.map(g => (
-                <div key={g.key} className="usage-row">
-                  <div className="usage-row-key" title={g.key}>{g.key}</div>
-                  <div className="usage-row-meta">
-                    <span className="usage-tok">{fmt(g.prompt_tokens)} in</span>
-                    <span className="usage-tok">{fmt(g.completion_tokens)} out</span>
-                    <span className="usage-calls">{g.n_calls} 次</span>
+              {report.groups.map(g => {
+                const isSession = report.group_by === 'session'
+                return (
+                  <div key={g.key} className="usage-row">
+                    <div className="usage-row-key">
+                      {/* 标题行：session 显示标题（已删除回退 id），其他分组显示 key */}
+                      <div className="usage-row-title" title={isSession ? (g.title ?? g.key) : g.key}>
+                        {isSession ? (g.title ?? g.key) : g.key}
+                      </div>
+                      {/* 小字行：session id + 工作区（仅 session 分组） */}
+                      {isSession && (
+                        <div className="usage-row-sub">
+                          {g.key}{g.workspace ? ` · ${g.workspace}` : ''}
+                        </div>
+                      )}
+                    </div>
+                    <div className="usage-row-meta">
+                      <span className="usage-tok">{fmt(g.prompt_tokens)} in</span>
+                      <span className="usage-tok">{fmt(g.completion_tokens)} out</span>
+                      <span className="usage-calls">{g.n_calls} 次</span>
+                    </div>
+                    <div className="usage-cost">{fmtUsd(g.cost)}</div>
                   </div>
-                  <div className="usage-cost">{fmtUsd(g.cost)}</div>
-                </div>
-              ))}
+                )
+              })}
             </div>
             <div className="usage-total">
               <span>合计</span>
               <span className="usage-total-tok">
                 {fmt(report.total.prompt_tokens)} in · {fmt(report.total.completion_tokens)} out
               </span>
-              <span>{report.total.n_calls} 次调用</span>
+              <span className="usage-cost">
+                {fmtUsd(report.total.cost ?? null)} · {report.total.n_calls} 次调用
+              </span>
             </div>
           </>
         )}

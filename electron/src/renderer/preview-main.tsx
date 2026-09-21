@@ -161,25 +161,27 @@ const mockPending: Record<string, any[]> = {}
 
 const w = window as any
 w.__overlayCalls = [] as Array<{ color: string; symbolColor: string }>
-w.kitty = {
-  listSessions: async () => emptyView
-    ? []
-    : deepView
-    ? deepSessions
-    : switchView
-    ? [
-      { id: 'demo-1', title: '会话 A：等审批中', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
-      { id: 'demo-2', title: '会话 B：另一个', created_at: new Date(now - 120000).toISOString(), workspace_id: null },
-    ]
-    : [
+
+// 可变的会话/工作区清单：让删除类操作在预览里真实生效（删工作区 → 其会话
+// 移回「对话」分组），供自动化脚本断言移动行为。
+const mockSessions: Array<{ id: string; title: string; created_at: string; workspace_id: string | null }> = switchView
+  ? [
+    { id: 'demo-1', title: '会话 A：等审批中', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
+    { id: 'demo-2', title: '会话 B：另一个', created_at: new Date(now - 120000).toISOString(), workspace_id: null },
+  ]
+  : [
     { id: 'demo-1', title: '演示：写诗与代码高亮', created_at: new Date(now - 60000).toISOString(), workspace_id: null },
     { id: 'demo-2', title: '修复 WebSocket 重连逻辑', created_at: new Date(now - 86400000).toISOString(), workspace_id: 'ws-1' },
     { id: 'demo-3', title: '调研桌宠动画方案', created_at: new Date(now - 172800000).toISOString(), workspace_id: 'ws-1' },
-  ],
-  listWorkspaces: async () => [
-    { id: 'ws-1', name: 'kittymind', path: 'E:\\class\\roadmap\\Agent\\code\\kittymind', created_at: '' },
-    ...(deepView ? deepWorkspaces : []),
-  ],
+  ]
+const mockWsList = [
+  { id: 'ws-1', name: 'kittymind', path: 'E:\\class\\roadmap\\Agent\\code\\kittymind', created_at: '' },
+  ...(deepView ? deepWorkspaces : []),
+]
+
+w.kitty = {
+  listSessions: async () => emptyView ? [] : deepView ? deepSessions : mockSessions,
+  listWorkspaces: async () => mockWsList,
   getSession: async (id: string, opts: { limit?: number; beforeSeq?: number } = {}) => {
     const header = {
       id, title: '演示', created_at: new Date(now - 60000).toISOString(),
@@ -203,7 +205,11 @@ w.kitty = {
   },
   sendMessage: async () => {},
   cancelTurn: async () => {},
-  deleteSession: async () => {},
+  deleteSession: async (id: string) => {
+    const at = mockSessions.findIndex(s => s.id === id)
+    if (at >= 0) mockSessions.splice(at, 1)
+    return { deleted: at >= 0 }
+  },
   // ?search 场景给固定结果；其余场景返回空数组（等价于「没搜到」）。
   // 带 200ms 延迟，好观察防抖与「搜索中…」占位。
   searchSessions: async (query: string) => {
@@ -212,6 +218,17 @@ w.kitty = {
     return mockSearchGroups
   },
   createWorkspace: async () => null,
+  // 与真实后端同语义：工作区删除，其下会话保留但解除归属（workspace_id 置空）
+  deleteWorkspace: async (id: string) => {
+    const at = mockWsList.findIndex(x => x.id === id)
+    if (at < 0) return { deleted: false, moved_sessions: 0 }
+    mockWsList.splice(at, 1)
+    let moved = 0
+    for (const s of mockSessions) {
+      if (s.workspace_id === id) { s.workspace_id = null; moved += 1 }
+    }
+    return { deleted: true, moved_sessions: moved }
+  },
   selectWorkspace: async () => null,
   respondPermission: async (id: string) => {
     for (const k of Object.keys(mockPending)) {
@@ -229,16 +246,23 @@ w.kitty = {
   }),
   getUsageReport: async (opts: { groupBy?: string } = {}) => ({
     group_by: opts.groupBy || 'model',
-    groups: opts.groupBy === 'day'
-      ? [
-          { key: '2026-09-21', prompt_tokens: 128000, completion_tokens: 32000, n_calls: 42, cost: null },
-          { key: '2026-09-20', prompt_tokens: 560000, completion_tokens: 98000, n_calls: 128, cost: null },
-        ]
-      : [
-          { key: 'claude-sonnet-4-6', prompt_tokens: 680000, completion_tokens: 125000, n_calls: 164, cost: 3.92 },
-          { key: 'claude-haiku-4-5', prompt_tokens: 8000, completion_tokens: 5000, n_calls: 6, cost: 0.03 },
-        ],
-    total: { prompt_tokens: 688000, completion_tokens: 130000, n_calls: 170 },
+    groups:
+      opts.groupBy === 'day'
+        ? [
+            { key: '2026-09-21', prompt_tokens: 128000, completion_tokens: 32000, n_calls: 42, cost: 1.18 },
+            { key: '2026-09-20', prompt_tokens: 560000, completion_tokens: 98000, n_calls: 128, cost: 4.53 },
+          ]
+        : opts.groupBy === 'session'
+          ? [
+              { key: 'df1c9df3-fb0d-4f1f-abaf-15a671ad4251', prompt_tokens: 11400, completion_tokens: 207, n_calls: 4, cost: 0.08, title: '修复审批弹窗切会话丢失的 bug', workspace: 'kittymind' },
+              { key: 'fd9bc3ff-2d74-473d-ab58-d4f9941a9c13', prompt_tokens: 399, completion_tokens: 879, n_calls: 5, cost: 0.02, title: 'phase16 用量与成本追踪方案', workspace: null },
+              { key: '86eaad94-ace6-4c46-bf39-e1fd6de86570', prompt_tokens: 11, completion_tokens: 265, n_calls: 4, cost: 0.01, title: null, workspace: null },
+            ]
+          : [
+              { key: 'claude-sonnet-4-6', prompt_tokens: 680000, completion_tokens: 125000, n_calls: 164, cost: 3.92 },
+              { key: 'claude-haiku-4-5', prompt_tokens: 8000, completion_tokens: 5000, n_calls: 6, cost: 0.03 },
+            ],
+    total: { prompt_tokens: 688000, completion_tokens: 130000, n_calls: 170, cost: 5.71 },
   }),
   on: (event: string, cb: (d: any) => void) => {
     (listeners[event] ??= []).push(cb)

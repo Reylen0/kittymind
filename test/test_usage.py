@@ -84,6 +84,18 @@ def test_aggregate_by_day_and_session(mgr):
     assert by_day[0]["prompt_tokens"] == 300
 
 
+def test_aggregate_includes_by_model_breakdown(mgr):
+    """day/session 分组带按模型明细，供 rpc 层分组计价。"""
+    mgr.record_usage("s1", "claude-sonnet-4-6", 100, 10, 1)
+    mgr.record_usage("s1", "claude-haiku-4-5", 200, 20, 1)
+    by_day = mgr.aggregate_usage("day")
+    assert len(by_day) == 1
+    g = by_day[0]
+    assert g["prompt_tokens"] == 300
+    assert g["by_model"]["claude-sonnet-4-6"] == {"prompt_tokens": 100, "completion_tokens": 10}
+    assert g["by_model"]["claude-haiku-4-5"] == {"prompt_tokens": 200, "completion_tokens": 20}
+
+
 def test_delete_session_preserves_usage(mgr):
     """用户决策：删会话保留成本记录（session_id 悬空，按 model 仍计入）。"""
     mgr.create_session(session_id="s1")
@@ -144,3 +156,24 @@ def test_estimate_cost_zero_for_local():
     c = estimate_cost(1_000_000, 1_000_000, "ollama:llama3")
     assert c is not None
     assert c.total_usd == 0.0
+
+
+def test_cost_from_by_model_mixed_models():
+    """day/session 组成本 = 组内各模型分别计价求和；部分未知不拖垮整组。"""
+    from kittymind.usage import cost_from_by_model
+
+    by_model = {
+        # 1M in + 1M out → 3.00 + 15.00
+        "claude-sonnet-4-6": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+        # 1M in + 1M out → 1.00 + 5.00
+        "claude-haiku-4-5": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000},
+        # 价目表查不到 → 贡献 0，但不清零整组
+        "some-unknown-model": {"prompt_tokens": 999_999, "completion_tokens": 999_999},
+    }
+    cost = cost_from_by_model(by_model)
+    assert cost is not None
+    assert abs(cost - 24.0) < 1e-6
+
+    # 全部未知 → None（不编造）
+    assert cost_from_by_model({"mystery": {"prompt_tokens": 1, "completion_tokens": 1}}) is None
+    assert cost_from_by_model({}) is None

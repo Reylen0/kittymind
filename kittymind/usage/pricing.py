@@ -27,6 +27,8 @@ _DEFAULT_PRICING: dict[str, dict[str, float]] = {
     "qwen":              {"input": 0.30, "output": 0.80},
     # 本地 / Ollama：成本记 0（可被 settings.json 覆盖）
     "ollama":            {"input": 0.0, "output": 0.0},
+    "gpt-5.2":           {"input": 0.18, "output": 1.5},
+    "gpt-5.4":           {"input": 0.63, "output": 3.78}
 }
 
 # 前缀匹配的兜底顺序：越具体越靠前
@@ -92,3 +94,23 @@ def estimate_cost(prompt_tokens: int, completion_tokens: int, model_id: str) -> 
     input_usd = prompt_tokens / 1_000_000 * price["input"]
     output_usd = completion_tokens / 1_000_000 * price["output"]
     return Cost(input_usd=input_usd, output_usd=output_usd)
+
+
+def cost_from_by_model(by_model: dict[str, dict]) -> float | None:
+    """对一个聚合组的「按模型 token 明细」整体计价（day/session 分组用）。
+
+    每个模型分别按自己的价目算再求和——day/session 组不是单一模型，直接拿
+    组总 token 配任何一个价目都是错的。全部模型都查不到价目时返回 None
+    （不编造）；部分查得到时按已知部分求和（未知模型贡献 0，不把整组标成
+    未知，否则混入一个冷门模型就整组没金额，反而更看不懂）。
+    """
+    total = 0.0
+    known = False
+    for model_id, tok in by_model.items():
+        c = estimate_cost(
+            int(tok.get("prompt_tokens", 0)), int(tok.get("completion_tokens", 0)), model_id
+        )
+        if c is not None:
+            total += c.total_usd
+            known = True
+    return total if known else None

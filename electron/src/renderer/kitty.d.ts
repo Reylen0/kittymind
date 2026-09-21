@@ -44,6 +44,8 @@ declare global {
 
       listWorkspaces(): Promise<Array<{ id: string; name: string; path: string; created_at: string }>>
       createWorkspace(name: string, path: string): Promise<{ id: string; name: string; path: string; created_at: string }>
+      /** 删除工作区；其下会话保留并移回「对话」分组 */
+      deleteWorkspace(workspaceId: string): Promise<{ deleted: boolean; moved_sessions: number }>
       selectWorkspace(): Promise<string | null>
 
       agentStatus(): Promise<{ name: string; model: string; running_sessions: string[] }>
@@ -62,7 +64,8 @@ declare global {
           session_id: string | null
         }>
       }>
-      /** 用量成本报告（Phase 16）；cost 在价目表查不到时为 null */
+      /** 用量成本报告（Phase 16）；cost 在价目表查不到时为 null。
+       *  session 分组额外带 title / workspace（会话已删除时 title 为 null）。 */
       getUsageReport(opts?: { groupBy?: 'model' | 'day' | 'session'; since?: number; until?: number }): Promise<{
         group_by: string
         groups: Array<{
@@ -71,8 +74,10 @@ declare global {
           completion_tokens: number
           n_calls: number
           cost: number | null
+          title?: string | null
+          workspace?: string | null
         }>
-        total: { prompt_tokens: number; completion_tokens: number; n_calls: number }
+        total: { prompt_tokens: number; completion_tokens: number; n_calls: number; cost?: number | null }
       }>
 
       // on() returns an unsubscribe function — call it in useEffect cleanup

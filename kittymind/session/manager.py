@@ -159,6 +159,10 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         return self.store.delete(session_id)
 
+    def clear_workspace(self, workspace_id: str) -> int:
+        """删工作区时解除其下会话的归属（会话保留，移回「对话」分组）。"""
+        return self.store.clear_workspace(workspace_id)
+
     def search_messages(self, query: str, session_id: str | None = None,
                         limit: int = 50) -> list[dict]:
         """全文搜索，结果按会话分组。

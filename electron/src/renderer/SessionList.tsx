@@ -10,8 +10,12 @@ interface Props {
   onSelect:    (id: string) => void
   onCreate:    () => void
   onDelete:    (id: string) => void
+  onDeleteWorkspace: (id: string) => void
   onToggle:    () => void
 }
+
+/** 删除确认弹窗的目标：会话直接删；工作区删除后其会话移回「对话」分组 */
+type ConfirmTarget = { kind: 'session' | 'workspace'; id: string; name: string }
 
 function IcoPanel() {
   return (
@@ -60,6 +64,18 @@ function IcoFolder() {
   )
 }
 
+function IcoTrash() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="1.5" y1="3.5" x2="12.5" y2="3.5"/>
+      <path d="M5.5 1.5h3"/>
+      <path d="M2.8 3.5l.6 8a1.3 1.3 0 0 0 1.3 1.2h4.6a1.3 1.3 0 0 0 1.3-1.2l.6-8"/>
+      <line x1="5.6" y1="6.2" x2="5.6" y2="10.2"/>
+      <line x1="8.4" y1="6.2" x2="8.4" y2="10.2"/>
+    </svg>
+  )
+}
+
 function IcoGear() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -104,9 +120,9 @@ function revealSessionItem(box: HTMLElement, el: HTMLElement) {
   else if (r.bottom > c.bottom) box.scrollTop += r.bottom - c.bottom + MARGIN
 }
 
-function SessionItem({ s, currentId, onSelect, onDelete }: {
+function SessionItem({ s, currentId, onSelect, onAskDelete }: {
   s: Session; currentId: string | null
-  onSelect: (id: string) => void; onDelete: (id: string) => void
+  onSelect: (id: string) => void; onAskDelete: (s: Session) => void
 }) {
   return (
     <div
@@ -115,8 +131,11 @@ function SessionItem({ s, currentId, onSelect, onDelete }: {
       onClick={() => onSelect(s.id)}
     >
       <span className="session-title">{s.title || '新对话'}</span>
-      <button className="session-delete" title="删除"
-        onClick={e => { e.stopPropagation(); onDelete(s.id) }}>×</button>
+      {/* 悬浮才出现的删除按钮：点击先弹确认，不直接删 */}
+      <button className="session-delete" title="删除" aria-label={`删除对话 ${s.title || '新对话'}`}
+        onClick={e => { e.stopPropagation(); onAskDelete(s) }}>
+        <IcoTrash />
+      </button>
     </div>
   )
 }
@@ -142,7 +161,7 @@ function Highlight({ text, marks }: { text: string; marks: Array<[number, number
 
 export default function SessionList({
   sessions, workspaces, currentId, sidebarOpen,
-  onSelect, onCreate, onDelete, onToggle,
+  onSelect, onCreate, onDelete, onDeleteWorkspace, onToggle,
 }: Props) {
   const [searching,         setSearching]         = useState(false)
   const [query,             setQuery]             = useState('')
@@ -156,6 +175,26 @@ export default function SessionList({
   const [searchBusy,        setSearchBusy]        = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const reqRef    = useRef(0)      // 请求序号：丢弃过期响应，见下面的防抖 effect
+
+  // 删除确认弹窗：任何删除（会话/工作区）都先到这里，确认后才执行
+  const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
+
+  // 弹窗期间 Escape 关闭（挂 window 监听，避免 div 聚焦问题）
+  useEffect(() => {
+    if (!confirmTarget) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setConfirmTarget(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [confirmTarget])
+
+  function handleConfirmDelete() {
+    if (!confirmTarget) return
+    if (confirmTarget.kind === 'session') onDelete(confirmTarget.id)
+    else                                  onDeleteWorkspace(confirmTarget.id)
+    setConfirmTarget(null)
+  }
 
   // ── 定位当前会话 ────────────────────────────────────────────────
   // 侧栏两级默认全收起，当前会话很可能藏在折叠的工作区里。会话切换（含启动时
@@ -342,7 +381,8 @@ export default function SessionList({
           {!dialogCollapsed && (
             <div className="session-items">
               {filteredFree.map(s => (
-                <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect} onDelete={onDelete} />
+                <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
+                  onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
               ))}
               {filteredFree.length === 0 && !query && (
                 <div className="session-empty">无历史对话</div>
@@ -371,15 +411,23 @@ export default function SessionList({
             const collapsed = !expandedSpaces.has(ws.id)
             return (
               <div key={ws.id} className="workspace-group">
-                <button className="workspace-group-header" onClick={() => toggleSpace(ws.id)}>
-                  <IcoFolder />
-                  <span className="workspace-group-name">{ws.name}</span>
-                  <span className="workspace-group-arrow">{collapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
-                </button>
+                <div className="workspace-group-row">
+                  <button className="workspace-group-header" onClick={() => toggleSpace(ws.id)}>
+                    <IcoFolder />
+                    <span className="workspace-group-name">{ws.name}</span>
+                    <span className="workspace-group-arrow">{collapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
+                  </button>
+                  {/* 悬浮才出现：删工作区（其下会话保留，移回「对话」） */}
+                  <button className="ws-delete" title="删除工作区" aria-label={`删除工作区 ${ws.name}`}
+                    onClick={() => setConfirmTarget({ kind: 'workspace', id: ws.id, name: ws.name })}>
+                    <IcoTrash />
+                  </button>
+                </div>
                 {!collapsed && (
                   <div className="workspace-group-items">
                     {filteredWs.map(s => (
-                      <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect} onDelete={onDelete} />
+                      <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
+                        onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
                     ))}
                     {filteredWs.length === 0 && (
                       <div className="session-empty">暂无对话</div>
@@ -431,6 +479,28 @@ export default function SessionList({
           <span>设置</span>
         </button>
       </div>
+
+      {/* ── 删除确认弹窗 ───────────────────────────────────────── */}
+      {confirmTarget && (
+        <div className="confirm-overlay" onClick={() => setConfirmTarget(null)}>
+          <div className="confirm-dialog" role="dialog" aria-modal="true"
+            aria-label={confirmTarget.kind === 'workspace' ? '删除工作区' : '删除对话'}
+            onClick={e => e.stopPropagation()}>
+            <div className="confirm-title">
+              {confirmTarget.kind === 'workspace' ? '删除工作区' : '删除对话'}
+            </div>
+            <div className="confirm-text">
+              {confirmTarget.kind === 'workspace'
+                ? <>确定删除工作区「{confirmTarget.name}」吗？<br />其中的对话会保留，并移到「对话」分组。</>
+                : <>确定删除对话「{confirmTarget.name}」吗？<br />删除后无法恢复。</>}
+            </div>
+            <div className="confirm-actions">
+              <button className="btn-confirm-cancel" onClick={() => setConfirmTarget(null)}>取消</button>
+              <button className="btn-confirm-danger" onClick={handleConfirmDelete}>删除</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

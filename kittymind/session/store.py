@@ -678,6 +678,19 @@ class SqliteSessionStore:
             cur = self._conn.execute("DELETE FROM sessions WHERE id=?", (session_id,))
             return cur.rowcount > 0
 
+    def clear_workspace(self, workspace_id: str) -> int:
+        """解除某工作区下所有会话的归属（workspace_id 置 NULL），返回迁移条数。
+
+        删工作区时调用：会话本身保留，只是移回「对话」分组——删分组不应
+        连带删掉用户的对话历史。
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE sessions SET workspace_id=NULL, updated_at=? WHERE workspace_id=?",
+                (self._now_iso(), workspace_id),
+            )
+            return cur.rowcount
+
     def list_ids(self) -> list[str]:
         with self._lock:
             rows = self._conn.execute(
@@ -776,8 +789,12 @@ class SqliteSessionStore:
     ) -> list[dict]:
         """按 model / day / session 聚合用量。
 
-        返回列表，每条含 key / prompt_tokens / completion_tokens / n_calls，
-        按 prompt_tokens + completion_tokens 降序（最大消耗排前）。
+        返回列表，每条含 key / prompt_tokens / completion_tokens / n_calls /
+        by_model（{model_id: {prompt_tokens, completion_tokens}}），按
+        prompt_tokens + completion_tokens 降序（最大消耗排前）。
+
+        by_model 的用途：day/session 分组不是单一模型，rpc 层要按「每组内各
+        模型分别计价再求和」才能算准成本，所以聚合时顺带保留模型维度。
         """
         where: list[str] = []
         args: list = []
@@ -797,22 +814,41 @@ class SqliteSessionStore:
             key_expr = "model_id"
 
         sql = (
-            f"SELECT {key_expr} AS k,"
+            f"SELECT {key_expr} AS k, model_id,"
             " SUM(prompt_tokens), SUM(completion_tokens), SUM(n_calls)"
-            f" FROM model_usage{cond} GROUP BY k"
-            " ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC"
+            f" FROM model_usage{cond} GROUP BY k, model_id"
         )
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
-        return [
-            {
-                "key": r[0],
-                "prompt_tokens": int(r[1] or 0),
-                "completion_tokens": int(r[2] or 0),
-                "n_calls": int(r[3] or 0),
-            }
-            for r in rows
-        ]
+
+        # 合并 (组, 模型) 行 → 组行；保留每组内各模型 token 明细供上层计价
+        groups: dict[str, dict] = {}
+        for k, model_id, p, c, n in rows:
+            g = groups.setdefault(
+                k,
+                {
+                    "key": k,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "n_calls": 0,
+                    "by_model": {},
+                },
+            )
+            p_i, c_i, n_i = int(p or 0), int(c or 0), int(n or 0)
+            g["prompt_tokens"] += p_i
+            g["completion_tokens"] += c_i
+            g["n_calls"] += n_i
+            bucket = g["by_model"].setdefault(
+                str(model_id), {"prompt_tokens": 0, "completion_tokens": 0}
+            )
+            bucket["prompt_tokens"] += p_i
+            bucket["completion_tokens"] += c_i
+
+        return sorted(
+            groups.values(),
+            key=lambda g: g["prompt_tokens"] + g["completion_tokens"],
+            reverse=True,
+        )
 
     def session_usage(self, session_id: str) -> dict:
         """单个会话的用量合计（供实时徽标）。"""

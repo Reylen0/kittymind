@@ -55,6 +55,9 @@ contextBridge.exposeInMainWorld('kitty', {
     ipcRenderer.invoke('ws:call', { method: 'workspace/list', params: {} }),
   createWorkspace: (name, path) =>
     ipcRenderer.invoke('ws:call', { method: 'workspace/create', params: { name, path } }),
+  // 删除工作区（其下会话保留，移回「对话」分组）
+  deleteWorkspace: (workspaceId) =>
+    ipcRenderer.invoke('ws:call', { method: 'workspace/delete', params: { workspace_id: workspaceId } }),
   selectWorkspace: () =>
     ipcRenderer.invoke('workspace:select'),
 

@@ -1,4 +1,4 @@
 from .recorder import UsageRecorder
-from .pricing import Cost, estimate_cost
+from .pricing import Cost, cost_from_by_model, estimate_cost
 
-__all__ = ["Cost", "UsageRecorder", "estimate_cost"]
+__all__ = ["Cost", "UsageRecorder", "cost_from_by_model", "estimate_cost"]

@@ -16,7 +16,7 @@ from kittymind.events.types import (
     SUBAGENT_START, SUBAGENT_DONE,
 )
 from kittymind.agent import KittyAgent
-from kittymind.usage import estimate_cost
+from kittymind.usage import cost_from_by_model
 
 
 # 单次 session/get 最多返回的消息条数（分页上限）：请求方传再大的 limit 也不越界，
@@ -47,6 +47,7 @@ class RpcHandler:
             "usage/report":             self._usage_report,
             "workspace/list":           self._workspace_list,
             "workspace/create":         self._workspace_create,
+            "workspace/delete":         self._workspace_delete,
             "tool/permission_response": self._permission_response,
             "permission/pending":       self._permission_pending,
         }
@@ -349,25 +350,52 @@ class RpcHandler:
 
         groups = mgr.aggregate_usage(group_by, _to_ts(since), _to_ts(until))
 
-        # 附加成本估算：day/session 分组不是单一 model，cost 无法精确到价目表，
-        # 此时按 null 处理（model 分组才给成本）。
+        # 成本估算：每组按「组内各模型分别计价再求和」（by_model 明细由 store
+        # 聚合时保留），全部模型查不到价目时为 null。
+        #
+        # session 分组补充标题 / 工作区名：主行显示标题，小字行显示 id +
+        # 工作区。会话已删除时 read_header 返回 None → title 保持 None，前端
+        # 回退显示 id（用量记录审计上本就允许悬空）。
+        sessions_meta: dict[str, tuple[str | None, str | None]] = {}
+        if group_by == "session":
+            ws_names: dict[str | None, str | None] = {}
+            wm = self._wm()
+            for g in groups:
+                sid = g["key"]
+                if sid in sessions_meta:
+                    continue
+                header = mgr.store.read_header(sid)
+                if header is None:
+                    sessions_meta[sid] = (None, None)
+                    continue
+                ws_id = header.get("workspace_id")
+                if ws_id not in ws_names:
+                    ws = wm.get_workspace(ws_id) if (wm and ws_id) else None
+                    ws_names[ws_id] = ws.get("name") if ws else None
+                sessions_meta[sid] = (header.get("title"), ws_names[ws_id])
+
         result_groups = []
         total_p = total_c = total_n = 0
+        total_cost: float | None = None
         for g in groups:
             total_p += g["prompt_tokens"]
             total_c += g["completion_tokens"]
             total_n += g["n_calls"]
-            cost = None
-            if group_by == "model":
-                c = estimate_cost(g["prompt_tokens"], g["completion_tokens"], g["key"])
-                cost = c.total_usd if c else None
-            result_groups.append({
+            cost = cost_from_by_model(g.get("by_model", {}))
+            if cost is not None:
+                total_cost = (total_cost or 0.0) + cost
+            row = {
                 "key": g["key"],
                 "prompt_tokens": g["prompt_tokens"],
                 "completion_tokens": g["completion_tokens"],
                 "n_calls": g["n_calls"],
                 "cost": cost,
-            })
+            }
+            if group_by == "session":
+                title, ws_name = sessions_meta.get(g["key"], (None, None))
+                row["title"] = title
+                row["workspace"] = ws_name
+            result_groups.append(row)
 
         await self._result(req_id, {
             "group_by": group_by,
@@ -376,6 +404,7 @@ class RpcHandler:
                 "prompt_tokens": total_p,
                 "completion_tokens": total_c,
                 "n_calls": total_n,
+                "cost": total_cost,
             },
         })
 
@@ -402,6 +431,24 @@ class RpcHandler:
             return
         ws = wm.create_workspace(name, path)
         await self._result(req_id, ws)
+
+    async def _workspace_delete(self, req_id: Any, params: dict) -> None:
+        """删除工作区。其下会话不删——解除归属移回「对话」分组。
+
+        工作区只是会话的一个视图分组（JSON 清单），会话历史在 SQLite 里；
+        删分组连带删对话是数据事故，不是用户预期。
+        """
+        wm = self._wm()
+        if not wm:
+            await self._error(req_id, "no workspace manager configured")
+            return
+        workspace_id = params.get("workspace_id", "")
+        if not wm.delete_workspace(workspace_id):
+            await self._error(req_id, f"workspace not found: {workspace_id}")
+            return
+        mgr = self._mgr()
+        moved = mgr.clear_workspace(workspace_id) if mgr else 0
+        await self._result(req_id, {"deleted": True, "moved_sessions": moved})
 
     # ──────────────────────────────────────────────────────────────
     # tool/permission_response

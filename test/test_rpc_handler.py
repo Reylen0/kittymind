@@ -354,3 +354,50 @@ async def test_turn_run_finished_task_removes_registration(tmp_path):
         await asyncio.sleep(0)
 
     assert handler._tasks == {}
+
+
+# ──────────────────────────────────────────────────────────────
+# workspace/delete
+# ──────────────────────────────────────────────────────────────
+
+async def test_workspace_delete_moves_sessions_not_deletes(tmp_path):
+    """删工作区只解除会话归属，会话本身必须保留（移回「对话」分组）。"""
+    from kittymind.workspace.manager import WorkspaceManager
+
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    agent.workspace_manager = WorkspaceManager(tmp_path / "ws.json")
+    handler = RpcHandler(agent, ws)
+
+    created = agent.workspace_manager.create_workspace("demo", str(tmp_path))
+    ws_id = created["id"]
+
+    sid = agent.session_manager.create_session(title="工作区内会话", workspace_id=ws_id)
+    agent.session_manager.append_turn(sid, [{"role": "user", "content": "hi"}], [])
+
+    await handler.dispatch({"id": 1, "method": "workspace/delete",
+                            "params": {"workspace_id": ws_id}})
+    result = ws.sent[0]["result"]
+    assert result["deleted"] is True
+    assert result["moved_sessions"] == 1
+
+    # 会话还在，workspace_id 已清空
+    assert agent.session_manager.session_exists(sid)
+    header = agent.session_manager.get_session_header(sid)
+    assert header["workspace_id"] is None
+    # 工作区清单里也没了
+    assert agent.workspace_manager.get_workspace(ws_id) is None
+
+
+async def test_workspace_delete_unknown_id_errors(tmp_path):
+    """删不存在的工作区应报错而不是谎报成功。"""
+    from kittymind.workspace.manager import WorkspaceManager
+
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    agent.workspace_manager = WorkspaceManager(tmp_path / "ws.json")
+    handler = RpcHandler(agent, ws)
+
+    await handler.dispatch({"id": 1, "method": "workspace/delete",
+                            "params": {"workspace_id": "nope"}})
+    assert ws.sent[0].get("error") is not None

@@ -76,6 +76,14 @@ export default function App() {
     setWorkspaces(prev => [...prev, ws])
   }
 
+  // 删工作区：会话保留（后端已解除归属移回「对话」），这里同步两侧列表。
+  // 若当前正在看的会话属于该工作区，它的数据没变，无需切换 currentId。
+  async function deleteWorkspace(id: string) {
+    await window.kitty?.deleteWorkspace(id)
+    setWorkspaces(prev => prev.filter(w => w.id !== id))
+    await loadSessions()
+  }
+
   return (
     <div className="app">
       <TopBar onUsage={() => setUsageOpen(true)} />
@@ -88,6 +96,7 @@ export default function App() {
           onSelect={setCurrentId}
           onCreate={createSession}
           onDelete={deleteSession}
+          onDeleteWorkspace={deleteWorkspace}
           onToggle={() => setSidebarOpen(v => !v)}
         />
 

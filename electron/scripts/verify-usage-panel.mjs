@@ -51,9 +51,20 @@ check('按日分组重渲染', rows1 === 2, `rows=${rows1}`)
 const dayKey = await page.locator('.usage-row .usage-row-key').first().innerText()
 check('按日分组的 key 是日期', /^2026-09-/.test(dayKey), dayKey)
 
-// 按日分组的成本列应为 —（非 model 分组不估成本）
+// 按日分组现在也有成本金额（按组内各模型分别计价求和），不再是 — 占位
 const dayCost = await page.locator('.usage-row .usage-cost').first().innerText()
-check('按日分组成本显示为占位', dayCost === '—', dayCost)
+check('按日分组成本显示金额', /^\$/.test(dayCost), dayCost)
+
+// 切到「按会话」分组：主行显示会话标题，小字行显示会话 id + 工作区
+await page.click('.usage-tab:has-text("按会话")')
+await page.waitForTimeout(400)
+const sessTitle = await page.locator('.usage-row .usage-row-title').first().innerText()
+check('按会话分组主行是标题', sessTitle === '修复审批弹窗切会话丢失的 bug', sessTitle)
+const sessSub = await page.locator('.usage-row .usage-row-sub').first().innerText()
+check('按会话分组小字含 id 与工作区', sessSub.startsWith('df1c9df3') && sessSub.includes('kittymind'), sessSub)
+// 无标题（已删除会话）回退显示 id
+const noTitle = await page.locator('.usage-row').nth(2).locator('.usage-row-title').innerText()
+check('已删除会话回退显示 id', noTitle === '86eaad94-ace6-4c46-bf39-e1fd6de86570', noTitle)
 
 // 关闭面板
 await page.click('.usage-close')
