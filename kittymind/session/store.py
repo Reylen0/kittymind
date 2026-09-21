@@ -23,7 +23,10 @@ compacted=1 → 已被压缩掉的原始行（审计用，模型不可见）。
 上下文占用只存 last_prompt_tokens（实际已用 token，内容相关）。
 总窗口大小是配置派生值，由读取方按当前 cfg 现算，故不落库。
 
-升级方式：逐级迁移（_migrate），任何入口版本都补到最新，与"从哪一版升上来"无关。
+升级方式：版本链迁移（_migrations），任何入口版本都补到最新，与"从哪一版升
+上来"无关。每个步骤成功才提升 user_version，并在 schema_migrations 落一条记录；
+失败则停在上一版本、下次启动重试（细节见 kittymind/storage/migrations.py）。
+启动还会做自检 / 备份 / WAL 截断 / 空间回收，见 _init_db 与 storage/maintenance.py。
 
 两条踩过的坑（都曾真实致损）：
   1. 外键是 per-connection 设置且 SQLite 默认 OFF，必须每次打开连接就开；
@@ -34,15 +37,37 @@ compacted=1 → 已被压缩掉的原始行（审计用，模型不可见）。
 
 import contextlib
 import json
+import logging
 import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..config import cfg
+from ..storage import (
+    Migration,
+    MigrationFailedError,
+    MigrationOutcome,
+    backup_name,
+    backup_to,
+    checkpoint,
+    latest_backup_age_hours,
+    prune_backups,
+    quarantine_db,
+    quick_check,
+    read_stats,
+    run_migrations,
+    should_vacuum,
+    vacuum,
+)
 from ._search_text import to_match_expr, to_search_text
 
+logger = logging.getLogger(__name__)
 
+
+# 最新 schema 版本。**必须与 _migrations() 里最大的 version 相等**——
+# 测试 test_session_version_chain_matches_constant 会钉住这条，别只改一边。
 _SCHEMA_VERSION = 7
 
 _DDL = """
@@ -131,62 +156,333 @@ _BLOCK_HEAD_SLACK = 200
 class SqliteSessionStore:
     """SQLite 会话存储。线程安全（Lock + check_same_thread=False）。"""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, maintenance: bool | None = None) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(
-            str(db_path),
+        self._path = Path(db_path)
+        self._conn = self._connect(self._path)
+        self._lock = threading.Lock()
+        # 备份落在库文件同级的子目录：~/.kittymind/sessions.db → ~/.kittymind/backups。
+        # 由库路径派生而不是读全局配置，测试用临时库时天然隔离，不会往用户目录写。
+        self._backup_dir = self._path.parent / cfg.DB_BACKUP_DIRNAME
+        self._backup_stem = self._path.stem   # 备份文件前缀，避免两个库的备份互删
+        # maintenance=None 时读配置；测试里可显式传 False 关掉自检/备份
+        self._maintenance = cfg.DB_MAINTENANCE_ENABLED if maintenance is None else maintenance
+        self._init_db()
+
+    @staticmethod
+    def _connect(path: Path) -> sqlite3.Connection:
+        """按本库的约定开连接（autocommit + 多线程复用）。"""
+        return sqlite3.connect(
+            str(path),
             check_same_thread=False,
             isolation_level=None,
         )
-        self._lock = threading.Lock()
-        self._init_db()
 
     def close(self) -> None:
-        """关闭 SQLite 连接（幂等）。进程收尾时调用；WAL 的 checkpoint 随之完成。"""
+        """关闭 SQLite 连接（幂等）。进程收尾时调用；WAL 的 checkpoint 随之完成。
+
+        收尾时做一次 TRUNCATE checkpoint：把 WAL 截回 0 字节。否则长驻进程写
+        过的 WAL（可达数 MB）会一直躺在磁盘上，下次启动又和主库一起被打开，
+        白白拖慢恢复。截断失败（例如有别的进程正读库）不影响退出。
+        """
         with self._lock:
             if self._conn is not None:
+                if self._maintenance:
+                    checkpoint(self._conn, "TRUNCATE")
                 self._conn.close()
                 self._conn = None
 
+    # ── 启动：自检 → 迁移 → 收尾 WAL → 维护 ──────────────────────
+
     def _init_db(self) -> None:
         with self._lock:
-            # 外键是 per-connection 设置且 SQLite 默认 OFF：必须在任何语句之前、
-            # 每次打开连接都打开。写进 _DDL 只在首次建库生效，旧库会以"外键关闭"
-            # 运行（级联删除失效、留下孤儿行）。
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            with contextlib.suppress(Exception):
-                self._conn.execute("PRAGMA journal_mode=WAL")
-            ver = self._conn.execute("PRAGMA user_version").fetchone()[0]
-            if ver == 0:
-                self._conn.executescript(_DDL)
-            self._migrate()
-            self._conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+            self._apply_pragmas()
+            self._open_healthy()
+            self._apply_pragmas()
+            self._prepare_schema()
+            if self._maintenance:
+                busy, log_frames, _ = checkpoint(self._conn, "TRUNCATE")
+                if busy:
+                    logger.debug("启动 WAL checkpoint 未跑完（busy=%s）", busy)
+                elif log_frames > 0:
+                    logger.info("启动已回收 WAL：%d 帧 → 0", log_frames)
+        self._startup_maintenance()
 
-    def _migrate(self) -> None:
-        """把库补齐到当前版本。
-
-        逐级应用而非 if/elif 跳级：任何入口版本（v1/v2/v3/v4/未知）都要走完全部
-        步骤，否则会出现"升到 v5 但缺列"的半截 schema —— 曾经的 ver < 3 分支就是
-        只删旧列、直接标 v5，把 is_summary 漏了，read_display 直接报错。
-        全部操作幂等，可重复执行。
-        """
-        # v2 → v3：清掉历史遗留的 token 统计列
-        for col in _LEGACY_COLS:
-            self._drop_column_if_exists("sessions", col)
-        # v4 → v5：压缩摘要标记列
-        self._ensure_column("messages", "is_summary", "INTEGER NOT NULL DEFAULT 0")
-        # 外键开启前遗落的孤儿行（旧版本级联失效时留下的），清掉以免越积越多
+    def _apply_pragmas(self) -> None:
+        # 外键是 per-connection 设置且 SQLite 默认 OFF：必须在任何语句之前、
+        # 每次打开连接都打开。写进 _DDL 只在首次建库生效，旧库会以"外键关闭"
+        # 运行（级联删除失效、留下孤儿行）。
+        self._conn.execute("PRAGMA foreign_keys = ON")
         with contextlib.suppress(Exception):
-            self._conn.execute(
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        if cfg.DB_WAL_AUTOCHECKPOINT_PAGES > 0:
+            with contextlib.suppress(Exception):
+                self._conn.execute(
+                    f"PRAGMA wal_autocheckpoint={int(cfg.DB_WAL_AUTOCHECKPOINT_PAGES)}"
+                )
+
+    def _open_healthy(self) -> None:
+        """启动自检；库损坏时隔离留档并重建，绝不让损坏库静默继续用。
+
+        分级处理（见 storage.maintenance 的说明）：
+          1. quick_check 通过 → 直接返回；
+          2. 不通过 → 把坏库整体改名隔离（**不删除**，用户可能还要抢救）；
+          3. 尝试从隔离出来的库把能读的页面抢救到新库（SQLite 备份 API 会跳过
+             损坏页），抢救结果再自检一次；
+          4. 抢救失败才建空库，并明确告警会话历史已被隔离到哪个文件。
+        """
+        if not self._maintenance or not cfg.DB_SELF_CHECK:
+            return
+
+        status = quick_check(self._conn)
+        if status == "ok":
+            return
+
+        logger.error("会话库自检未通过：%s（库：%s）", status, self._path)
+        if not cfg.DB_RECOVER_ON_CORRUPT:
+            raise sqlite3.DatabaseError(f"会话库损坏且已禁用自动恢复：{status}")
+
+        with contextlib.suppress(Exception):
+            self._conn.close()
+        quarantined = quarantine_db(self._path)
+        logger.error("已将损坏的库隔离到：%s（原始文件保留，未删除）", quarantined)
+
+        if self._rescue_from(quarantined):
+            logger.warning("已从隔离库抢救出可读数据，继续使用新库：%s", self._path)
+        else:
+            logger.error("抢救失败，将以空库启动（历史会话仍在隔离文件中）")
+            with contextlib.suppress(OSError):
+                self._path.unlink()
+
+        self._conn = self._connect(self._path)
+
+    def _rescue_from(self, quarantined: Path) -> bool:
+        """把隔离库中可读的数据抢救到 self._path。成功返回 True。"""
+        try:
+            source = sqlite3.connect(str(quarantined))
+        except sqlite3.Error:
+            return False
+        try:
+            backup_to(source, self._path)
+        except sqlite3.Error as e:
+            logger.error("从隔离库抄数据失败：%s", e)
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                source.close()
+
+        try:
+            probe = sqlite3.connect(str(self._path))
+        except sqlite3.Error:
+            return False
+        try:
+            return quick_check(probe) == "ok"
+        finally:
+            with contextlib.suppress(Exception):
+                probe.close()
+
+    def _prepare_schema(self) -> None:
+        """建基础表 + 走版本链迁移。
+
+        迁移执行器负责"步骤成功才提升 user_version"，于是任何一步真失败时库
+        会停在上一个可用版本、下次启动重试；而旧实现是 suppress 掉异常后无条件
+        标成最新版本，半截 schema 就此固化。
+        """
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] == 0:
+            self._conn.executescript(_DDL)
+        try:
+            outcome = run_migrations(self._conn, self._migrations())
+        except MigrationFailedError as e:
+            logger.error("会话库迁移失败：%s", e)
+            raise
+        self._log_migration(outcome)
+        self._purge_orphans()
+
+    def _purge_orphans(self) -> None:
+        """清掉外键开启前遗落的孤儿消息（旧版本级联失效时留下的）。
+
+        刻意**不放进版本链**：它改的是数据不是结构，且能自愈——消息可能是任何
+        一次外部工具改库、或降级运行旧版本时产生的，只在 v5 跑一次会漏掉之后
+        新产生的孤儿行。删除走 session_id 索引，每次打开做一次很便宜。
+        """
+        with contextlib.suppress(sqlite3.Error):
+            cur = self._conn.execute(
                 "DELETE FROM messages WHERE session_id NOT IN (SELECT id FROM sessions)"
             )
-        # v5 → v6：全文检索索引
+            if cur.rowcount:
+                logger.info("清理孤儿消息 %d 条（其会话已不存在）", cur.rowcount)
+
+    @staticmethod
+    def _log_migration(outcome: MigrationOutcome) -> None:
+        if outcome.changed:
+            logger.info("会话库 %s", outcome.describe())
+        elif outcome.baselined:
+            logger.debug("会话库 %s", outcome.describe())
+
+    def _migrations(self) -> list[Migration]:
+        """版本链。只对 `version > 当前 user_version` 的步骤执行，故允许跳号
+        （版本号要与历史语义对齐，不为了连续而插入空步骤）。
+        """
+        return [
+            Migration(3, "drop_legacy_token_columns", self._m_drop_legacy_columns),
+            Migration(5, "add_is_summary_column", self._m_is_summary),
+            Migration(6, "fts_index", self._m_fts),
+            Migration(7, "model_usage_table", self._m_usage),
+        ]
+
+    def _m_drop_legacy_columns(self, conn: sqlite3.Connection) -> None:
+        """v2 → v3：清掉历史遗留的 token 统计列。"""
+        for col in _LEGACY_COLS:
+            self._drop_column_if_exists("sessions", col)
+
+    def _m_is_summary(self, conn: sqlite3.Connection) -> None:
+        """v4 → v5：压缩摘要标记列（孤儿行清理已挪到 _purge_orphans）。"""
+        self._ensure_column("messages", "is_summary", "INTEGER NOT NULL DEFAULT 0")
+
+    def _m_fts(self, conn: sqlite3.Connection) -> None:
+        """v5 → v6：全文检索索引。
+
+        FTS5 未编译进本机 SQLite 属于**环境能力缺失**，重试一万次也一样，
+        所以这一步按成功处理（搜索降级为不可用并告警），不阻塞整个库升级。
+        其它 DDL 失败则照常抛出、不提升版本。
+        """
         self._ensure_fts()
-        # v6 → v7：用量成本追踪表
+
+    def _m_usage(self, conn: sqlite3.Connection) -> None:
+        """v6 → v7：用量成本追踪表。"""
         self._ensure_usage()
 
+    # ── 启动维护：备份 / 空间回收（重活丢后台）─────────────────────
+
+    def _startup_maintenance(self) -> None:
+        """编排启动维护：到期就备份，必要时 VACUUM。
+
+        分工的依据是"会不会拖慢启动"：小库备份是毫秒级，同步做掉最省心；
+        VACUUM 要重写整个库（磁盘峰值 2×、期间占写锁），大库备份同理，
+        一律丢后台线程，避免 Electron 的 `[ready]` 就绪探测超时。
+        """
+        if not self._maintenance:
+            return
+        try:
+            age = latest_backup_age_hours(self._backup_dir, self._backup_stem)
+            due = age is None or age >= cfg.DB_BACKUP_INTERVAL_HOURS
+            stats = read_stats(self._conn, self._path)
+            want_vacuum = should_vacuum(
+                stats,
+                min_ratio=cfg.DB_VACUUM_MIN_FREELIST_RATIO,
+                min_bytes=cfg.DB_VACUUM_MIN_BYTES,
+            )
+            if want_vacuum:
+                logger.info(
+                    "会话库空闲页占比 %.0f%%（%d/%d 页，%.1f MB），准备回收空间",
+                    stats.freelist_ratio * 100,
+                    stats.freelist_count,
+                    stats.page_count,
+                    stats.size_bytes / 1048576,
+                )
+            if due and stats.size_bytes < cfg.DB_BACKUP_MAX_BYTES:
+                # 空库不值得备份：首次使用会在备份目录里堆一串没内容的文件，
+                # 真正的第一份快照应该是"有过对话之后"的那一版。
+                if self._has_sessions():
+                    self._backup_now()
+                due = False
+            if due or want_vacuum:
+                self._spawn_maintenance(backup=due, do_vacuum=want_vacuum,
+                                        before=stats.freelist_count)
+            else:
+                prune_backups(self._backup_dir, cfg.DB_BACKUP_KEEP, self._backup_stem)
+        except Exception as e:  # 维护失败绝不影响启动
+            logger.warning("启动维护跳过：%s", e)
+
+    def _spawn_maintenance(self, *, backup: bool, do_vacuum: bool,
+                           before: int = 0) -> None:
+        """后台线程做重活。用独立连接，跑完即退，不阻塞 close()。"""
+        def _work() -> None:
+            conn = None
+            try:
+                conn = self._connect(self._path)
+                if backup:
+                    dest = self._backup_dir / backup_name(self._path)
+                    size = backup_to(conn, dest).stat().st_size
+                    logger.info("会话库已备份：%s（%.1f MB）", dest.name, size / 1048576)
+                if do_vacuum and vacuum(conn):
+                    after = read_stats(conn, self._path)
+                    logger.info(
+                        "会话库空间已回收：空闲页 %d → %d，文件现为 %.1f MB",
+                        before,
+                        after.freelist_count,
+                        after.size_bytes / 1048576,
+                    )
+                removed = prune_backups(self._backup_dir, cfg.DB_BACKUP_KEEP, self._backup_stem)
+                if removed:
+                    logger.debug("清理旧备份 %d 份", len(removed))
+            except Exception as e:
+                logger.warning("后台维护未完成（下次启动重试）：%s", e)
+            finally:
+                if conn is not None:
+                    with contextlib.suppress(Exception):
+                        conn.close()
+
+        threading.Thread(target=_work, name="kitty-db-maintenance", daemon=True).start()
+
+    def _has_sessions(self) -> bool:
+        """库里有没有会话（调用方已持锁）。"""
+        try:
+            return self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
+        except sqlite3.Error:
+            return False
+
+    def _backup_now(self) -> Path | None:
+        """同步做一次备份（调用方已持锁）。"""
+        try:
+            dest = self._backup_dir / backup_name(self._path)
+            return backup_to(self._conn, dest)
+        except Exception as e:
+            logger.warning("备份会话库失败：%s", e)
+            return None
+
+    def wal_checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
+        """手动触发 WAL checkpoint（供运行期或测试调用）。"""
+        with self._lock:
+            if self._conn is None:
+                return (-1, -1, -1)
+            return checkpoint(self._conn, mode)
+
+    def compact(self) -> bool:
+        """手动回收空间（跳过阈值判定），返回是否成功。
+
+        自动维护只在"空闲页占比高**且**库够大"时才 VACUUM（见
+        `cfg.DB_VACUUM_MIN_BYTES`）——小库重写一遍纯属白折腾。但用户可能就想
+        立刻看到文件变小，所以留这个显式入口：
+
+            uv run python -c "from kittymind.session.manager import SessionManager; \\
+                              SessionManager().store.compact()"
+
+        VACUUM 期间若有并发写会失败（返回 False），重试即可。
+        """
+        with self._lock:
+            if self._conn is None:
+                return False
+            ok = vacuum(self._conn)
+            with contextlib.suppress(Exception):
+                checkpoint(self._conn, "TRUNCATE")
+            return ok
+
+    def stats(self) -> dict:
+        """库的物理占用（排查用：文件多大、空闲页多少、WAL 多大）。"""
+        with self._lock:
+            s = read_stats(self._conn, self._path)
+        return {
+            "path": str(self._path),
+            "size_bytes": s.size_bytes,
+            "wal_bytes": s.wal_bytes,
+            "page_count": s.page_count,
+            "freelist_count": s.freelist_count,
+            "freelist_ratio": s.freelist_ratio,
+        }
+
     def _ensure_usage(self) -> None:
-        """建 model_usage 表（幂等）。调用方（_migrate）已持有 self._lock。"""
+        """建 model_usage 表（幂等）。由迁移步骤 _m_usage 调用，已持 self._lock。"""
         with contextlib.suppress(Exception):
             self._conn.executescript(_USAGE_DDL)
 
@@ -207,8 +503,10 @@ class SqliteSessionStore:
         ).fetchone() is not None
         try:
             self._conn.executescript(_FTS_DDL)
-        except Exception:
-            # FTS5 未编译进本机 SQLite：搜索能力降级为不可用，但不能拖垮整个会话库
+        except Exception as e:
+            # FTS5 未编译进本机 SQLite：搜索能力降级为不可用，但不能拖垮整个会话库。
+            # 必须告警——否则用户只会看到"搜索永远没结果"，根本猜不到是编译选项问题。
+            logger.warning("全文检索索引不可用（FTS5 缺失？）：%s；搜索功能将降级", e)
             return
         if not exists:
             self._backfill_fts()

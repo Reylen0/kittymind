@@ -4,19 +4,38 @@
 决策、原因、是否失败、耗时。用于排查「模型为什么反复调工具、哪次被拦」。
 
 写入失败绝不影响工具执行（record 内部吞异常）。多线程安全（工具经 to_thread 执行）。
+
+schema 走与会话库同一套版本链（kittymind/storage/migrations.py）：审计库此前
+`user_version` 一直是 0——建表靠 `CREATE TABLE IF NOT EXISTS` 裸跑，将来想改表
+根本找不到"该从哪里升级"的入口。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import cfg
+from ..storage import (
+    Migration,
+    MigrationFailedError,
+    checkpoint,
+    quarantine_db,
+    quick_check,
+    run_migrations,
+)
 
-_SCHEMA = """
+logger = logging.getLogger(__name__)
+
+# 审计库当前 schema 版本（= 迁移链最大 version，见 _migrations）
+_SCHEMA_VERSION = 1
+
+_CREATE_AUDIT = """
 CREATE TABLE IF NOT EXISTS tool_audit (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          TEXT NOT NULL,
@@ -33,16 +52,74 @@ CREATE INDEX IF NOT EXISTS idx_audit_ts      ON tool_audit(ts);
 """
 
 
+def _m_init_tool_audit(conn: sqlite3.Connection) -> None:
+    """v1：建审计表与索引（幂等）。"""
+    conn.executescript(_CREATE_AUDIT)
+
+
+_MIGRATIONS = [Migration(1, "create_tool_audit", _m_init_tool_audit)]
+
+
 class ToolAuditLog:
     """工具审计双写记录器（SQLite + JSONL）。"""
 
     def __init__(self, db_path: Path, jsonl_path: Path):
         self._lock = threading.Lock()
+        self._path = Path(db_path)
         self._jsonl_path = Path(jsonl_path)
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(db_path), check_same_thread=False)
-        self._db.executescript(_SCHEMA)
-        self._db.commit()
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(
+            str(self._path), check_same_thread=False, isolation_level=None
+        )
+        self._setup()
+
+    def _setup(self) -> None:
+        """开连接 → 自检（坏了就隔离重建）→ 迁移 → 收掉上次的 WAL。
+
+        审计是旁路数据，坏掉不值得阻塞启动，但也**不能静默**：这里一律告警，
+        并把坏库改名留档，避免"审计静默失效但没人知道"。
+        """
+        with contextlib.suppress(Exception):
+            self._db.execute("PRAGMA journal_mode=WAL")
+        if cfg.DB_MAINTENANCE_ENABLED and cfg.DB_SELF_CHECK:
+            status = quick_check(self._db)
+            if status != "ok":
+                logger.warning("工具审计库自检未通过：%s", status)
+                self._reset_corrupt()
+        try:
+            outcome = run_migrations(self._db, _MIGRATIONS)
+        except MigrationFailedError as e:
+            # 迁移失败不能拖垮 agent（审计是旁路），但要留下明确告警
+            logger.warning("工具审计库迁移失败（本次审计可能不完整）：%s", e)
+            return
+        if outcome.changed:
+            logger.info("工具审计库 %s", outcome.describe())
+        with contextlib.suppress(Exception):
+            checkpoint(self._db, "TRUNCATE")
+
+    def _reset_corrupt(self) -> None:
+        """隔离损坏的审计库并新建空库（审计可丢，但要留档 + 告警）。"""
+        with contextlib.suppress(Exception):
+            self._db.close()
+        with contextlib.suppress(Exception):
+            target = quarantine_db(self._path)
+            logger.warning("损坏的工具审计库已隔离到：%s", target)
+        with contextlib.suppress(OSError):
+            self._path.unlink()
+        self._db = sqlite3.connect(
+            str(self._path), check_same_thread=False, isolation_level=None
+        )
+
+    def close(self) -> None:
+        """关闭连接（幂等）。收尾 checkpoint 把 WAL 截回 0，避免它随会话累积。"""
+        with self._lock:
+            if self._db is not None:
+                with contextlib.suppress(Exception):
+                    checkpoint(self._db, "TRUNCATE")
+                with contextlib.suppress(Exception):
+                    self._db.close()
+                self._db = None
 
     def record(
         self,
@@ -67,7 +144,9 @@ class ToolAuditLog:
             "duration_ms": int(duration_ms),
         }
         with self._lock:
-            try:
+            if self._db is None:
+                return
+            with contextlib.suppress(Exception):
                 self._db.execute(
                     "INSERT INTO tool_audit "
                     "(ts, session_id, tool, args, decision, reason, failed, duration_ms) "
@@ -75,9 +154,6 @@ class ToolAuditLog:
                     (row["ts"], row["session_id"], row["tool"], row["args"],
                      row["decision"], row["reason"], int(row["failed"]), row["duration_ms"]),
                 )
-                self._db.commit()
-            except Exception:
-                pass
             try:
                 with self._jsonl_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -87,14 +163,14 @@ class ToolAuditLog:
 
 # ── 进程级单例（所有 Agent / 子 Agent 共享一个连接 + 一份日志） ──
 
-_instance: ToolAuditLog | None = None
+# 单元素 list 当持有者：避免 `global` 语句（ruff PLW0603），与 core/llm_trace.py 一致
+_instance: list[ToolAuditLog | None] = [None]
 _instance_lock = threading.Lock()
 
 
 def get_tool_audit_log() -> ToolAuditLog:
-    global _instance
-    if _instance is None:
+    if _instance[0] is None:
         with _instance_lock:
-            if _instance is None:
-                _instance = ToolAuditLog(cfg.TOOL_AUDIT_DB, cfg.TOOL_AUDIT_JSONL)
-    return _instance
+            if _instance[0] is None:
+                _instance[0] = ToolAuditLog(cfg.TOOL_AUDIT_DB, cfg.TOOL_AUDIT_JSONL)
+    return _instance[0]

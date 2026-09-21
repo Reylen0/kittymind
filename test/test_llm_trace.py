@@ -133,3 +133,44 @@ def test_trace_request_excludes_api_key():
         _cfg.LLM_TRACE_ENABLED = old_enabled
         _cfg.LLM_TRACE_JSONL = old_path
         lt._instance[0] = None
+
+
+# ── 体积轮转（Phase 17：留档文件不能无限增长）─────────────────────
+
+def _write_rows(log, n):
+    for i in range(n):
+        log.record(model="m", base_url="u", stream=False,
+                   request={"i": i, "pad": "x" * 200})
+
+
+def test_trace_rotates_when_exceeding_limit(tmp_path):
+    path = tmp_path / "t.jsonl"
+    log = LLMTraceLog(path, max_bytes=600)
+    _write_rows(log, 30)
+
+    rotated = path.with_name(path.name + ".1")
+    assert rotated.is_file(), "超过上限应轮转出 .1 文件"
+    # 轮转是"写下一行之前"检查，当前文件会略微超过上限，但不会无限涨
+    assert path.stat().st_size < 2 * 600
+    # 轮转文件里保留的是较早的行
+    assert _read_lines(rotated)
+    assert _read_lines(path)
+
+
+def test_trace_rotation_keeps_single_previous_file(tmp_path):
+    """只保留"当前 + 上一份"：轮转是排查材料，不是审计凭证，不回滚堆积。"""
+    path = tmp_path / "t.jsonl"
+    log = LLMTraceLog(path, max_bytes=600)
+    _write_rows(log, 40)
+
+    assert path.with_name(path.name + ".1").is_file()
+    assert not path.with_name(path.name + ".2").exists()
+
+
+def test_trace_rotation_disabled_with_zero_limit(tmp_path):
+    path = tmp_path / "t.jsonl"
+    log = LLMTraceLog(path, max_bytes=0)
+    _write_rows(log, 30)
+    assert not path.with_name(path.name + ".1").exists()
+    assert path.stat().st_size > 600
+

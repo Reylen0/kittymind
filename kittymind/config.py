@@ -164,6 +164,28 @@ VERIFY_PROBE_RETRIES  = 5       # probe 验证器默认重试次数
 VERIFY_PROBE_INTERVAL = 1.0     # probe 验证器重试间隔（秒）
 VERIFY_MAX_OUTPUT     = 20_000  # command 验证器证据截断长度
 
+# ── 数据维护与健壮性（Phase 17） ─────────────────────
+# 总开关：关掉则不做启动自检、自动备份、checkpoint 与空间回收。
+DB_MAINTENANCE_ENABLED = True
+# 启动自检（PRAGMA quick_check）。关掉可省下大库的启动扫描时间。
+DB_SELF_CHECK = True
+# 损坏时是否把坏库隔离（改名留档）并重建空库继续启动。
+# False = 直接抛错停止启动，交给用户手工处理。
+DB_RECOVER_ON_CORRUPT = True
+
+DB_BACKUP_DIRNAME       = "backups"   # 备份目录名（落在库文件同级的这个子目录里）
+DB_BACKUP_KEEP          = 5      # 备份保留份数（0 = 不清理，无限累积）
+DB_BACKUP_INTERVAL_HOURS = 24    # 两次自动备份的最小间隔（小时）；到期才在启动时备份
+DB_BACKUP_MAX_BYTES     = 64 * 1024 * 1024  # 超过此体积不在启动路径同步备份，改由后台做
+
+DB_VACUUM_MIN_FREELIST_RATIO = 0.40        # 空闲页占比达到此值才考虑 VACUUM
+DB_VACUUM_MIN_BYTES          = 32 * 1024 * 1024  # 且库至少这么大（小库不值得重写）
+# WAL 自动 checkpoint 阈值（页）。SQLite 默认 1000 页（4K 页 ≈ 4 MB），
+# 意味着崩溃后最多要重放 4 MB 日志；调小可缩短恢复时间，代价是 checkpoint 更频繁。
+DB_WAL_AUTOCHECKPOINT_PAGES  = 512
+
+LLM_TRACE_MAX_BYTES = 20 * 1024 * 1024     # 留档 JSONL 超过此体积轮转（0 = 不轮转）
+
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -201,6 +223,11 @@ _OVERRIDABLE = {
     "VERIFY_TIMEOUT", "VERIFY_MAX_TIMEOUT", "VERIFY_PROBE_RETRIES",
     "VERIFY_PROBE_INTERVAL", "VERIFY_MAX_OUTPUT",
     "USAGE_PRICING",
+    "DB_MAINTENANCE_ENABLED", "DB_SELF_CHECK", "DB_RECOVER_ON_CORRUPT",
+    "DB_BACKUP_DIRNAME", "DB_BACKUP_KEEP", "DB_BACKUP_INTERVAL_HOURS", "DB_BACKUP_MAX_BYTES",
+    "DB_VACUUM_MIN_FREELIST_RATIO", "DB_VACUUM_MIN_BYTES",
+    "DB_WAL_AUTOCHECKPOINT_PAGES",
+    "LLM_TRACE_MAX_BYTES",
 }
 
 

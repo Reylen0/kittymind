@@ -38,11 +38,13 @@ def _truncate(value: object, limit: int = _MAX_CONTENT_CHARS) -> object:
 
 
 class LLMTraceLog:
-    """LLM 调用留档器（JSONL 追加）。"""
+    """LLM 调用留档器（JSONL 追加，带体积轮转）。"""
 
-    def __init__(self, jsonl_path: Path):
+    def __init__(self, jsonl_path: Path, max_bytes: int | None = None):
         self._jsonl_path = Path(jsonl_path)
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        # None → 读配置；显式传值便于测试
+        self._max_bytes = cfg.LLM_TRACE_MAX_BYTES if max_bytes is None else max_bytes
         self._lock = threading.Lock()
 
     def record(self, *, model: str, base_url: str, stream: bool, request: dict,
@@ -61,10 +63,30 @@ class LLMTraceLog:
         }
         with self._lock:
             try:
+                self._rotate_if_needed()
                 with self._jsonl_path.open("a", encoding="utf-8") as f:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
             except Exception:
                 pass
+
+    def _rotate_if_needed(self) -> None:
+        """超过上限就把当前文件改名成 `.1`（覆盖上一份轮转文件）。
+
+        留档是排查用的临时材料，不是审计凭证——保留"当前 + 上一份"足够回看，
+        比无限增长导致磁盘被悄悄吃掉要好。轮转只在写入前检查，热路径上就是
+        一次 stat，代价可忽略。
+        """
+        if self._max_bytes <= 0:
+            return
+        try:
+            if self._jsonl_path.stat().st_size < self._max_bytes:
+                return
+            rotated = self._jsonl_path.with_name(self._jsonl_path.name + ".1")
+            if rotated.exists():
+                rotated.unlink()
+            self._jsonl_path.rename(rotated)
+        except OSError:
+            pass
 
 
 # ── 进程级单例（所有适配器共享一份日志；None 表示关闭） ──

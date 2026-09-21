@@ -115,7 +115,7 @@ kittymind/                      # 项目根目录
 |--------|------|-----------|:----:|
 | MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
 | **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
-| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 用量成本 ✅ / 检索升级 ⬜ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 用量成本 ✅ / 维护健壮 ✅ / 检索升级 ⬜ |
 | **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
 | **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
@@ -183,8 +183,16 @@ kittymind/                      # 项目根目录
 **Phase 16 — 用量与成本追踪 ✅**
 架构：新增 `kittymind/usage/`（`UsageRecorder` per-turn 聚合器 + `pricing.py` 价目表）。usage 真值在 kitty_agent 主循环的 `usage` 事件分支经 recorder 按模型累加，随 `_commit_turn` 原子落库到 `model_usage` 表（schema v7，`session_id` 不带外键——**删会话保留成本记录**）。子 Agent 的 token 真值经 `_root_usage_recorder` ContextVar 回传父级合并，**计入父会话成本**（替代原 `estimate_tokens` 估算）。价目表内置默认（Claude/DeepSeek/Qwen/Ollama）+ `USAGE_PRICING` settings.json 覆盖，查不到返回 null 不编造。新增 `usage/report` RPC（`group_by ∈ {model, day, session}` + since/until），前端顶栏「用量」入口 + 弹层面板（按模型/按日/按会话切换，含成本列）。历史数据不回填，自 v7 起统计。
 
-**Phase 17 — 维护与健壮性 ⬜**
-思路：启动 `integrity_check` + 损坏备份重建；schema 版本号迁移链；旧会话 archived 归档 + 可选 VACUUM。
+**Phase 17 — 维护与健壮性 ✅**
+架构：新增 `kittymind/storage/`（两个 SQLite 库共用的底座）。
+① **版本链迁移**（`migrations.py`）：每个步骤显式声明目标版本，`schema_migrations` 表记录"哪些步骤真的成功过"，**只有步骤成功才提升 `user_version`**——旧实现用 `suppress` 吞掉异常后无条件标最新版本，半截 schema 会永久固化；库版本高于代码版本时直接拒绝写入（防止降级运行写坏新库）。会话库迁移链 v3/v5/v6/v7，允许跳号（对齐历史语义，不为连续插空步骤）。
+② **启动自检与损坏恢复**：`PRAGMA quick_check` → 失败则把库连同 `-wal/-shm` **改名隔离**（不删）→ 尝试把可读页面抢救到新库 → 失败才建空库并告警。
+③ **备份**：`Connection.backup()`（在线备份 API，能带上未 checkpoint 的 WAL 数据）写入库同级 `backups/`，按 `<库名>-<时间戳>.db` 命名、24h 间隔、滚动保留 5 份；空库不备份。
+④ **空间维护**：启动 `wal_checkpoint(TRUNCATE)` + 退出时同样截断，运行期把 `wal_autocheckpoint` 收到 512 页；空闲页占比 ≥40% 且库 ≥32 MB 才在后台线程 VACUUM（重活不上启动路径，避免拖慢 Electron 就绪探测），另有 `store.compact()` 手动入口。
+⑤ 工具审计库（此前 `user_version` 恒为 0、无迁移入口）纳入同一套版本链与自检。
+⑥ 记忆文件改为**原子写**（同目录 tmp + `os.replace`），启动自检把解析不出来的 md 移入 `memory/_quarantine/` 并告警（此前是静默消失）。
+实测效果（真实库）：WAL 3.80 MB → 0，`sessions.db` 0.53 MB → 0.07 MB（空闲页 86% → 0%），会话数据完好。
+未做（需先定策略）：`model_usage` / `tool_audit` 的行数保留期；会话归档（`archived` 列）留待独立一轮。
 
 **Phase 17M — 长期记忆检索升级 ⬜**
 现状基础：Markdown+frontmatter 记忆、LLM 提取/整合/召回已可用，召回以独立消息注入（缓存友好）。
