@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import ClassVar
@@ -10,6 +11,23 @@ from .llm_trace import get_llm_trace_log
 from ..config import cfg
 
 logger = logging.getLogger(__name__)
+
+_V1_SUFFIX_RE = re.compile(r"/v1/?$")
+
+
+def _anthropic_base_url(base_url: str | None) -> str | None:
+    """把 OpenAI 惯例的 base_url（末尾带 `/v1`）转成 Anthropic SDK 能用的形式。
+
+    两家 SDK 对 base_url 的约定不同：OpenAI SDK 端点是不带版本号的
+    `/chat/completions`，所以 `/v1` 必须写在 base_url 里；Anthropic SDK
+    端点自带版本号（硬编码 `/v1/messages`），base_url 不该再带 `/v1`，
+    否则拼成 `/v1/v1/messages` 直接 404/400。项目里主模型只有一份
+    LLM_BASE_URL，用户按网关文档（通常是 OpenAI 惯例，形如 `.../v1`）填一次，
+    换 Claude/GPT 模型不应该还要来回改这一项，所以这里剥掉多余的尾部 `/v1`。
+    """
+    if not base_url:
+        return base_url
+    return _V1_SUFFIX_RE.sub("", base_url) or None
 
 
 class BaseLLMAdapter(ABC):
@@ -178,7 +196,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         import anthropic
         return anthropic.Anthropic(
             api_key=self.api_key,
-            base_url=self.base_url or None,
+            base_url=_anthropic_base_url(self.base_url),
             timeout=float(self.timeout),
         )
 
@@ -186,7 +204,7 @@ class AnthropicAdapter(BaseLLMAdapter):
         import anthropic
         return anthropic.AsyncAnthropic(
             api_key=self.api_key,
-            base_url=self.base_url or None,
+            base_url=_anthropic_base_url(self.base_url),
             timeout=float(self.timeout),
         )
 
