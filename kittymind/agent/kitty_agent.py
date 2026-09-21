@@ -36,6 +36,7 @@ from ..memory.recall import MemoryRecall
 from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
 from ..tools.base import BaseTool
+from ..usage import UsageRecorder
 from ..tools.builtin.bash_tool import bash_cwd
 from ..tools.executor import ToolExecutor, TurnContext
 from ..tools.audit import get_tool_audit_log
@@ -44,7 +45,9 @@ from ..tools.registry import ToolRegistry
 from .base import Agent
 from .delegation import (
     reset_root_budget, reset_root_session,
+    reset_root_usage_recorder,
     set_root_budget, set_root_session,
+    set_root_usage_recorder,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,6 +114,9 @@ class KittyAgent(Agent):
             self.tool_registry, ask_fn=ask_fn, guardrail=guardrail, audit=audit
         )
         self.last_messages: list[dict] = []
+        # 上一次 run 的用量聚合结果（含子 Agent 合并前的主体消耗）。
+        # task_tool 在子 Agent 跑完后读它，回传给父 Agent 合并计入父会话。
+        self.last_usage_recorder: UsageRecorder | None = None
 
         # 辅助小模型：未配置 LLM_AUX_MODEL_ID 时为 None，辅助任务自动回退主模型
         self.aux_llm: BaseAgentLLM | None = (
@@ -213,7 +219,7 @@ class KittyAgent(Agent):
         """
         effective_workspace_id, cwd_path = self._resolve_workspace(session_id, workspace_id)
 
-        cwd_token = budget_token = session_token = None
+        cwd_token = budget_token = session_token = usage_token = None
         if root:
             cwd_token     = bash_cwd.set(cwd_path)
             budget_token  = set_root_budget(cfg.SUBAGENT_MAX_DEPTH, cfg.SUBAGENT_MAX_TOTAL)
@@ -234,6 +240,11 @@ class KittyAgent(Agent):
             compressed_this_turn = False
             cooldown_until = 0.0
             ineffective_count = 0
+            # 本 turn 的用量聚合器：usage 事件多次来，这里累加后随 _commit_turn 落库。
+            # 子 Agent（session_id=None）同样持有一个，其聚合结果经委派回传父级合并。
+            recorder = UsageRecorder()
+            if root:
+                usage_token = set_root_usage_recorder(recorder)
 
             try:
                 for _ in range(self.max_iterations):
@@ -265,6 +276,7 @@ class KittyAgent(Agent):
                                 tool_calls = event.tool_calls
                             elif event.type == "usage" and event.usage:
                                 tracker.update_from_usage(event.usage)
+                                recorder.record(event.usage, self.llm.model)
                                 await self.event_bus.emit(AGENT_CONTEXT_USAGE, {
                                     "session_id":   session_id,
                                     "used_tokens":  tracker.used_tokens(messages),
@@ -314,6 +326,8 @@ class KittyAgent(Agent):
                 final_text = self._ensure_final_text(final_text)
 
                 self.last_messages = messages + [self._assistant_message(final_text, [])]
+                # 保存本 run 的用量聚合结果：task_tool 在子 Agent 跑完后读它回传。
+                self.last_usage_recorder = recorder
 
                 turn_messages.append({"role": "assistant", "content": final_text})
 
@@ -321,7 +335,7 @@ class KittyAgent(Agent):
                     self._commit_turn(
                         session_id, messages, turn_messages,
                         compressor, tracker, effective_workspace_id, input_text,
-                        compressed_this_turn, loaded_seqs,
+                        compressed_this_turn, loaded_seqs, recorder,
                     )
 
                 await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
@@ -340,8 +354,10 @@ class KittyAgent(Agent):
                 bash_cwd.reset(cwd_token)
                 reset_root_budget(budget_token)
                 reset_root_session(session_token)
+                if usage_token is not None:
+                    reset_root_usage_recorder(usage_token)
 
-    # ── 记忆召回（async 路径独有的能力）────
+    # ── 记忆召回 ────
 
     async def _inject_memory_recall(
         self, messages: list[dict], input_text: str, session_id: str | None
@@ -520,6 +536,7 @@ class KittyAgent(Agent):
         input_text: str,
         compressed_this_turn: bool,
         loaded_seqs: list,
+        recorder: UsageRecorder,
     ) -> None:
         """将本轮结果原子落库。
 
@@ -577,6 +594,19 @@ class KittyAgent(Agent):
         if tracker._last_prompt_tokens:
             state_fields["last_prompt_tokens"] = tracker._last_prompt_tokens
         self.session_manager.save_session_state(session_id, **state_fields)
+
+        # 用量成本落库：一个 turn 内多次 LLM 调用已由 recorder 聚合，
+        # 按模型展开写入。子 Agent 的用量也并进本 recorder（见 task_tool 回传）。
+        if not recorder.is_empty:
+            for row in recorder.rows():
+                self.session_manager.record_usage(
+                    session_id=session_id,
+                    model_id=row["model_id"],
+                    prompt_tokens=row["prompt_tokens"],
+                    completion_tokens=row["completion_tokens"],
+                    n_calls=row["n_calls"],
+                    kind="turn",
+                )
 
     @staticmethod
     def _find_prev_seq(messages: list[dict], idx: int) -> float | None:

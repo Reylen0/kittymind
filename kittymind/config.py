@@ -147,6 +147,11 @@ TOOL_AUDIT_ENABLED        = True   # 是否记录工具调用审计（SQLite + J
 TOOL_REDACT_ENABLED       = True   # 是否对工具输出/审计参数做敏感信息脱敏
 TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出截断）
 
+# ── 用量与成本追踪（Phase 16） ───────────────────────
+# 价目表覆盖：{ "model_id": {"input": 美元/百万token, "output": 美元/百万token} }
+# 空 dict = 只用内置默认价目表。查不到的模型前端显示「无价目」，不编造成本。
+USAGE_PRICING = {}
+
 # ── 自我验证（verify 工具） ──────────────────────────
 VERIFY_TIMEOUT        = 120     # command 验证器默认超时（测试/build 比普通命令更久）
 VERIFY_MAX_TIMEOUT    = 600     # command 验证器超时硬上限
@@ -189,6 +194,7 @@ _OVERRIDABLE = {
     "TOOL_AUDIT_ENABLED", "TOOL_REDACT_ENABLED", "TOOL_AUDIT_ARGS_MAX_CHARS",
     "VERIFY_TIMEOUT", "VERIFY_MAX_TIMEOUT", "VERIFY_PROBE_RETRIES",
     "VERIFY_PROBE_INTERVAL", "VERIFY_MAX_OUTPUT",
+    "USAGE_PRICING",
 }
 
 

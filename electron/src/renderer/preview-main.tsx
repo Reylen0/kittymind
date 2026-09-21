@@ -160,6 +160,7 @@ const mockPending: Record<string, any[]> = {}
 }
 
 const w = window as any
+w.__overlayCalls = [] as Array<{ color: string; symbolColor: string }>
 w.kitty = {
   listSessions: async () => emptyView
     ? []
@@ -218,9 +219,26 @@ w.kitty = {
     }
   },
   windowControl: () => {},
+  // 记录 titleBarOverlay 调色请求，供自动化断言「弹窗打开时 overlay 变暗、关闭还原」
+  setNativeTheme: async (opts: { color: string; symbolColor: string }) => {
+    w.__overlayCalls.push(opts)
+  },
   agentStatus: async () => ({ name: 'kitty', model: 'demo-model', running_sessions: [] }),
   getPendingPermissions: async (sessionId: string) => ({
     pending: mockPending[sessionId] ?? [],
+  }),
+  getUsageReport: async (opts: { groupBy?: string } = {}) => ({
+    group_by: opts.groupBy || 'model',
+    groups: opts.groupBy === 'day'
+      ? [
+          { key: '2026-09-21', prompt_tokens: 128000, completion_tokens: 32000, n_calls: 42, cost: null },
+          { key: '2026-09-20', prompt_tokens: 560000, completion_tokens: 98000, n_calls: 128, cost: null },
+        ]
+      : [
+          { key: 'claude-sonnet-4-6', prompt_tokens: 680000, completion_tokens: 125000, n_calls: 164, cost: 3.92 },
+          { key: 'claude-haiku-4-5', prompt_tokens: 8000, completion_tokens: 5000, n_calls: 6, cost: 0.03 },
+        ],
+    total: { prompt_tokens: 688000, completion_tokens: 130000, n_calls: 170 },
   }),
   on: (event: string, cb: (d: any) => void) => {
     (listeners[event] ??= []).push(cb)

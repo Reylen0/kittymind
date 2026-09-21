@@ -17,6 +17,20 @@ const OVERLAY_COLORS: Record<Theme, { color: string; symbolColor: string }> = {
   dark:  { color: '#1b1c22', symbolColor: '#e8e9ee' },
 }
 
+/** 全屏遮罩（rgba(0,0,0,.32)）盖住顶栏后，overlay 区域应呈现的等效混合色。
+ *  WCO 是系统层，网页内容（含遮罩）永远画不到它上面——弹窗打开时若不改色，
+ *  右上角会留一块亮色，观感是「窗口控制按钮浮在弹窗之上」。 */
+const OVERLAY_DIMMED: Record<Theme, { color: string; symbolColor: string }> = {
+  light: { color: '#a8a9aa', symbolColor: '#1d1d21' },  // #f7f8fa × (1-.32)
+  dark:  { color: '#121317', symbolColor: '#e8e9ee' },  // #1b1c22 × (1-.32)
+}
+
+/** 打开/关闭全屏遮罩类弹窗时切换 overlay 配色；关闭时按当前主题还原 */
+export function setOverlayDimmed(dimmed: boolean) {
+  const t = getTheme()
+  window.kitty?.setNativeTheme?.((dimmed ? OVERLAY_DIMMED : OVERLAY_COLORS)[t])
+}
+
 export function applyTheme(t: Theme) {
   if (t === 'dark') document.documentElement.dataset.theme = 'dark'
   else delete document.documentElement.dataset.theme

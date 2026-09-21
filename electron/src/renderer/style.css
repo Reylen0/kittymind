@@ -34,3 +34,33 @@
 .search-hit mark{background:var(--accent-soft);color:var(--accent);border-radius:3px;padding:0 1px;font-weight:600}
 [data-theme=dark] .search-hit:hover{background:#ffffff0f}
 [data-theme=dark] .search-group-title{color:#9294a0}
+
+/* ── 用量成本面板（Phase 16） ───────────────────────────── */
+.usage-overlay{position:fixed;inset:0;background:rgba(0,0,0,.32);display:flex;align-items:flex-start;justify-content:center;z-index:300;padding-top:12vh}
+.usage-panel{width:min(560px,92vw);max-height:72vh;overflow:hidden;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow-pop);animation:pop-in .16s var(--ease)}
+.usage-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 10px}
+.usage-title{font-size:14px;font-weight:600;color:var(--text)}
+.usage-close{width:26px;height:26px;border:none;border-radius:7px;background:none;color:var(--text-3);font-size:18px;cursor:pointer;line-height:1;transition:background .1s,color .1s}
+.usage-close:hover{background:var(--surface-3);color:var(--text)}
+.usage-tabs{display:flex;gap:4px;padding:0 18px 10px;border-bottom:1px solid var(--border)}
+.usage-tab{padding:5px 14px;border:1px solid var(--border);border-radius:var(--r-full);background:none;color:var(--text-2);font-size:12.5px;font-family:inherit;cursor:pointer;transition:background .12s,color .12s,border-color .12s}
+.usage-tab:hover{background:var(--surface-2);color:var(--text)}
+.usage-tab.active{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-border);font-weight:600}
+.usage-empty{padding:32px 18px;text-align:center;color:var(--text-3);font-size:13px}
+.usage-list{flex:1;overflow-y:auto;padding:8px 18px}
+.usage-row{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid var(--border)}
+.usage-row:last-child{border-bottom:none}
+.usage-row-key{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:var(--text);font-family:var(--font-mono)}
+.usage-row-meta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-3)}
+.usage-tok{white-space:nowrap}
+.usage-calls{white-space:nowrap;color:var(--text-3)}
+.usage-cost{min-width:64px;text-align:right;font-size:13px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.usage-total{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--border);background:var(--surface-2);font-size:12.5px;color:var(--text-2)}
+.usage-total-tok{margin-left:auto;color:var(--text-3)}
+.topbar-usage-btn{position:relative;margin-left:auto;width:28px;height:28px;display:flex;align-items:center;justify-content:center;background:none;border:none;border-radius:var(--r-sm);cursor:pointer;color:var(--text-2);transition:background .12s var(--ease),color .12s var(--ease)}
+.topbar-usage-btn:hover{background:#16192212;color:var(--text)}
+[data-theme=dark] .topbar-usage-btn:hover{background:#ffffff14}
+/* hover 提示：纯 CSS tooltip，反色小签（与 ctx 徽标同套配色） */
+.topbar-usage-btn::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);right:-6px;padding:4px 9px;background:var(--ctx-badge-bg);color:var(--ctx-badge-fg);font-size:11.5px;line-height:1.4;white-space:nowrap;border-radius:6px;box-shadow:var(--shadow-card);opacity:0;visibility:hidden;transform:translateY(-2px);transition:opacity .12s var(--ease),transform .12s var(--ease),visibility .12s;pointer-events:none;z-index:9999}
+.topbar-usage-btn:hover::after{opacity:1;visibility:visible;transform:none}
+

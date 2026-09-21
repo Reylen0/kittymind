@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect } from 'react'
 import TopBar from './TopBar'
 import SessionList from './SessionList'
 import ChatView from './ChatView'
+import UsagePanel from './UsagePanel'
 import type { Session, Workspace } from './types'
 import './style.css'
 
@@ -24,6 +25,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   // 已挂载的会话视图，按访问顺序排列（见 MAX_LIVE_VIEWS）
   const [openIds,     setOpenIds]     = useState<string[]>([])
+  const [usageOpen,   setUsageOpen]   = useState(false)
 
   useEffect(() => {
     loadSessions()
@@ -76,7 +78,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar />
+      <TopBar onUsage={() => setUsageOpen(true)} />
       <div className="app-body">
         <SessionList
           sessions={sessions}
@@ -106,6 +108,8 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {usageOpen && <UsagePanel onClose={() => setUsageOpen(false)} />}
     </div>
   )
 }

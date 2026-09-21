@@ -51,6 +51,9 @@ _budget: ContextVar[DelegationBudget | None] = ContextVar(
 _root_session_id: ContextVar[str | None] = ContextVar(
     "_root_session_id", default=None
 )
+_root_usage_recorder: ContextVar[object | None] = ContextVar(
+    "_root_usage_recorder", default=None
+)
 
 
 def current_budget() -> DelegationBudget | None:
@@ -84,6 +87,20 @@ def current_root_session() -> str | None:
     多会话并行会把 A 的审批弹在 B 的界面上。
     """
     return _root_session_id.get()
+
+
+def set_root_usage_recorder(recorder) -> None:
+    """注入根 Agent 当前 turn 的用量聚合器，供子 Agent（task_tool）回传合并。"""
+    _root_usage_recorder.set(recorder)
+
+
+def reset_root_usage_recorder(token) -> None:
+    _root_usage_recorder.reset(token)
+
+
+def current_root_usage_recorder():
+    """当前上下文里根 Agent 的用量聚合器（子 Agent 用它把 token 回传父级）。"""
+    return _root_usage_recorder.get()
 
 
 def can_delegate(budget: DelegationBudget | None) -> bool:

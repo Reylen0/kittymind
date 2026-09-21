@@ -16,6 +16,7 @@ from kittymind.events.types import (
     SUBAGENT_START, SUBAGENT_DONE,
 )
 from kittymind.agent import KittyAgent
+from kittymind.usage import estimate_cost
 
 
 # 单次 session/get 最多返回的消息条数（分页上限）：请求方传再大的 limit 也不越界，
@@ -43,6 +44,7 @@ class RpcHandler:
             "session/search":           self._session_search,
             "session/delete":           self._session_delete,
             "agent/status":             self._agent_status,
+            "usage/report":             self._usage_report,
             "workspace/list":           self._workspace_list,
             "workspace/create":         self._workspace_create,
             "tool/permission_response": self._permission_response,
@@ -319,6 +321,62 @@ class RpcHandler:
             "name": self.agent.name,
             "model": self.agent.llm.model,
             "running_sessions": list(self._tasks.keys()),
+        })
+
+    # ──────────────────────────────────────────────────────────────
+    # usage/report
+    # ──────────────────────────────────────────────────────────────
+
+    async def _usage_report(self, req_id: Any, params: dict) -> None:
+        """用量成本报告。group_by ∈ {model, day, session}，since/until 为 epoch 秒。
+
+        返回 {"groups": [...], "total": {...}}。cost 字段在价目表查不到时为 null。
+        """
+        mgr = self._mgr()
+        if not mgr:
+            await self._error(req_id, "no session manager configured")
+            return
+
+        group_by = params.get("group_by") or "model"
+        if group_by not in ("model", "day", "session"):
+            await self._error(req_id, f"invalid group_by: {group_by}")
+            return
+
+        since = params.get("since")
+        until = params.get("until")
+        def _to_ts(v):
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        groups = mgr.aggregate_usage(group_by, _to_ts(since), _to_ts(until))
+
+        # 附加成本估算：day/session 分组不是单一 model，cost 无法精确到价目表，
+        # 此时按 null 处理（model 分组才给成本）。
+        result_groups = []
+        total_p = total_c = total_n = 0
+        for g in groups:
+            total_p += g["prompt_tokens"]
+            total_c += g["completion_tokens"]
+            total_n += g["n_calls"]
+            cost = None
+            if group_by == "model":
+                c = estimate_cost(g["prompt_tokens"], g["completion_tokens"], g["key"])
+                cost = c.total_usd if c else None
+            result_groups.append({
+                "key": g["key"],
+                "prompt_tokens": g["prompt_tokens"],
+                "completion_tokens": g["completion_tokens"],
+                "n_calls": g["n_calls"],
+                "cost": cost,
+            })
+
+        await self._result(req_id, {
+            "group_by": group_by,
+            "groups": result_groups,
+            "total": {
+                "prompt_tokens": total_p,
+                "completion_tokens": total_c,
+                "n_calls": total_n,
+            },
         })
 
     # ──────────────────────────────────────────────────────────────

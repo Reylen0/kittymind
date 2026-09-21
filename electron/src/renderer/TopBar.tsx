@@ -38,7 +38,7 @@ const MENUS: { label: string; items: MenuItemDef[] }[] = [
   },
 ]
 
-export default function TopBar() {
+export default function TopBar({ onUsage }: { onUsage?: () => void }) {
   const [openIdx, setOpenIdx] = useState<number | null>(null)
   const barRef = useRef<HTMLDivElement>(null)
 
@@ -103,6 +103,22 @@ export default function TopBar() {
           </div>
         ))}
       </div>
+
+      {onUsage && (
+        <button
+          className="topbar-usage-btn"
+          style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          onClick={onUsage}
+          aria-label="用量统计"
+          data-tip="用量统计"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+            <path d="M3.5 13V9.5" />
+            <path d="M8 13V4.5" />
+            <path d="M12.5 13V7.5" />
+          </svg>
+        </button>
+      )}
     </div>
   )
 }

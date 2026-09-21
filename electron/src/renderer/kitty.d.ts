@@ -62,6 +62,18 @@ declare global {
           session_id: string | null
         }>
       }>
+      /** 用量成本报告（Phase 16）；cost 在价目表查不到时为 null */
+      getUsageReport(opts?: { groupBy?: 'model' | 'day' | 'session'; since?: number; until?: number }): Promise<{
+        group_by: string
+        groups: Array<{
+          key: string
+          prompt_tokens: number
+          completion_tokens: number
+          n_calls: number
+          cost: number | null
+        }>
+        total: { prompt_tokens: number; completion_tokens: number; n_calls: number }
+      }>
 
       // on() returns an unsubscribe function — call it in useEffect cleanup
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

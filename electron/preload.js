@@ -75,6 +75,17 @@ contextBridge.exposeInMainWorld('kitty', {
       params: { session_id: sessionId },
     }),
 
+  // 用量成本报告（Phase 16）：groupBy ∈ model/day/session，since/until 为 epoch 秒
+  getUsageReport: (opts = {}) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'usage/report',
+      params: {
+        group_by: opts.groupBy || 'model',
+        ...(typeof opts.since === 'number' ? { since: opts.since } : {}),
+        ...(typeof opts.until === 'number' ? { until: opts.until } : {}),
+      },
+    }),
+
   // Window / edit controls (custom TopBar)
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
 

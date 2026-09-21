@@ -3,12 +3,18 @@
 单连接 + threading.Lock 保证线程安全。
 WAL 模式（失败则降级 DELETE）。
 
-schema 版本 6（PRAGMA user_version=6）:
+schema 版本 7（PRAGMA user_version=7）:
   sessions(id, title, workspace_id, created_at, updated_at,
            compressed_once, last_prompt_tokens)
   messages(id, session_id, seq REAL, role, content, tool_calls, tool_call_id, ts,
            active, compacted, is_summary)
   messages_fts(body)  —— 全文检索索引，rowid 对齐 messages.id（见 _ensure_fts）
+  model_usage(id, session_id, model_id, prompt_tokens, completion_tokens,
+              n_calls, ts, kind)
+
+model_usage 的 session_id **不带外键 CASCADE**：用量是审计数据，删会话时
+成本记录要保留（否则删会话就把成本历史抹掉，违背追踪初衷）。删会话后
+该行的 session_id 悬空，聚合按 model/day 时仍计入，按 session 时天然消失。
 
 seq 用 REAL 支持压缩摘要行的小数序（被压中段末尾与首条保留行 seq 的中点）。
 active=1 → 模型视图（摘要+尾部，用于构建 LLM 上下文）。
@@ -37,7 +43,7 @@ from pathlib import Path
 from ._search_text import to_match_expr, to_search_text
 
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -65,6 +71,24 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_session_seq ON messages(session_id, seq);
+"""
+
+# model_usage：用量成本追踪。session_id 允许 NULL（非会话类消耗），
+# 故意不建外键 CASCADE——删会话保留成本审计记录。
+_USAGE_DDL = """
+CREATE TABLE IF NOT EXISTS model_usage (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id        TEXT,
+    model_id          TEXT NOT NULL,
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    n_calls           INTEGER NOT NULL DEFAULT 1,
+    ts                INTEGER NOT NULL,
+    kind              TEXT NOT NULL DEFAULT 'turn'
+);
+
+CREATE INDEX IF NOT EXISTS idx_usage_model_ts ON model_usage(model_id, ts);
+CREATE INDEX IF NOT EXISTS idx_usage_session ON model_usage(session_id);
 """
 
 _LEGACY_COLS = ("used_tokens", "total_tokens", "context_ratio")
@@ -158,6 +182,13 @@ class SqliteSessionStore:
             )
         # v5 → v6：全文检索索引
         self._ensure_fts()
+        # v6 → v7：用量成本追踪表
+        self._ensure_usage()
+
+    def _ensure_usage(self) -> None:
+        """建 model_usage 表（幂等）。调用方（_migrate）已持有 self._lock。"""
+        with contextlib.suppress(Exception):
+            self._conn.executescript(_USAGE_DDL)
 
     def _ensure_fts(self) -> None:
         """建全文检索表与删除触发器；仅在本次真的新建了表时回填存量消息。
@@ -704,3 +735,96 @@ class SqliteSessionStore:
                 f"UPDATE sessions SET {set_clause}, updated_at=? WHERE id=?",
                 (*cols.values(), self._now_iso(), session_id),
             )
+
+    # ── 用量成本追踪 ─────────────────────────────────
+
+    def record_usage(
+        self,
+        session_id: str | None,
+        model_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        n_calls: int = 1,
+        kind: str = "turn",
+    ) -> None:
+        """写入一条用量记录。session_id 允许 None（非会话类消耗）。
+
+        n_calls 只增不改为 0；空调用（prompt 与 completion 均为 0 且无调用）
+        仍会落一条 0 行，调用方负责在没必要时不调用本方法。
+        """
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO model_usage"
+                "(session_id, model_id, prompt_tokens, completion_tokens, n_calls, ts, kind)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    model_id,
+                    int(prompt_tokens),
+                    int(completion_tokens),
+                    max(1, int(n_calls)),
+                    self._ts(),
+                    kind,
+                ),
+            )
+
+    def aggregate_usage(
+        self,
+        group_by: str = "model",
+        since: int | None = None,
+        until: int | None = None,
+    ) -> list[dict]:
+        """按 model / day / session 聚合用量。
+
+        返回列表，每条含 key / prompt_tokens / completion_tokens / n_calls，
+        按 prompt_tokens + completion_tokens 降序（最大消耗排前）。
+        """
+        where: list[str] = []
+        args: list = []
+        if since is not None:
+            where.append("ts >= ?")
+            args.append(int(since))
+        if until is not None:
+            where.append("ts <= ?")
+            args.append(int(until))
+        cond = (" WHERE " + " AND ".join(where)) if where else ""
+
+        if group_by == "day":
+            key_expr = "date(ts, 'unixepoch', 'localtime')"
+        elif group_by == "session":
+            key_expr = "COALESCE(session_id, '(none)')"
+        else:  # model
+            key_expr = "model_id"
+
+        sql = (
+            f"SELECT {key_expr} AS k,"
+            " SUM(prompt_tokens), SUM(completion_tokens), SUM(n_calls)"
+            f" FROM model_usage{cond} GROUP BY k"
+            " ORDER BY SUM(prompt_tokens) + SUM(completion_tokens) DESC"
+        )
+        with self._lock:
+            rows = self._conn.execute(sql, args).fetchall()
+        return [
+            {
+                "key": r[0],
+                "prompt_tokens": int(r[1] or 0),
+                "completion_tokens": int(r[2] or 0),
+                "n_calls": int(r[3] or 0),
+            }
+            for r in rows
+        ]
+
+    def session_usage(self, session_id: str) -> dict:
+        """单个会话的用量合计（供实时徽标）。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(prompt_tokens),0),"
+                " COALESCE(SUM(completion_tokens),0), COALESCE(SUM(n_calls),0)"
+                " FROM model_usage WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        return {
+            "prompt_tokens": int(row[0] or 0),
+            "completion_tokens": int(row[1] or 0),
+            "n_calls": int(row[2] or 0),
+        }

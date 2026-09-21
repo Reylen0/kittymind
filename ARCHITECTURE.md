@@ -115,7 +115,7 @@ kittymind/                      # 项目根目录
 |--------|------|-----------|:----:|
 | MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
 | **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
-| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 检索升级 ⬜ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 用量成本 ✅ / 检索升级 ⬜ |
 | **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
 | **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
@@ -180,8 +180,8 @@ kittymind/                      # 项目根目录
 **Phase 15 — FTS5 全文搜索 ✅**
 架构：原计划的 CJK 方案是「trigram 回退」，实测推翻——trigram 要求查询词 ≥3 字符，「压缩」「阈值」这类 2 字词全部 0 命中，而 2 字词恰恰是中文检索主力。改为自行预处理：CJK 段展开成重叠二元组（`session/_search_text.py`），非 CJK 段交给 `unicode61` 按空白切；入库与查询走同一份切词函数。索引是普通 FTS5 表（`messages_fts`，非 contentless——3.39.4 不支持 `contentless_delete`），`rowid` 对齐 `messages.id`；INSERT 侧在 Python 层显式维护（二元组要现算），DELETE 侧用 `AFTER DELETE` 触发器，借 `sessions` 的 `ON DELETE CASCADE` 自动清干净（已验证级联删除会触发该触发器，无孤儿行）。只索引 `role IN ('user','assistant')`——工具原始输出（文件全文、bash stdout）不进索引，否则搜索结果被回显淹没。搜索走完整视图（`active=1 OR compacted=1`），压缩摘要行不重复索引（原文仍在 compacted 行里）。`session/search` RPC 结果按会话分组，manager 层基于原文计算高亮片段与区间（不用 FTS5 的 `snippet()`——索引里存的是二元组串，不是原文）。前端升级侧栏现有搜索框，标题过滤本地即时、内容搜索防抖 250ms，`<mark>` 高亮（非 `dangerouslySetInnerHTML`）。v5 库升级时一次性回填存量消息。
 
-**Phase 16 — 用量与成本追踪 ⬜**
-思路：`session_model_usage` 表按模型/任务聚合 token（usage 数据源已具备——TokenTracker 每轮拿真值）；价目表估成本；前端用量面板。
+**Phase 16 — 用量与成本追踪 ✅**
+架构：新增 `kittymind/usage/`（`UsageRecorder` per-turn 聚合器 + `pricing.py` 价目表）。usage 真值在 kitty_agent 主循环的 `usage` 事件分支经 recorder 按模型累加，随 `_commit_turn` 原子落库到 `model_usage` 表（schema v7，`session_id` 不带外键——**删会话保留成本记录**）。子 Agent 的 token 真值经 `_root_usage_recorder` ContextVar 回传父级合并，**计入父会话成本**（替代原 `estimate_tokens` 估算）。价目表内置默认（Claude/DeepSeek/Qwen/Ollama）+ `USAGE_PRICING` settings.json 覆盖，查不到返回 null 不编造。新增 `usage/report` RPC（`group_by ∈ {model, day, session}` + since/until），前端顶栏「用量」入口 + 弹层面板（按模型/按日/按会话切换，含成本列）。历史数据不回填，自 v7 起统计。
 
 **Phase 17 — 维护与健壮性 ⬜**
 思路：启动 `integrity_check` + 损坏备份重建；schema 版本号迁移链；旧会话 archived 归档 + 可选 VACUUM。

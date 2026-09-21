@@ -29,6 +29,7 @@ from ...agent.delegation import (
     can_delegate,
     child_scope,
     current_budget,
+    current_root_usage_recorder,
 )
 from ..base import BaseTool, ToolResult
 
@@ -167,6 +168,12 @@ class TaskTool(BaseTool):
                 finally:
                     elapsed = time.monotonic() - t0
                     tokens = estimate_tokens(sub_agent.last_messages)
+                    # 子 Agent 的真实 token 用量回传父级：合并进根 Agent 的 recorder，
+                    # 随父 turn 落库计入父会话成本（估算值仅作脚注展示，不落库）。
+                    sub_rec = sub_agent.last_usage_recorder
+                    root_rec = current_root_usage_recorder()
+                    if sub_rec is not None and root_rec is not None:
+                        root_rec.merge(sub_rec)
                     await self._emit(SUBAGENT_DONE, {
                         "depth": depth,
                         "ok": ok,

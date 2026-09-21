@@ -247,3 +247,19 @@ class SessionManager:
     def generate_title(self, text: str) -> str:
         text = text.strip()
         return text[:20] + ("..." if len(text) > 20 else "")
+
+    # ── 用量成本追踪（Phase 16）─────────────────────────────────
+
+    def record_usage(self, session_id: str | None, model_id: str,
+                     prompt_tokens: int, completion_tokens: int,
+                     n_calls: int = 1, kind: str = "turn") -> None:
+        self.store.record_usage(
+            session_id, model_id, prompt_tokens, completion_tokens, n_calls, kind
+        )
+
+    def aggregate_usage(self, group_by: str = "model",
+                        since: int | None = None, until: int | None = None) -> list[dict]:
+        return self.store.aggregate_usage(group_by, since, until)
+
+    def session_usage(self, session_id: str) -> dict:
+        return self.store.session_usage(session_id)
