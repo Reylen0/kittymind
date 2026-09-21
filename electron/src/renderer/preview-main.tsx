@@ -134,10 +134,17 @@ if (new URLSearchParams(window.location.search).has('tip')) {
   document.documentElement.dataset.forceTip = '1'
 }
 // 预览用：自动打开第一个演示会话（含 mock 消息），如 preview.html?chat
-if (new URLSearchParams(window.location.search).has('chat')) {
-  setTimeout(() => {
-    document.querySelector<HTMLElement>('.session-item')?.click()
-  }, 60)
+// ?ws 则打开工作区内的演示会话（定位逻辑会自动展开该工作区），如 preview.html?ws
+{
+  const sp = new URLSearchParams(window.location.search)
+  if (sp.has('chat') || sp.has('ws')) {
+    const idx = sp.has('ws') ? 1 : 0
+    const tryClick = () => {
+      const el = document.querySelectorAll<HTMLElement>('.session-item')[idx]
+      el ? el.click() : setTimeout(tryClick, 80)
+    }
+    tryClick()
+  }
 }
 
 // 预览用：mock 的事件订阅真实可分发，并暴露 window.__permFire 供自动化触发。

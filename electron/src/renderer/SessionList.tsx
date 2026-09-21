@@ -44,15 +44,8 @@ function IcoPlus() {
 }
 function IcoChevronDown() {
   return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="2,4 6,8 10,4"/>
-    </svg>
-  )
-}
-function IcoChevronRight() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="4,2 8,6 4,10"/>
     </svg>
   )
 }
@@ -375,8 +368,8 @@ export default function SessionList({
             className="session-section-label collapsible"
             onClick={() => setDialogCollapsed(v => !v)}
           >
-            <span>对话{freeSessions.length > 0 ? ` (${freeSessions.length})` : ''}</span>
-            <span className="section-arrow">{dialogCollapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
+            <span>对话{freeSessions.length > 0 ? ' ' : ''}{freeSessions.length > 0 && <span className="section-count">({freeSessions.length})</span>}</span>
+            <span className={`section-arrow${dialogCollapsed ? ' collapsed' : ''}`}><IcoChevronDown /></span>
           </button>
           {!dialogCollapsed && (
             <div className="session-items">
@@ -399,8 +392,8 @@ export default function SessionList({
             className="session-section-label collapsible"
             onClick={() => setSpacesCollapsed(v => !v)}
           >
-            <span>工作区 ({workspaces.length})</span>
-            <span className="section-arrow">{spacesCollapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
+            <span>工作区 <span className="section-count">({workspaces.length})</span></span>
+            <span className={`section-arrow${spacesCollapsed ? ' collapsed' : ''}`}><IcoChevronDown /></span>
           </button>
           {!spacesCollapsed && workspaces.map(ws => {
             const wsSessions = sessions.filter(s => s.workspace_id === ws.id)
@@ -415,7 +408,7 @@ export default function SessionList({
                   <button className="workspace-group-header" onClick={() => toggleSpace(ws.id)}>
                     <IcoFolder />
                     <span className="workspace-group-name">{ws.name}</span>
-                    <span className="workspace-group-arrow">{collapsed ? <IcoChevronRight /> : <IcoChevronDown />}</span>
+                    <span className={`workspace-group-arrow${collapsed ? ' collapsed' : ''}`}><IcoChevronDown /></span>
                   </button>
                   {/* 悬浮才出现：删工作区（其下会话保留，移回「对话」） */}
                   <button className="ws-delete" title="删除工作区" aria-label={`删除工作区 ${ws.name}`}
