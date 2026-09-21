@@ -14,15 +14,14 @@
 而且是静默丢失——索引重建时它直接消失，没人知道曾经有过。
 """
 
-import contextlib
 import logging
-import os
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 from ..config import cfg
+from ..storage import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,7 @@ class MemoryStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         path = self._dir / f"{self._slug(name)}.md"
         updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self._atomic_write(
+        atomic_write_text(
             path, self._document(name, mem_type, description, body, updated_at)
         )
         self._rebuild_index()
@@ -176,7 +175,7 @@ class MemoryStore:
             if p.name != _INDEX_FILE:
                 p.unlink()
         for filename, content in snap.items():
-            self._atomic_write(self._dir / filename, content)
+            atomic_write_text(self._dir / filename, content)
         self._rebuild_index()
 
     # ── 内部工具 ──────────────────────────────────────────────────
@@ -185,7 +184,7 @@ class MemoryStore:
         memories = self.all_memories()
         self._dir.mkdir(parents=True, exist_ok=True)
         if not memories:
-            self._atomic_write(self._index, "# Memory Index\n\n(no memories yet)\n")
+            atomic_write_text(self._index, "# Memory Index\n\n(no memories yet)\n")
             return
         lines = ["# Memory Index\n"]
         for m in memories:
@@ -194,27 +193,7 @@ class MemoryStore:
                 f"- [{m.get('name','?')}]({filename}) "
                 f"[{m.get('type','?')}] — {m.get('description','')}"
             )
-        self._atomic_write(self._index, "\n".join(lines) + "\n")
-
-    @staticmethod
-    def _atomic_write(path: Path, content: str) -> None:
-        """同目录临时文件 + `os.replace` 原子替换。
-
-        必须同目录：`os.replace` 只在同一文件系统内保证原子性，跨盘会退化成
-        复制+删除，反而更容易留下半截文件。临时文件名带 pid，避免多进程互踩。
-        """
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        try:
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
-            raise
+        atomic_write_text(self._index, "\n".join(lines) + "\n")
 
     def _load_file(self, path: Path) -> dict | None:
         try:

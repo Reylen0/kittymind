@@ -22,8 +22,12 @@ contextBridge.exposeInMainWorld('kitty', {
       method: 'session/create',
       params: { title, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
     }),
-  listSessions: () =>
-    ipcRenderer.invoke('ws:call', { method: 'session/list',   params: {} }),
+  // opts.includeArchived → 连已归档会话一起返回（默认 false：归档的语义就是"收起"）
+  listSessions: (opts = {}) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/list',
+      params: { ...(opts.includeArchived ? { include_archived: true } : {}) },
+    }),
   // opts.limit     → 只取最新 limit 条（省略 = 全量）
   // opts.beforeSeq → 游标：取 seq 比它更早的一页（配合 limit 向前翻页）
   getSession: (sessionId, opts = {}) =>
@@ -37,6 +41,12 @@ contextBridge.exposeInMainWorld('kitty', {
     }),
   deleteSession: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'session/delete', params: { session_id: sessionId } }),
+  // 归档 / 取消归档：只影响侧栏可见性，数据一行不删（删会话走 deleteSession）
+  setSessionArchived: (sessionId, archived = true) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/archive',
+      params: { session_id: sessionId, archived },
+    }),
   // 全文搜索历史消息（结果按会话分组）
   // opts.sessionId → 只搜这个会话（省略 = 搜全部会话）
   // opts.limit     → 命中条数上限（省略 = 服务端默认上限）

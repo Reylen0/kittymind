@@ -95,10 +95,11 @@ class SessionManager:
     def session_exists(self, session_id: str) -> bool:
         return self.store.exists(session_id)
 
-    def list_sessions(self) -> list[dict]:
+    def list_sessions(self, include_archived: bool = False) -> list[dict]:
         """会话概要列表。
 
         只查 sessions 表（list_headers），不加载任何消息——列表页只需要标题/时间。
+        include_archived=True 时连已归档会话一起列出（前端「显示已归档」开关）。
         """
         return [
             {
@@ -106,8 +107,9 @@ class SessionManager:
                 "title":        h.get("title", ""),
                 "created_at":   h.get("created_at", ""),
                 "workspace_id": h.get("workspace_id"),
+                "archived":     bool(h.get("archived")),
             }
-            for h in self.store.list_headers()
+            for h in self.store.list_headers(include_archived=include_archived)
         ]
 
     def get_session_header(self, session_id: str) -> dict | None:
@@ -158,6 +160,10 @@ class SessionManager:
 
     def delete_session(self, session_id: str) -> bool:
         return self.store.delete(session_id)
+
+    def set_archived(self, session_id: str, archived: bool = True) -> bool:
+        """归档 / 取消归档（只影响侧栏可见性，不删数据）。"""
+        return self.store.set_archived(session_id, archived)
 
     def clear_workspace(self, workspace_id: str) -> int:
         """删工作区时解除其下会话的归属（会话保留，移回「对话」分组）。"""

@@ -186,6 +186,14 @@ DB_WAL_AUTOCHECKPOINT_PAGES  = 512
 
 LLM_TRACE_MAX_BYTES = 20 * 1024 * 1024     # 留档 JSONL 超过此体积轮转（0 = 不轮转）
 
+# 行数保留期（天）。<=0 表示不裁剪（永久保留）。
+# 两者分开定是因为性质不同：model_usage 是聚合数据（一个 turn 一行），增长极慢，
+# 且是成本审计凭证（删会话时刻意保留了 session_id），所以给长保留期；
+# tool_audit 是每次工具调用的明细，增长快得多，而它作为排查材料的价值随时间快速衰减。
+# 裁剪挂在启动后台维护线程里跑，不占启动路径（否则 Electron 就绪探测会超时）。
+USAGE_RETENTION_DAYS = 90      # model_usage 明细保留天数
+AUDIT_RETENTION_DAYS = 30      # tool_audit 明细保留天数（SQLite + JSONL 同步）
+
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -228,6 +236,7 @@ _OVERRIDABLE = {
     "DB_VACUUM_MIN_FREELIST_RATIO", "DB_VACUUM_MIN_BYTES",
     "DB_WAL_AUTOCHECKPOINT_PAGES",
     "LLM_TRACE_MAX_BYTES",
+    "USAGE_RETENTION_DAYS", "AUDIT_RETENTION_DAYS",
 }
 
 

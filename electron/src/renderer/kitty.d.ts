@@ -12,7 +12,13 @@ declare global {
       cancelTurn(sessionId: string): Promise<unknown>
 
       createSession(title?: string, workspaceId?: string): Promise<{ session_id: string; title: string }>
-      listSessions(): Promise<Array<{ id: string; title: string; created_at: string; workspace_id?: string | null }>>
+      /** includeArchived → 连已归档会话一起返回（默认 false：归档的语义就是"收起"） */
+      listSessions(opts?: { includeArchived?: boolean }): Promise<Array<{
+        id: string; title: string; created_at: string
+        workspace_id?: string | null
+        /** 已归档：侧栏默认不显示，开关打开时灰显列出 */
+        archived?: boolean
+      }>>
       // 不带 opts → 全量消息；带 opts.limit → 只取 seq 比 opts.beforeSeq 更早的一页
       getSession(sessionId: string, opts?: { limit?: number; beforeSeq?: number }): Promise<{
         header: {
@@ -39,6 +45,8 @@ declare global {
         cursor?: number | null
       } | null>
       deleteSession(sessionId: string): Promise<{ deleted: boolean }>
+      /** 归档 / 取消归档：只影响侧栏可见性，数据一行不删（ok=false = 会话不存在） */
+      setSessionArchived(sessionId: string, archived?: boolean): Promise<{ ok: boolean; archived: boolean }>
       /** 全文搜索历史消息；结果按会话分组，每组带若干命中片段 */
       searchSessions(query: string, opts?: { sessionId?: string; limit?: number }): Promise<SearchGroup[]>
 

@@ -401,3 +401,82 @@ async def test_workspace_delete_unknown_id_errors(tmp_path):
     await handler.dispatch({"id": 1, "method": "workspace/delete",
                             "params": {"workspace_id": "nope"}})
     assert ws.sent[0].get("error") is not None
+
+
+# ──────────────────────────────────────────────────────────────
+# session/archive（v8：归档 = 从列表收起，不删数据）
+# ──────────────────────────────────────────────────────────────
+
+async def test_session_archive_then_list_needs_explicit_flag(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+
+    sid = agent.session_manager.create_session(title="归档我")
+    agent.session_manager.append_turn(sid, [{"role": "user", "content": "hi"}], [])
+
+    await handler.dispatch({"id": 1, "method": "session/archive",
+                            "params": {"session_id": sid}})
+    assert ws.sent[0]["result"] == {"ok": True, "archived": True}
+
+    # 默认列表不含已归档会话
+    await handler.dispatch({"id": 2, "method": "session/list", "params": {}})
+    assert ws.sent[1]["result"] == []
+
+    # 显式打开开关才列出来，并带 archived 标记（前端据此灰显）
+    await handler.dispatch({"id": 3, "method": "session/list",
+                            "params": {"include_archived": True}})
+    listed = ws.sent[2]["result"]
+    assert [s["id"] for s in listed] == [sid]
+    assert listed[0]["archived"] is True
+
+    # 归档不等于删除：会话和消息都还在
+    assert agent.session_manager.session_exists(sid)
+    assert agent.session_manager.get_session(sid)["messages"]
+
+
+async def test_session_unarchive_restores_to_default_list(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    sid = agent.session_manager.create_session(title="先归档再恢复")
+
+    await handler.dispatch({"id": 1, "method": "session/archive",
+                            "params": {"session_id": sid}})
+    await handler.dispatch({"id": 2, "method": "session/archive",
+                            "params": {"session_id": sid, "archived": False}})
+    assert ws.sent[1]["result"] == {"ok": True, "archived": False}
+
+    await handler.dispatch({"id": 3, "method": "session/list", "params": {}})
+    assert [s["id"] for s in ws.sent[2]["result"]] == [sid]
+
+
+async def test_session_archive_unknown_id_reports_not_ok(tmp_path):
+    """如实返回：归档不存在的会话给 ok=false，不谎报成功。"""
+    ws = FakeWs()
+    handler = RpcHandler(make_mock_agent(tmp_path), ws)
+
+    await handler.dispatch({"id": 1, "method": "session/archive",
+                            "params": {"session_id": "nope"}})
+    assert ws.sent[0]["result"] == {"ok": False, "archived": True}
+
+
+async def test_session_archive_requires_session_id(tmp_path):
+    ws = FakeWs()
+    handler = RpcHandler(make_mock_agent(tmp_path), ws)
+
+    await handler.dispatch({"id": 1, "method": "session/archive", "params": {}})
+    assert ws.sent[0].get("error") is not None
+
+
+async def test_session_list_ignores_truthy_string_for_include_archived(tmp_path):
+    """`"false"` 这种字符串不该被当开关打开——真值判断会让归档会话漏出来。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    sid = agent.session_manager.create_session(title="归档我")
+    agent.session_manager.set_archived(sid)
+
+    await handler.dispatch({"id": 1, "method": "session/list",
+                            "params": {"include_archived": "false"}})
+    assert ws.sent[0]["result"] == []

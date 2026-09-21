@@ -43,6 +43,7 @@ class RpcHandler:
             "session/get":              self._session_get,
             "session/search":           self._session_search,
             "session/delete":           self._session_delete,
+            "session/archive":          self._session_archive,
             "agent/status":             self._agent_status,
             "usage/report":             self._usage_report,
             "workspace/list":           self._workspace_list,
@@ -240,8 +241,19 @@ class RpcHandler:
         })
 
     async def _session_list(self, req_id: Any, params: dict) -> None:
+        """会话列表。include_archived=true 时把已归档会话也一起返回。
+
+        用 `is True` 而不是真值判断：这个开关只该被显式的 true 打开。前端若把
+        字符串 "false" 传进来，真值判断会把它当"打开"——已归档会话就会漏出来。
+        """
         mgr = self._mgr()
-        await self._result(req_id, mgr.list_sessions() if mgr else [])
+        if not mgr:
+            await self._result(req_id, [])
+            return
+        include_archived = params.get("include_archived") is True
+        await self._result(
+            req_id, mgr.list_sessions(include_archived=include_archived)
+        )
 
     async def _session_get(self, req_id: Any, params: dict) -> None:
         mgr = self._mgr()
@@ -312,6 +324,28 @@ class RpcHandler:
         # 如实返回：删不存在的会话给 {"deleted": false}，不再谎报成功
         deleted = mgr.delete_session(session_id)
         await self._result(req_id, {"deleted": deleted})
+
+    async def _session_archive(self, req_id: Any, params: dict) -> None:
+        """归档 / 取消归档会话。
+
+        归档只是"从侧栏收起来"：数据一行不删，搜索照样命中，往里面发消息会自动
+        取消归档。archived 缺省 true（等价于"把它收起来"），显式 false 即恢复。
+
+        和 session/delete 的区别是**不取消正在跑的任务**——归档不中断对话。
+        """
+        mgr = self._mgr()
+        if not mgr:
+            await self._error(req_id, "no session manager configured")
+            return
+        session_id = params.get("session_id")
+        if not session_id:
+            await self._error(req_id, "session_id is required")
+            return
+        raw = params.get("archived")
+        archived = True if raw is None else raw is True
+        ok = mgr.set_archived(session_id, archived)
+        # ok=False = 会话不存在；archived 是**目标状态**，不是成功标志（避免歧义）
+        await self._result(req_id, {"ok": ok, "archived": archived})
 
     # ──────────────────────────────────────────────────────────────
     # agent/status

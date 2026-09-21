@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 # 最新 schema 版本。**必须与 _migrations() 里最大的 version 相等**——
 # 测试 test_session_version_chain_matches_constant 会钉住这条，别只改一边。
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -78,7 +78,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at      TEXT    NOT NULL,
     updated_at      TEXT    NOT NULL,
     compressed_once    INTEGER NOT NULL DEFAULT 0,
-    last_prompt_tokens INTEGER
+    last_prompt_tokens INTEGER,
+    archived           INTEGER NOT NULL DEFAULT 0   -- 归档：侧栏收起但数据完整保留
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -328,6 +329,7 @@ class SqliteSessionStore:
             Migration(5, "add_is_summary_column", self._m_is_summary),
             Migration(6, "fts_index", self._m_fts),
             Migration(7, "model_usage_table", self._m_usage),
+            Migration(8, "add_archived_column", self._m_archived),
         ]
 
     def _m_drop_legacy_columns(self, conn: sqlite3.Connection) -> None:
@@ -352,6 +354,17 @@ class SqliteSessionStore:
         """v6 → v7：用量成本追踪表。"""
         self._ensure_usage()
 
+    def _m_archived(self, conn: sqlite3.Connection) -> None:
+        """v7 → v8：会话归档标记列。
+
+        归档的语义边界（三条都是刻意的，别顺手改）：
+          - 归档只是**侧栏收起**，不是只读锁：照样能打开继续聊；
+          - 搜索**不过滤** archived（见 search）：搜不到等于真找不回；
+          - 往归档会话里追加消息会**自动取消归档**（见 append）——归档是收纳
+            动作，不是状态锁，用户回来说话就说明它还在用。
+        """
+        self._ensure_column("sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
+
     # ── 启动维护：备份 / 空间回收（重活丢后台）─────────────────────
 
     def _startup_maintenance(self) -> None:
@@ -364,6 +377,16 @@ class SqliteSessionStore:
         if not self._maintenance:
             return
         try:
+            # 用量裁剪：一条 DELETE，全表扫描也是毫秒级，同步做掉。
+            # 刻意不去看「备份是否到期」——保留期是数据卫生规则，不该被备份周期绑架
+            # （备份 24h 才到期一次，绑上去就意味着最长 24h 不裁剪，语义变模糊）。
+            if cfg.USAGE_RETENTION_DAYS > 0:
+                removed = self.prune_usage(cfg.USAGE_RETENTION_DAYS)
+                if removed:
+                    logger.info(
+                        "用量记录已裁剪 %d 条（保留 %d 天）",
+                        removed, cfg.USAGE_RETENTION_DAYS,
+                    )
             age = latest_backup_age_hours(self._backup_dir, self._backup_stem)
             due = age is None or age >= cfg.DB_BACKUP_INTERVAL_HOURS
             stats = read_stats(self._conn, self._path)
@@ -556,10 +579,16 @@ class SqliteSessionStore:
         return {r[1] for r in rows}
 
     def _ensure_column(self, table: str, col: str, decl: str) -> None:
+        """补齐缺失的列（幂等）。
+
+        刻意**不吞异常**：ALTER 失败还继续把 user_version 提上去，库就停在
+        "版本号说已升级、实际没这一列"的半截状态，之后每次读该列都报
+        no such column，而且下次启动不会再重试。让异常冒出去，迁移执行器会
+        中止并停在上一版本，等下次启动重试（这正是版本链要保证的语义）。
+        """
         if col in self._columns(table):
             return
-        with contextlib.suppress(Exception):
-            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     def _drop_column_if_exists(self, table: str, col: str) -> None:
         if col not in self._columns(table):
@@ -637,6 +666,14 @@ class SqliteSessionStore:
                 ),
             )
             self._index_message(cur.lastrowid, record["role"], record.get("content"))
+            # 归档会话收到新消息 = 用户又回来用它了 → 自动取消归档，否则会出现
+            # 「我正在聊它，它却躺在已归档里」。与写入同一次加锁，避免留下
+            # 「消息已落库、会话还挂在归档分组」的中间态。
+            # 不区分 role：工具消息也属于这一轮对话，一样代表"在用"。
+            self._conn.execute(
+                "UPDATE sessions SET archived=0 WHERE id=? AND archived=1",
+                (session_id,),
+            )
 
     def read_header(self, session_id: str) -> dict | None:
         """只读 sessions 表的 header（不触碰 messages 表）。
@@ -647,7 +684,7 @@ class SqliteSessionStore:
         with self._lock:
             row = self._conn.execute(
                 "SELECT id, title, workspace_id, created_at, compressed_once,"
-                "last_prompt_tokens"
+                "last_prompt_tokens, archived"
                 " FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
@@ -661,6 +698,7 @@ class SqliteSessionStore:
             "created_at":         row[3],
             "compressed_once":    bool(row[4]),
             "last_prompt_tokens": row[5],
+            "archived":           bool(row[6]),
         }
 
     def read(self, session_id: str) -> tuple[dict | None, list[dict]]:
@@ -996,17 +1034,21 @@ class SqliteSessionStore:
             ).fetchall()
         return [r[0] for r in rows]
 
-    def list_headers(self) -> list[dict]:
+    def list_headers(self, include_archived: bool = False) -> list[dict]:
         """只读会话 header（不触碰 messages 表），供 session/list 使用。
 
-        只取 id/title/workspace_id/created_at 这 4 个字段：会话列表场景不需要
-        消息内容，若靠调用方逐个 read() 取全量消息再挑字段，会话一多，列表
+        只取 id/title/workspace_id/created_at/archived 这几个字段：会话列表场景
+        不需要消息内容，若靠调用方逐个 read() 取全量消息再挑字段，会话一多，列表
         RPC 就会退化成全量读消息。
+
+        默认**不含已归档会话**——归档的语义就是"从列表收起来"；要看到它们必须
+        显式 include_archived=True（对应前端的「显示已归档」开关）。
         """
+        where = "" if include_archived else " WHERE archived=0"
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, title, workspace_id, created_at"
-                " FROM sessions ORDER BY created_at DESC"
+                "SELECT id, title, workspace_id, created_at, archived"
+                f" FROM sessions{where} ORDER BY created_at DESC"
             ).fetchall()
         return [
             {
@@ -1015,9 +1057,22 @@ class SqliteSessionStore:
                 "title":              r[1],
                 "workspace_id":       r[2],
                 "created_at":         r[3],
+                "archived":           bool(r[4]),
             }
             for r in rows
         ]
+
+    def set_archived(self, session_id: str, archived: bool = True) -> bool:
+        """标记 / 取消归档，返回是否命中了会话（不存在 → False）。
+
+        只是列表视图属性：数据一行不删，messages 级联也不触发。删除才走 delete()。
+        """
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE sessions SET archived=?, updated_at=? WHERE id=?",
+                (1 if archived else 0, self._now_iso(), session_id),
+            )
+            return cur.rowcount > 0
 
     def get_state(self, session_id: str) -> dict:
         with self._lock:
@@ -1162,3 +1217,20 @@ class SqliteSessionStore:
             "completion_tokens": int(row[1] or 0),
             "n_calls": int(row[2] or 0),
         }
+
+    def prune_usage(self, days: int) -> int:
+        """删除 model_usage 中超出保留期的行，返回删除条数。
+
+        days <= 0 = 不裁剪（永久保留）。ts 与 record_usage 写入的 self._ts()
+        同源（epoch 秒），可直接比较。
+
+        刻意不给 ts 建单独索引：这张表增长极慢（一个 turn 一行，90 天量级也就
+        万行上下），全表扫描的删除是毫秒级；加索引会让每次写入都多维护一棵 B 树，
+        代价大于收益。
+        """
+        if days <= 0:
+            return 0
+        cutoff = int(time.time()) - days * 86400
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM model_usage WHERE ts < ?", (cutoff,))
+            return cur.rowcount

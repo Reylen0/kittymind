@@ -186,8 +186,17 @@ const mockWsList = [
   ...(deepView ? deepWorkspaces : []),
 ]
 
+/** 已归档会话 id 集合（预览页可变状态，供归档交互的自动化验证）。 */
+const archivedIds = new Set<string>()
+
 w.kitty = {
-  listSessions: async () => emptyView ? [] : deepView ? deepSessions : mockSessions,
+  // 归档状态在预览里也要"真能被改"：验证脚本会点归档按钮、再断言列表变化。
+  // 默认不给任何会话打归档标记，所以既有脚本看到的默认列表与改动前一致。
+  listSessions: async (opts: { includeArchived?: boolean } = {}) => {
+    const base = emptyView ? [] : deepView ? deepSessions : mockSessions
+    const flagged = base.map(s => ({ ...s, archived: archivedIds.has(s.id) }))
+    return opts.includeArchived ? flagged : flagged.filter(s => !s.archived)
+  },
   listWorkspaces: async () => mockWsList,
   getSession: async (id: string, opts: { limit?: number; beforeSeq?: number } = {}) => {
     const header = {
@@ -215,7 +224,14 @@ w.kitty = {
   deleteSession: async (id: string) => {
     const at = mockSessions.findIndex(s => s.id === id)
     if (at >= 0) mockSessions.splice(at, 1)
+    archivedIds.delete(id)
     return { deleted: at >= 0 }
+  },
+  // 归档 / 取消归档：只改侧栏可见性，会话本身不动（与后端契约一致）
+  setSessionArchived: async (id: string, archived = true) => {
+    if (archived) archivedIds.add(id)
+    else archivedIds.delete(id)
+    return { ok: true, archived }
   },
   // ?search 场景给固定结果；其余场景返回空数组（等价于「没搜到」）。
   // 带 200ms 延迟，好观察防抖与「搜索中…」占位。

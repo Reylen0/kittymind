@@ -8,8 +8,11 @@
   3. 会话库 / 记忆库 / 审计库把这两块接进生命周期后的端到端行为。
 """
 
+import json
 import os as _os
 import sqlite3
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -502,8 +505,11 @@ def test_audit_db_migrates_legacy_unversioned_db(tmp_path):
         " session_id TEXT, tool TEXT NOT NULL, args TEXT, decision TEXT NOT NULL,"
         " reason TEXT, failed INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0)"
     )
+    # ts 必须是「保留期内」的：打开审计库会顺带裁剪过期行，写死一个老日期会让
+    # 这一行在迁移之前就被删掉，测试就验不到「迁移不动数据」这件事了。
     raw.execute(
-        "INSERT INTO tool_audit(ts, tool, decision) VALUES ('2026-01-01T00:00:00+00:00','t','allow')"
+        "INSERT INTO tool_audit(ts, tool, decision) VALUES (?, 't', 'allow')",
+        (datetime.now(timezone.utc).isoformat(),),
     )
     raw.commit()
     raw.close()
@@ -539,5 +545,156 @@ def test_audit_db_corrupt_is_quarantined(tmp_path):
     finally:
         log.close()
     assert list(tmp_path.glob("a.db.corrupt-*"))
+
+
+# ── 行数保留期（Phase 17 追加：两张表都只增不删）──────────────────
+
+def _age_usage_rows(store, days: int, session_id: str) -> None:
+    """把某个会话的用量行改成 days 天前（造过期数据用）。"""
+    old = int(time.time()) - days * 86400
+    with store._lock:
+        store._conn.execute(
+            "UPDATE model_usage SET ts=? WHERE session_id=?", (old, session_id)
+        )
+
+
+def test_usage_prune_removes_only_expired(tmp_path):
+    store = SqliteSessionStore(tmp_path / "s.db", maintenance=False)
+    store.record_usage("old", "m1", 100, 10)
+    store.record_usage("new", "m1", 200, 20)
+    _age_usage_rows(store, 200, "old")
+
+    assert store.prune_usage(90) == 1
+    keys = {g["key"] for g in store.aggregate_usage("session")}
+    assert keys == {"new"}
+    store.close()
+
+
+def test_usage_prune_disabled_when_days_non_positive(tmp_path):
+    """days<=0 = 永久保留，一行都不许删。"""
+    store = SqliteSessionStore(tmp_path / "s.db", maintenance=False)
+    store.record_usage("s1", "m1", 10, 5)
+    _age_usage_rows(store, 3650, "s1")   # 十年前的数据
+
+    assert store.prune_usage(0) == 0
+    assert store.prune_usage(-7) == 0
+    assert store.aggregate_usage("session")   # 还在
+    store.close()
+
+
+def test_usage_prune_runs_on_startup(tmp_path):
+    """裁剪挂在启动维护里，不依赖"备份是否到期"。"""
+    db = tmp_path / "s.db"
+    store = SqliteSessionStore(db, maintenance=False)
+    store.record_usage("old", "m1", 100, 10)
+    store.record_usage("new", "m1", 100, 10)
+    _age_usage_rows(store, 200, "old")
+    store.close()
+
+    reopened = SqliteSessionStore(db)
+    try:
+        keys = {g["key"] for g in reopened.aggregate_usage("session")}
+        assert keys == {"new"}, "启动时应裁掉超过 USAGE_RETENTION_DAYS 的行"
+    finally:
+        reopened.close()
+
+
+def test_usage_prune_skipped_when_maintenance_off(tmp_path):
+    """维护总开关关掉时不做任何自动裁剪（用户显式要求"别动我的数据"）。"""
+    db = tmp_path / "s.db"
+    store = SqliteSessionStore(db, maintenance=False)
+    store.record_usage("old", "m1", 100, 10)
+    _age_usage_rows(store, 200, "old")
+    store.close()
+
+    reopened = SqliteSessionStore(db, maintenance=False)
+    try:
+        assert {g["key"] for g in reopened.aggregate_usage("session")} == {"old"}
+    finally:
+        reopened.close()
+
+
+def test_audit_prune_removes_expired_from_db_and_jsonl(tmp_path):
+    """两侧必须一起裁：只删库不删日志会变成「文件里翻得到、库里查不到」。"""
+    from kittymind.tools import audit as audit_mod
+
+    db = tmp_path / "a.db"
+    jsonl = tmp_path / "a.jsonl"
+    log = audit_mod.ToolAuditLog(db, jsonl)
+    try:
+        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        new = datetime.now(timezone.utc).isoformat()
+        with log._lock:
+            log._db.execute(
+                "INSERT INTO tool_audit(ts, tool, decision) VALUES (?, 'old', 'allow')", (old,)
+            )
+            log._db.execute(
+                "INSERT INTO tool_audit(ts, tool, decision) VALUES (?, 'new', 'allow')", (new,)
+            )
+        with jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": old, "tool": "old"}) + "\n")
+            f.write(json.dumps({"ts": new, "tool": "new"}) + "\n")
+
+        assert log.prune(30) == 1
+        assert [r[0] for r in log._db.execute("SELECT tool FROM tool_audit")] == ["new"]
+        kept = [json.loads(x) for x in jsonl.read_text(encoding="utf-8").splitlines()]
+        assert [x["tool"] for x in kept] == ["new"]
+    finally:
+        log.close()
+
+
+def test_audit_prune_keeps_unparsable_lines(tmp_path):
+    """解析不出 ts 的行保留：宁多留一行，也不因格式意外删掉证据。"""
+    from kittymind.tools import audit as audit_mod
+
+    jsonl = tmp_path / "a.jsonl"
+    log = audit_mod.ToolAuditLog(tmp_path / "a.db", jsonl)
+    try:
+        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+        new = datetime.now(timezone.utc).isoformat()
+        jsonl.write_text(
+            json.dumps({"ts": old, "tool": "old"}) + "\n"
+            + "这不是 JSON\n"
+            + json.dumps({"tool": "no-ts"}) + "\n"
+            + json.dumps({"ts": new, "tool": "new"}) + "\n",
+            encoding="utf-8",
+        )
+        log.prune(30)
+        lines = jsonl.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3       # 只删掉 old，两条"读不懂"的留下
+        assert "old" not in jsonl.read_text(encoding="utf-8")
+    finally:
+        log.close()
+
+
+def test_audit_prune_handles_missing_microseconds(tmp_path):
+    """isoformat 在微秒为 0 时会省略小数部分——这种行也必须能判为过期。
+
+    库侧是字符串比较（写入格式由 record() 恒定保证，见 prune 的说明），JSONL
+    侧是解析成 datetime 后比较。这里钉住"老格式的行两个方向都删得掉"，
+    否则它会永远留在库里，保留期形同虚设。
+    """
+    from kittymind.tools import audit as audit_mod
+
+    jsonl = tmp_path / "a.jsonl"
+    log = audit_mod.ToolAuditLog(tmp_path / "a.db", jsonl)
+    try:
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).replace(
+            microsecond=0
+        ).isoformat()
+        assert "." not in old, "构造前提：这条 ts 不带微秒"
+        with jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": old, "tool": "old"}) + "\n")
+        with log._lock:
+            log._db.execute(
+                "INSERT INTO tool_audit(ts, tool, decision) VALUES (?, 'old', 'allow')", (old,)
+            )
+
+        log.prune(30)
+        assert log._db.execute("SELECT COUNT(*) FROM tool_audit").fetchone()[0] == 0
+        assert jsonl.read_text(encoding="utf-8").strip() == ""
+    finally:
+        log.close()
+
 
 

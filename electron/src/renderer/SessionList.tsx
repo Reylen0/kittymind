@@ -7,10 +7,15 @@ interface Props {
   workspaces:  Workspace[]
   currentId:   string | null
   sidebarOpen: boolean
+  /** 是否在列表里显示已归档会话（对应侧栏顶部那个开关） */
+  showArchived: boolean
   onSelect:    (id: string) => void
   onCreate:    () => void
   onDelete:    (id: string) => void
   onDeleteWorkspace: (id: string) => void
+  /** 归档 / 取消归档（只收起，不删数据） */
+  onArchive:   (id: string, archived: boolean) => void
+  onToggleArchived: () => void
   onToggle:    () => void
 }
 
@@ -69,6 +74,16 @@ function IcoTrash() {
   )
 }
 
+function IcoArchive() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="1.5" y="2" width="11" height="3" rx="1"/>
+      <path d="M2.8 5v6.2c0 .44.36.8.8.8h6.8c.44 0 .8-.36.8-.8V5"/>
+      <line x1="5.6" y1="8.2" x2="8.4" y2="8.2"/>
+    </svg>
+  )
+}
+
 function IcoGear() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -113,18 +128,29 @@ function revealSessionItem(box: HTMLElement, el: HTMLElement) {
   else if (r.bottom > c.bottom) box.scrollTop += r.bottom - c.bottom + MARGIN
 }
 
-function SessionItem({ s, currentId, onSelect, onAskDelete }: {
+function SessionItem({ s, currentId, onSelect, onAskDelete, onToggleArchive }: {
   s: Session; currentId: string | null
-  onSelect: (id: string) => void; onAskDelete: (s: Session) => void
+  onSelect: (id: string) => void
+  onAskDelete: (s: Session) => void
+  onToggleArchive: (s: Session) => void
 }) {
+  const archived = !!s.archived
   return (
     <div
-      className={`session-item${s.id === currentId ? ' active' : ''}`}
+      className={`session-item${s.id === currentId ? ' active' : ''}${archived ? ' archived' : ''}`}
       data-sid={s.id}
       onClick={() => onSelect(s.id)}
     >
-      <span className="session-title">{s.title || '新对话'}</span>
-      {/* 悬浮才出现的删除按钮：点击先弹确认，不直接删 */}
+      <span className="session-title" title={archived ? `${s.title || '新对话'}（已归档）` : undefined}>
+        {s.title || '新对话'}
+      </span>
+      {/* 悬浮才出现的两个按钮。归档在前、删除在后：删除是破坏性操作，放最右边
+          远离视线中心，减少误点。归档只收起不删数据，所以不弹确认。 */}
+      <button className="session-archive" title={archived ? '取消归档' : '归档'}
+        aria-label={`${archived ? '取消归档' : '归档'}对话 ${s.title || '新对话'}`}
+        onClick={e => { e.stopPropagation(); onToggleArchive(s) }}>
+        <IcoArchive />
+      </button>
       <button className="session-delete" title="删除" aria-label={`删除对话 ${s.title || '新对话'}`}
         onClick={e => { e.stopPropagation(); onAskDelete(s) }}>
         <IcoTrash />
@@ -153,8 +179,9 @@ function Highlight({ text, marks }: { text: string; marks: Array<[number, number
 }
 
 export default function SessionList({
-  sessions, workspaces, currentId, sidebarOpen,
-  onSelect, onCreate, onDelete, onDeleteWorkspace, onToggle,
+  sessions, workspaces, currentId, sidebarOpen, showArchived,
+  onSelect, onCreate, onDelete, onDeleteWorkspace,
+  onArchive, onToggleArchived, onToggle,
 }: Props) {
   const [searching,         setSearching]         = useState(false)
   const [query,             setQuery]             = useState('')
@@ -320,6 +347,13 @@ export default function SessionList({
         <span className="sidebar-title">版本 v0.1.0</span>
         <div className="sidebar-header-btns">
           <button
+            className={`sidebar-icon-btn${showArchived ? ' active' : ''}`}
+            onClick={onToggleArchived}
+            title={showArchived ? '隐藏已归档对话' : '显示已归档对话'}
+            aria-label={showArchived ? '隐藏已归档对话' : '显示已归档对话'}
+            aria-pressed={showArchived}
+          ><IcoArchive /></button>
+          <button
             className={`sidebar-icon-btn${searching ? ' active' : ''}`}
             onClick={() => setSearching(v => !v)} title="搜索对话"
           ><IcoSearch /></button>
@@ -375,6 +409,7 @@ export default function SessionList({
             <div className="session-items">
               {filteredFree.map(s => (
                 <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
+                  onToggleArchive={x => onArchive(x.id, !x.archived)}
                   onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
               ))}
               {filteredFree.length === 0 && !query && (
@@ -420,6 +455,7 @@ export default function SessionList({
                   <div className="workspace-group-items">
                     {filteredWs.map(s => (
                       <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
+                        onToggleArchive={x => onArchive(x.id, !x.archived)}
                         onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
                     ))}
                     {filteredWs.length === 0 && (

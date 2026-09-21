@@ -26,11 +26,17 @@ export default function App() {
   // 已挂载的会话视图，按访问顺序排列（见 MAX_LIVE_VIEWS）
   const [openIds,     setOpenIds]     = useState<string[]>([])
   const [usageOpen,   setUsageOpen]   = useState(false)
+  // 是否在侧栏里显示已归档会话。列表由后端按这个开关过滤（不在前端筛），
+  // 所以它一变就要重新拉列表——见下面的 effect。
+  const [showArchived, setShowArchived] = useState(false)
+
+  useEffect(() => {
+    loadWorkspaces()
+  }, [])
 
   useEffect(() => {
     loadSessions()
-    loadWorkspaces()
-  }, [])
+  }, [showArchived])
 
   // 把当前会话登记进保留列表，超过上限时淘汰最久未访问的那个。
   // 用 layout effect 在浏览器绘制前完成，避免出现「一帧什么都没有」。
@@ -42,7 +48,7 @@ export default function App() {
   }, [currentId])
 
   async function loadSessions() {
-    const list = await window.kitty?.listSessions()
+    const list = await window.kitty?.listSessions({ includeArchived: showArchived })
     if (!Array.isArray(list)) return
     setSessions(list)
     setCurrentId(prev => {
@@ -76,6 +82,14 @@ export default function App() {
     setWorkspaces(prev => [...prev, ws])
   }
 
+  // 归档 / 取消归档：只影响侧栏可见性。刻意**不切走**正在看的会话——
+  // 归档不是删除，主区域该保持原样；而且往里面发消息会自动取消归档，
+  // 想继续用直接接着聊就行，列表会自己把它放回来。
+  async function archiveSession(id: string, archived: boolean) {
+    await window.kitty?.setSessionArchived(id, archived)
+    await loadSessions()
+  }
+
   // 删工作区：会话保留（后端已解除归属移回「对话」），这里同步两侧列表。
   // 若当前正在看的会话属于该工作区，它的数据没变，无需切换 currentId。
   async function deleteWorkspace(id: string) {
@@ -93,10 +107,13 @@ export default function App() {
           workspaces={workspaces}
           currentId={currentId}
           sidebarOpen={sidebarOpen}
+          showArchived={showArchived}
           onSelect={setCurrentId}
           onCreate={createSession}
           onDelete={deleteSession}
           onDeleteWorkspace={deleteWorkspace}
+          onArchive={archiveSession}
+          onToggleArchived={() => setShowArchived(v => !v)}
           onToggle={() => setSidebarOpen(v => !v)}
         />
 

@@ -19,6 +19,8 @@ export interface Session {
   title: string
   created_at: string
   workspace_id?: string | null
+  /** 已归档：侧栏默认不列出，开关打开时灰显（归档不删数据） */
+  archived?: boolean
 }
 
 /** session/get 返回的一条历史消息（展示视图）。tool 行的名字/入参由后端随行下发。 */

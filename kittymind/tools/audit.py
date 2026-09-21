@@ -17,13 +17,14 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..config import cfg
 from ..storage import (
     Migration,
     MigrationFailedError,
+    atomic_write_text,
     checkpoint,
     quarantine_db,
     quick_check,
@@ -58,6 +59,22 @@ def _m_init_tool_audit(conn: sqlite3.Connection) -> None:
 
 
 _MIGRATIONS = [Migration(1, "create_tool_audit", _m_init_tool_audit)]
+
+
+def _parse_ts(line: str) -> datetime | None:
+    """从 JSONL 行里取出 ts 并解析成 aware datetime；解析不出来返回 None。
+
+    返回 None 的行调用方会**保留**——审计日志宁可多留一行无法解析的，
+    也不能因为格式意外就把证据删掉。
+    """
+    try:
+        raw = json.loads(line).get("ts")
+        if not raw:
+            return None
+        dt = datetime.fromisoformat(raw)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 class ToolAuditLog:
@@ -97,6 +114,11 @@ class ToolAuditLog:
             logger.info("工具审计库 %s", outcome.describe())
         with contextlib.suppress(Exception):
             checkpoint(self._db, "TRUNCATE")
+        if cfg.DB_MAINTENANCE_ENABLED:
+            # 裁剪挂在这里而不是启动路径：审计记录器是懒加载单例，第一次真正要用
+            # 工具时才建，天然避开了「拖慢 Electron 就绪探测」这个顾虑。
+            with contextlib.suppress(Exception):
+                self.prune(cfg.AUDIT_RETENTION_DAYS)
 
     def _reset_corrupt(self) -> None:
         """隔离损坏的审计库并新建空库（审计可丢，但要留档 + 告警）。"""
@@ -159,6 +181,53 @@ class ToolAuditLog:
                     f.write(json.dumps(row, ensure_ascii=False) + "\n")
             except Exception:
                 pass
+
+    def prune(self, days: int) -> int:
+        """删除超出保留期的审计记录，返回删除条数。days <= 0 = 不裁剪。
+
+        两侧（SQLite + JSONL）**必须一起裁**：只删库不删日志，会出现「文件里翻得到、
+        库里查不到」，排查时比不裁更误导人。
+
+        裁剪时机是「记录器首次建立」时一次性执行（见 _setup），不是每次写入都查——
+        保留期以天为单位，一天一次足够，不该给每条审计都加一次时间比较。
+        """
+        if days <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        removed = 0
+        with self._lock:
+            if self._db is not None:
+                with contextlib.suppress(Exception):
+                    cur = self._db.execute(
+                        "DELETE FROM tool_audit WHERE ts < ?", (cutoff.isoformat(),)
+                    )
+                    removed = cur.rowcount
+            self._prune_jsonl(cutoff)
+        if removed:
+            logger.info("工具审计已裁剪 %d 条（保留 %d 天）", removed, days)
+        return removed
+
+    def _prune_jsonl(self, cutoff: datetime) -> None:
+        """重写 JSONL 只保留 cutoff 之后的行。
+
+        ts 用 datetime 解析后比较（而不是字符串比大小）：这里握着的是用户可读的
+        文本文件，格式可能被外部编辑过，字典序比较对格式不一致的行会给出错误结论。
+        解析不出来 / 没有 ts 的行一律保留。
+        """
+        try:
+            if not self._jsonl_path.is_file():
+                return
+            kept: list[str] = []
+            with self._jsonl_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    ts = _parse_ts(line)
+                    if ts is None or ts >= cutoff:
+                        kept.append(line if line.endswith("\n") else line + "\n")
+            atomic_write_text(self._jsonl_path, "".join(kept))
+        except OSError as e:
+            logger.debug("审计 JSONL 裁剪跳过：%s", e)
 
 
 # ── 进程级单例（所有 Agent / 子 Agent 共享一个连接 + 一份日志） ──

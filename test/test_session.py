@@ -491,38 +491,52 @@ def test_orphan_messages_cleaned_on_open(tmp_path):
 # ── P1 回归：老版本库迁移后 schema 必须完整 ───────────────────────
 
 def _make_legacy_db(path: Path, version: int) -> None:
-    """手工造一个 v2 老库：messages 缺 is_summary 列。"""
+    """造一个"那个版本的真实结构"的老库（按声明版本补上当时已有的列）。
+
+    不能所有版本都套同一份最老的表结构：迁移链只跑 `version > user_version`
+    的步骤，若把 v7 的库造成"缺 is_summary"的形态，就不存在任何一步会去补它，
+    这不是迁移的 bug，而是造出来的库本身不自洽。
+    """
+    msg_extra = (
+        ",\n        is_summary INTEGER NOT NULL DEFAULT 0" if version >= 5 else ""
+    )
+    ses_extra = (
+        ",\n        archived INTEGER NOT NULL DEFAULT 0" if version >= 8 else ""
+    )
     conn = sqlite3.connect(str(path))
-    conn.executescript("""
+    conn.executescript(f"""
     CREATE TABLE sessions (
         id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '新对话',
         workspace_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        compressed_once INTEGER NOT NULL DEFAULT 0, last_prompt_tokens INTEGER);
+        compressed_once INTEGER NOT NULL DEFAULT 0, last_prompt_tokens INTEGER{ses_extra});
     CREATE TABLE messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         seq REAL NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT,
         tool_call_id TEXT, ts INTEGER NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0);
+        active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0{msg_extra});
     """)
     conn.execute(f"PRAGMA user_version={version}")
     conn.commit()
     conn.close()
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4])
-def test_legacy_db_migration_adds_is_summary(tmp_path, version):
-    """任何入口版本升上来都要补齐 is_summary，否则 read_display 直接报错。
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 7])
+def test_legacy_db_migration_adds_new_columns(tmp_path, version):
+    """任何入口版本升上来都要补齐新列（is_summary / archived）。
 
-    旧实现的 ver < 3 分支只删旧列就标 v5，跳过了加列这一步。
+    旧实现的 ver < 3 分支只删旧列就标 v5，跳过了加列这一步，read_display 直接报错。
+    v7 是"还没有 archived 列"的最近一版，专门列进来钉住 v7 → v8 这条路。
     """
     db = tmp_path / f"old{version}.db"
     _make_legacy_db(db, version)
 
     store = SqliteSessionStore(db)
 
-    cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(messages)")}
-    assert "is_summary" in cols, f"v{version} 迁移后缺 is_summary 列"
+    msg_cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(messages)")}
+    assert "is_summary" in msg_cols, f"v{version} 迁移后缺 is_summary 列"
+    ses_cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(sessions)")}
+    assert "archived" in ses_cols, f"v{version} 迁移后缺 archived 列"
     # 断言常量而非字面量：schema 每次升版都要改这行的话，迟早改漏
     ver = sqlite3.connect(str(db)).execute("PRAGMA user_version").fetchone()[0]
     assert ver == _SCHEMA_VERSION
@@ -530,6 +544,8 @@ def test_legacy_db_migration_adds_is_summary(tmp_path, version):
     store.write_header("s1", {"title": "t", "created_at": _CREATED})
     store.append("s1", {"seq": 0, "role": "user", "content": "hi"})
     assert store.read_display("s1")[0]["content"] == "hi"
+    # 老库升上来的会话默认未归档（DEFAULT 0），不会"凭空消失"在侧栏之外
+    assert store.read_header("s1")["archived"] is False
 
 
 def test_migration_is_idempotent(tmp_path):
@@ -545,4 +561,77 @@ def test_migration_is_idempotent(tmp_path):
     assert _msg_count(db) == 1
     header, records = SqliteSessionStore(db).read("s1")
     assert header["title"] == "t" and len(records) == 1
+
+
+# ── 会话归档（v8）：从侧栏收起，但不删数据 ────────────────────────
+
+def test_archive_hides_from_list_but_keeps_data(store):
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    store.write_header("s2", {"title": "b", "created_at": _CREATED})
+    store.append("s1", {"seq": 0, "role": "user", "content": "keep me"})
+
+    assert store.set_archived("s1") is True
+
+    assert [h["id"] for h in store.list_headers()] == ["s2"]
+    # 归档不是删除：会话还在、消息一条不少
+    assert store.exists("s1")
+    assert store.read_display("s1")[0]["content"] == "keep me"
+
+
+def test_include_archived_lists_them_with_flag(store):
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    store.set_archived("s1")
+
+    rows = store.list_headers(include_archived=True)
+    assert [h["id"] for h in rows] == ["s1"]
+    # 带上标记，前端才知道要灰显（而不是把它当成普通会话）
+    assert rows[0]["archived"] is True
+
+
+def test_unarchive_restores_to_list(store):
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    store.set_archived("s1")
+    assert store.set_archived("s1", False) is True
+
+    assert [h["id"] for h in store.list_headers()] == ["s1"]
+    assert store.read_header("s1")["archived"] is False
+
+
+def test_set_archived_unknown_session_returns_false(store):
+    assert store.set_archived("nope") is False
+
+
+def test_archived_session_still_searchable(store):
+    """搜索是"找东西"的手段——归档会话搜不到，就等于真找不回了。"""
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    store.append("s1", {"seq": 0, "role": "user", "content": "归档也要能搜到"})
+    store.set_archived("s1")
+
+    assert [h["session_id"] for h in store.search("归档")] == ["s1"]
+
+
+def test_new_message_auto_unarchives(store):
+    """归档是收纳动作，不是状态锁：用户回来接着说话，它就该自动浮出来。"""
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    store.set_archived("s1")
+
+    store.append("s1", {"seq": 0, "role": "user", "content": "我还有话要说"})
+
+    assert store.read_header("s1")["archived"] is False
+    assert [h["id"] for h in store.list_headers()] == ["s1"]
+
+
+def test_manager_set_archived_and_list(mgr):
+    """归档在 manager 层也要能透传，且 list_sessions 支持 include_archived。"""
+    sid = mgr.create_session(title="归档我")
+
+    assert mgr.set_archived(sid) is True
+    assert mgr.list_sessions() == []
+
+    listed = mgr.list_sessions(include_archived=True)
+    assert [s["id"] for s in listed] == [sid]
+    assert listed[0]["archived"] is True
+
+    assert mgr.set_archived(sid, False) is True
+    assert [s["id"] for s in mgr.list_sessions()] == [sid]
 
