@@ -1,10 +1,12 @@
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from .llm_json import parse_tool_arguments
 from .llm_response import LLMResponse, StreamEvent
+from .llm_trace import get_llm_trace_log
 from ..config import cfg
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,24 @@ class BaseLLMAdapter(ABC):
     async def async_stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         raise NotImplementedError
 
+    # ── 留档辅助（默认关闭，见 llm_trace.get_llm_trace_log） ──────
+
+    def _trace(self, *, request: dict, response: dict | None = None,
+               error: str | None = None, t0: float) -> None:
+        """写一条 LLM 调用留档。request 已由调用方构造，不含 api_key。"""
+        trace = get_llm_trace_log()
+        if trace is None:
+            return
+        trace.record(
+            model=self.model,
+            base_url=self.base_url or "",
+            stream=request.get("_stream", False),
+            request={k: v for k, v in request.items() if k != "_stream"},
+            response=response,
+            error=error,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+
 
 class OpenAIAdapter(BaseLLMAdapter):
     """OpenAI 兼容接口适配器（DeepSeek/Qwen/Kimi/智谱/Ollama 等）"""
@@ -46,9 +66,16 @@ class OpenAIAdapter(BaseLLMAdapter):
     def invoke(self, messages: list[dict], tools: list[dict] | None = None, **kwargs) -> LLMResponse:
         if not self._client:
             self._client = self._create_client()
-        resp = self._client.chat.completions.create(
-            model=self.model, messages=messages, tools=tools, **kwargs
-        )
+        t0 = time.monotonic()
+        req_kwargs = {"model": self.model, "messages": messages}
+        if tools:
+            req_kwargs["tools"] = tools
+        req_kwargs.update(kwargs)
+        try:
+            resp = self._client.chat.completions.create(**req_kwargs)
+        except Exception as e:
+            self._trace(request=req_kwargs, error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
         msg = resp.choices[0].message
         tool_calls = []
         if msg.tool_calls:
@@ -57,6 +84,11 @@ class OpenAIAdapter(BaseLLMAdapter):
                     "id": tc.id, "type": tc.type,
                     "function": {"name": tc.function.name, "arguments": tc.function.arguments}
                 })
+        self._trace(
+            request=req_kwargs,
+            response={"content": msg.content, "tool_calls": tool_calls},
+            t0=t0,
+        )
         return LLMResponse(content=msg.content, tool_calls=tool_calls)
 
     async def async_stream_with_tools(
@@ -76,34 +108,48 @@ class OpenAIAdapter(BaseLLMAdapter):
         tool_calls_buf: dict[int, dict] = {}
         usage_snapshot: dict | None = None
 
-        response = await self._async_client.chat.completions.create(**create_kwargs)
-        async for chunk in response:
-            if not chunk.choices:
-                if chunk.usage is not None:
-                    usage_snapshot = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
-                    }
-                continue
+        t0 = time.monotonic()
+        try:
+            response = await self._async_client.chat.completions.create(**create_kwargs)
+        except Exception as e:
+            self._trace(request={**create_kwargs, "_stream": True},
+                        error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
+        try:
+            async for chunk in response:
+                if not chunk.choices:
+                    if chunk.usage is not None:
+                        usage_snapshot = {
+                            "prompt_tokens": chunk.usage.prompt_tokens,
+                            "completion_tokens": chunk.usage.completion_tokens,
+                            "total_tokens": chunk.usage.total_tokens,
+                        }
+                    continue
 
-            delta = chunk.choices[0].delta
+                delta = chunk.choices[0].delta
 
-            if delta.content:
-                yield StreamEvent(type='text_delta', delta=delta.content)
+                if delta.content:
+                    yield StreamEvent(type='text_delta', delta=delta.content)
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_buf:
-                        tool_calls_buf[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                    if tc.id:
-                        tool_calls_buf[idx]["id"] += tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_buf[idx]["function"]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in tool_calls_buf:
+                            tool_calls_buf[idx] = {
+                                "id": "", "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        if tc.id:
+                            tool_calls_buf[idx]["id"] += tc.id
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_buf[idx]["function"]["name"] += tc.function.name
+                            if tc.function.arguments:
+                                tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
+        except Exception as e:
+            self._trace(request={**create_kwargs, "_stream": True},
+                        error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
 
         if tool_calls_buf:
             for tc in tool_calls_buf.values():
@@ -113,6 +159,12 @@ class OpenAIAdapter(BaseLLMAdapter):
 
         if usage_snapshot:
             yield StreamEvent(type='usage', usage=usage_snapshot)
+
+        self._trace(
+            request={**create_kwargs, "_stream": True},
+            response={"tool_calls": list(tool_calls_buf.values()), "usage": usage_snapshot},
+            t0=t0,
+        )
 
 
 class AnthropicAdapter(BaseLLMAdapter):
@@ -304,8 +356,18 @@ class AnthropicAdapter(BaseLLMAdapter):
         if not self._client:
             self._client = self._create_client()
         params = self._make_params(messages, tools, kwargs)
-        resp = self._client.messages.create(**params)
+        t0 = time.monotonic()
+        try:
+            resp = self._client.messages.create(**params)
+        except Exception as e:
+            self._trace(request=params, error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
         text, tool_calls = self._parse_content_blocks(resp.content)
+        self._trace(
+            request=params,
+            response={"content": text, "tool_calls": tool_calls},
+            t0=t0,
+        )
         return LLMResponse(content=text, tool_calls=tool_calls)
 
     async def async_stream_with_tools(
@@ -319,24 +381,36 @@ class AnthropicAdapter(BaseLLMAdapter):
         input_tokens = 0
         output_tokens = 0
 
-        async for event in await self._async_client.messages.create(**params, stream=True):
-            etype = event.type
-            if etype == "message_start":
-                input_tokens = event.message.usage.input_tokens
-            elif etype == "content_block_start":
-                cb = event.content_block
-                if cb.type == "tool_use":
-                    tool_calls_buf[event.index] = {
-                        "id": cb.id, "name": cb.name, "input_parts": [],
-                    }
-            elif etype == "content_block_delta":
-                delta = event.delta
-                if delta.type == "text_delta":
-                    yield StreamEvent(type="text_delta", delta=delta.text)
-                elif delta.type == "input_json_delta" and event.index in tool_calls_buf:
-                    tool_calls_buf[event.index]["input_parts"].append(delta.partial_json)
-            elif etype == "message_delta":
-                output_tokens = event.usage.output_tokens
+        t0 = time.monotonic()
+        try:
+            stream = await self._async_client.messages.create(**params, stream=True)
+        except Exception as e:
+            self._trace(request={**params, "_stream": True},
+                        error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
+        try:
+            async for event in stream:
+                etype = event.type
+                if etype == "message_start":
+                    input_tokens = event.message.usage.input_tokens
+                elif etype == "content_block_start":
+                    cb = event.content_block
+                    if cb.type == "tool_use":
+                        tool_calls_buf[event.index] = {
+                            "id": cb.id, "name": cb.name, "input_parts": [],
+                        }
+                elif etype == "content_block_delta":
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        yield StreamEvent(type="text_delta", delta=delta.text)
+                    elif delta.type == "input_json_delta" and event.index in tool_calls_buf:
+                        tool_calls_buf[event.index]["input_parts"].append(delta.partial_json)
+                elif etype == "message_delta":
+                    output_tokens = event.usage.output_tokens
+        except Exception as e:
+            self._trace(request={**params, "_stream": True},
+                        error=f"{type(e).__name__}: {e}", t0=t0)
+            raise
 
         if tool_calls_buf:
             yield StreamEvent(type="tool_calls_done", tool_calls=[
@@ -355,6 +429,19 @@ class AnthropicAdapter(BaseLLMAdapter):
             "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         })
+
+        self._trace(
+            request={**params, "_stream": True},
+            response={
+                "tool_calls": [
+                    {"id": buf["id"], "name": buf["name"],
+                     "arguments": "".join(buf["input_parts"]) or "{}"}
+                    for _, buf in sorted(tool_calls_buf.items())
+                ],
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+            },
+            t0=t0,
+        )
 
 
 def create_adapter(model: str, api_key: str, base_url: str, timeout: int) -> BaseLLMAdapter:

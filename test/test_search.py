@@ -16,6 +16,7 @@
 """
 
 import sqlite3
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -332,5 +333,5 @@ def test_overlapping_terms_produce_disjoint_marks(mgr):
 
     hit = mgr.search_messages("上下文 下文压")[0]["hits"][0]
     marks = hit["marks"]
-    for (_, prev_end), (next_start, _) in zip(marks, marks[1:]):
+    for (_, prev_end), (next_start, _) in pairwise(marks):
         assert prev_end <= next_start, "高亮区间出现重叠"

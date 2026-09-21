@@ -31,6 +31,7 @@ WORKSPACES_FILE  = KITTYMIND_DIR / "workspaces.json"
 SCREENSHOTS_DIR  = KITTYMIND_DIR / "screenshots"
 TOOL_AUDIT_DB    = KITTYMIND_DIR / "tool_audit.db"      # 工具审计 SQLite
 TOOL_AUDIT_JSONL = KITTYMIND_DIR / "tool_audit.jsonl"   # 工具审计 JSONL（同内容双写）
+LLM_TRACE_JSONL  = KITTYMIND_DIR / "llm_trace.jsonl"    # LLM 调用留档 JSONL（排查用，默认关闭）
 DEFAULT_WORKSPACE_DIR = Path.home()   # 未选工作区时的默认 cwd
 
 # ── 超时（秒） ───────────────────────────────────────────────────
@@ -113,6 +114,10 @@ PERMISSION_ASK_TIMEOUT = 300
 LLM_TEMPERATURE  = 0.7
 LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，OpenAI 可选）
 
+# LLM 调用留档：把每次真实调用的请求参数/响应结果写到 LLM_TRACE_JSONL。
+# 默认关闭（避免日常运行堆积文件），排查「模型侧 vs 代码侧」问题时打开。
+LLM_TRACE_ENABLED = False
+
 # ── 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）──────────────
 # 留空 = 不启用，上述辅助任务回退主模型（与旧行为一致）。
 # 环境变量优先级高于 settings.json：LLM_AUX_MODEL_ID / LLM_AUX_API_KEY / LLM_AUX_BASE_URL
@@ -181,6 +186,7 @@ _OVERRIDABLE = {
     "PERMISSION_ASK_TIMEOUT",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
+    "LLM_TRACE_ENABLED",
     "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",
     "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",
     "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",
