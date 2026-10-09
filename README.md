@@ -41,6 +41,20 @@ LLM_AUX_MODEL_ID=qwen-turbo          # 留空即不启用
 # LLM_AUX_BASE_URL=...               # 可选，不填复用 LLM_BASE_URL
 ```
 
+可选：给记忆检索配一个 embedding 端点，召回就从「把全部记忆目录喂给模型选」变成
+「向量 + 关键词融合」，记忆涨到上百条也不会变慢。**不配则行为与之前完全一致。**
+
+> ⚠️ 隐私：启用后会把**记忆正文**（每条截断到 300 字）发给该端点做向量化。
+> 想零外发就在 `~/.kittymind/settings.json` 里写 `{"MEMORY_RECALL_MODE": "keyword"}`，
+> 或干脆别配这段。
+
+```env
+EMBEDDING_MODEL_ID=embedding-3                            # 任意 OpenAI 兼容 embedding 模型
+EMBEDDING_BASE_URL=https://open.bigmodel.cn/api/paas/v4   # 智谱 / OpenAI / 兼容网关均可
+EMBEDDING_API_KEY=your-embedding-key
+# EMBEDDING_DIM=512                                       # 0 = 用服务端默认维度
+```
+
 ### 2. 安装依赖
 
 ```bash

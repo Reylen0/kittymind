@@ -83,6 +83,46 @@ MEMORY_MAX_HISTORY_CHARS     = 8_000
 MEMORY_RECALL_MAX_RELEVANT   = 5
 MEMORY_RECALL_MAX_BODY_CHARS = 800
 
+# ── 记忆向量检索（Phase 17M）────────────────────────────────────
+# 端点配置。留空 = 关闭向量路，召回退回「LLM 选序号 → 2-gram 关键词」（与 17M 前一致）。
+# 密钥不进本文件，只从环境变量 EMBEDDING_API_KEY 读（与 LLM_AUX_API_KEY 一致）。
+EMBEDDING_MODEL_ID = ""
+EMBEDDING_BASE_URL = ""
+# 0 = 用服务端默认维度。512 是实测值（智谱 embedding-3 支持 dimensions=512，
+# 向量常驻内存比 2048 维省 4 倍：1000 条 2.0 MB vs 7.8 MB）。
+# 服务端不支持该参数时会自动降级重试并学习实际维度（见 embeddings/openai_compat.py）。
+EMBEDDING_DIM     = 512
+EMBEDDING_BATCH   = 16   # 单次请求编码的文本条数（智谱实测 16 条稳定）
+EMBEDDING_TIMEOUT = 30
+
+# 召回模式：
+#   auto    —— 配了 embedding 就用「向量+关键词融合」，否则自动退回 LLM 选序号
+#   vector  —— 只用向量+关键词融合（不调 LLM），向量不可用时退回关键词
+#   llm     —— 强制用改造前的 LLM 选序号路径
+#   keyword —— 只用 2-gram 关键词（**零外发的隐私模式**：记忆正文不出本机）
+MEMORY_RECALL_MODE = "auto"
+MEMORY_VECTOR_TOP_K = 12            # 进入融合的向量候选数（最终仍取 MAX_RELEVANT 条）
+MEMORY_RECALL_KEYWORD_WEIGHT = 0.3  # 关键词分在融合里的权重
+MEMORY_RECALL_TIMEOUT = 2.0         # 召回超时（秒）；超时降级为关键词结果，绝不阻塞 turn
+# 门控（默认全关）。实测 top1 只有 0.348~0.564，而"不相关"的 median 高达
+# 0.219~0.437，两区间重叠——**任何绝对阈值换模型即失效**，所以默认不门控。
+MEMORY_RECALL_MIN_SCORE  = 0.0   # <=0 关闭绝对阈值
+MEMORY_RECALL_MIN_MARGIN = 0.0   # <=0 关闭相对门（top1 - median 低于它视为"无区分"）
+
+# 索引文本取正文前 N 字（实测依据：只嵌 42 字的 description 时平均 top1-median
+# 间距 0.132；加上正文前 300 字后升到 0.145，且 persona 类查询的 top1 由错误项纠正）。
+MEMORY_INDEX_TEXT_BODY_CHARS = 300
+
+# 提取去重视图：用向量检索出的相关记忆替代 `existing_catalog[:4000]` 硬截断
+# （4000 字符折算约 32 条，之后后半记忆对提取完全失明 → 同一事实反复提取）。
+MEMORY_EXTRACT_CATALOG_TOP_N = 8
+MEMORY_EXTRACT_CATALOG_TOKENS = 1_500
+
+# 整合预筛：只把「近重复候选对」交给模型判断 keep/merge/drop，替代全量正文灌 prompt
+# （300 条时实测 68k tokens，小模型上下文必爆）。
+MEMORY_CONSOLIDATE_MIN_SIM  = 0.86  # 两两余弦达到此值才视为近重复候选
+MEMORY_CONSOLIDATE_FULL_MAX = 40    # 记忆数低于此值时保留全量行为（小库上全量更准）
+
 # ── Agent ────────────────────────────────────────────────────────
 AGENT_MAX_ITERATIONS = 30
 
@@ -210,6 +250,13 @@ _OVERRIDABLE = {
     "SCREENSHOT_KEEP_MAX",
     "MEMORY_CONSOLIDATE_THRESHOLD", "MEMORY_MAX_HISTORY_CHARS",
     "MEMORY_RECALL_MAX_RELEVANT", "MEMORY_RECALL_MAX_BODY_CHARS",
+    "EMBEDDING_MODEL_ID", "EMBEDDING_BASE_URL", "EMBEDDING_DIM",
+    "EMBEDDING_BATCH", "EMBEDDING_TIMEOUT",
+    "MEMORY_RECALL_MODE", "MEMORY_VECTOR_TOP_K", "MEMORY_RECALL_KEYWORD_WEIGHT",
+    "MEMORY_RECALL_TIMEOUT", "MEMORY_RECALL_MIN_SCORE", "MEMORY_RECALL_MIN_MARGIN",
+    "MEMORY_INDEX_TEXT_BODY_CHARS",
+    "MEMORY_EXTRACT_CATALOG_TOP_N", "MEMORY_EXTRACT_CATALOG_TOKENS",
+    "MEMORY_CONSOLIDATE_MIN_SIM", "MEMORY_CONSOLIDATE_FULL_MAX",
     "AGENT_MAX_ITERATIONS",
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",

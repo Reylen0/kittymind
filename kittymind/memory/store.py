@@ -50,6 +50,11 @@ class MemoryStore:
 
     # ── 公开接口 ──────────────────────────────────────────────────
 
+    @property
+    def directory(self) -> Path:
+        """记忆目录。向量索引库的路径由它派生（见 memory/index.py::index_db_path）。"""
+        return self._dir
+
     def write(self, name: str, mem_type: str, description: str, body: str) -> Path:
         """写入或覆盖一条记忆，同步重建索引。"""
         self._dir.mkdir(parents=True, exist_ok=True)

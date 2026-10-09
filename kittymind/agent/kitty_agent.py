@@ -397,13 +397,30 @@ class KittyAgent(Agent):
         return section
 
     async def _compute_recall_section(self, input_text: str) -> str:
+        """算召回段。**记忆召回绝不能阻塞一个 turn**，所以这里是超时一等公民。
+
+        向量路首建索引要一次网络往返（实测 12 条 1.7s）、端点抖动、额度耗尽都会
+        真实发生。超时就用本地关键词结果先注入，而 `to_thread` 里的向量任务**不会
+        被取消**——它继续把索引补进 `memory_index.db`，下一轮（或压缩后重算时）就
+        命中缓存了。代价只是这一轮召回质量略低。
+        """
+        timeout = cfg.MEMORY_RECALL_TIMEOUT
         try:
-            relevant = await asyncio.to_thread(
-                self._memory_recall.select_relevant, input_text
+            relevant = await asyncio.wait_for(
+                asyncio.to_thread(self._memory_recall.select_relevant, input_text),
+                timeout=timeout if timeout and timeout > 0 else None,
             )
-            return self._memory_recall.build_recall_section(relevant) or ""
+        except asyncio.TimeoutError:
+            logger.warning("记忆召回超时（%.1fs），本轮降级为关键词召回", timeout)
+            try:
+                relevant = await asyncio.to_thread(
+                    self._memory_recall.select_relevant_keyword, input_text
+                )
+            except Exception:
+                return ""
         except Exception:
             return ""  # 召回是增强能力，失败静默降级
+        return self._memory_recall.build_recall_section(relevant) or ""
 
     def _mark_recall_stale(self, session_id: str | None) -> None:
         """压缩后调用：下一轮用当轮输入重算召回段。"""

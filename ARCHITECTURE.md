@@ -75,7 +75,9 @@ kittymind/                      # 项目根目录
 │   ├── context/                # token_counter / micro_compaction / compressor（压缩管线）
 │   ├── tools/                  # base / registry / executor / permission / guardrails / audit
 │   │                           #   / redaction + builtin/（14 个工具 + _paths/_fmt/_dangerous 辅助）
-│   ├── memory/                 # store / extract / recall（LLM 驱动的长期记忆）
+│   ├── memory/                 # store / extract / recall / index（向量索引库）—— LLM 驱动的长期记忆
+│   ├── embeddings/             # base（Protocol）/ openai_compat / get_embedding（Phase 17M 语义检索）
+│   ├── storage/                # migrations（版本链）/ maintenance（自检·备份·回收）/ atomic（原子写）
 │   ├── events/                 # bus（asyncio Pub/Sub，唯一事件出口）/ types
 │   ├── session/                # store（SQLite + FTS5 全文检索）/ manager / _search_text（CJK 二元组切词）
 │   ├── workspace/              # manager（cwd 上下文隔离）
@@ -91,7 +93,7 @@ kittymind/                      # 项目根目录
 │   │   └── overlay/            # 全局悬浮覆盖层
 │   ├── vite.config.ts
 │   └── package.json
-├── test/                       # 31 个测试文件 / 512 个用例（特征测试 + 回归）
+├── test/                       # 38 个测试文件 / 684 个用例（特征测试 + 回归）
 ├── assets/                     # 应用图标 / 托盘图
 ├── chat_async.py               # CLI 演示入口
 ├── build-python.spec           # PyInstaller 打包配置
@@ -100,13 +102,13 @@ kittymind/                      # 项目根目录
 
 内置工具（14）：`bash` `file_read/write/edit` `glob` `grep` `ls` `git` `screenshot` `clipboard` `get_current_time` `write_memory` `verify`（自我验证）`task`（子任务）。
 
-运行时数据目录 `~/.kittymind/`：`sessions.db`（SQLite 会话库）、`memory/`（长期记忆）、`workspaces.json`、`settings.json`。
+运行时数据目录 `~/.kittymind/`：`sessions.db`（SQLite 会话库）、`tool_audit.db` + `tool_audit.jsonl`（工具审计）、`memory/`（长期记忆 Markdown）、`memory_index.db`（记忆向量索引，纯派生数据可删）、`workspaces.json`、`settings.json`、`backups/`（会话库备份）。
 
 ---
 
 ## 5. 开发路线与实现状态（Phase 1-30）
 
-> 依据**当前代码**（2026-09，512 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
+> 依据**当前代码**（2026-09，684 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
 > 对标参照：Nous Research 的 hermes-agent（仅借鉴其 Agent 侧设计，服务端重型能力不在路线内）。
 
 ### 里程碑总览
@@ -115,7 +117,7 @@ kittymind/                      # 项目根目录
 |--------|------|-----------|:----:|
 | MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
 | **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
-| **M-B** | 健壮持久化 + 记忆检索 | 14-17 | 🟡 存储层 ✅ / 全文搜索 ✅ / 用量成本 ✅ / 维护健壮 ✅ / 保留期+归档 ✅ / 检索升级 ⬜ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17M | ✅ |
 | **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
 | **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
@@ -171,7 +173,7 @@ kittymind/                      # 项目根目录
 
 ---
 
-### 里程碑 M-B：健壮持久化 + 记忆检索（Phase 14-17M）🟡
+### 里程碑 M-B：健壮持久化 + 记忆检索（Phase 14-17M）✅
 
 **Phase 14 — SQLite 会话存储 ✅（核心）**
 架构：单文件 `~/.kittymind/sessions.db`，sessions/messages 表 + WAL；`archive_and_compact` 单事务原子压缩落库（旧消息 `active=0,compacted=1` 不删除，摘要+尾部作为新活跃行写入）——压缩视图持久化，**重启无需重压**；双视图读取：模型视图 `WHERE active=1`（加载即已压缩状态）、完整视图含 compacted 行（审计/回溯）；session_state 跨轮保存压缩冷却/校准基线。JSONL 后端已移除。
@@ -196,9 +198,40 @@ kittymind/                      # 项目根目录
 
 ⑧ **会话归档**（Phase 17 收尾）：`sessions.archived` 列（schema v8）。语义边界三条（都是刻意的）：**能继续聊**（归档不是只读锁）、**搜索不过滤** `archived`（搜不到等于真找不回）、**追加消息即自动取消归档**（`append` 里与写入同一次加锁做 `UPDATE ... WHERE archived=1`，避免"消息已落库、却还挂在归档分组"的中间态）。`list_headers(include_archived=False)` 默认过滤，对应前端侧栏顶部开关（`session/list` 的 `include_archived`，用 `is True` 判断以免字符串 "false" 被当真值）；`session/archive` RPC **不取消正在跑的任务**（归档不中断对话，这点与 `session/delete` 不同）。前端：顶部归档图标开关 + 会话行悬浮的归档按钮（排在删除左侧，破坏性操作离视线中心更远）+ 已归档行 `opacity:.6` 灰显。归档不纳入保留期清理——归档的语义就是长期留存。
 
-**Phase 17M — 长期记忆检索升级 ⬜**
-现状基础：Markdown+frontmatter 记忆、LLM 提取/整合/召回已可用，召回以独立消息注入（缓存友好）。
-思路：sqlite-vec 向量语义召回取代「全量 catalog 喂 LLM 选序号」；修中文关键词兜底（现 `split()` 对中文无效，改字符 n-gram）；可选 provider 抽象（honcho/mem0 式后端）。
+**Phase 17M — 长期记忆检索升级 ✅**
+
+问题（实测，非估算）：召回 / 提取 / 整合三条链路**都是 O(全量)**，规模墙在 **~30 条记忆**。① 召回把全部记忆目录喂给 LLM 选序号（12 条 525 tok，300 条约 11.7k tok，且选序号准确率随目录变长下降），而记忆**正文**（合计是目录的 4.8 倍）完全不参与匹配；② 提取去重靠 `existing_catalog[:4000]` 硬截断 ≈ **32 条**，之后后半记忆对提取完全失明 → 同一事实被反复提取成新记忆；③ 整合把全部正文灌 prompt，300 条实测 **68.2k tokens**（aux 小模型上下文必爆）。
+
+架构：新增 `kittymind/embeddings/`（`BaseEmbedding` Protocol + `OpenAICompatEmbedding` + `get_embedding()` 单例，与 `get_aux_llm` 同构：构造失败返回 `None`、失败不缓存）与 `kittymind/memory/index.py`（独立库，schema 走 `storage/` 版本链 v1）。关键决策：
+
+- **检索用 numpy 全量余弦，刻意不引入 sqlite-vec / ANN**：本机实测 1000 条 × 768 维一次全量余弦 **0.082 ms**、常驻 2.93 MB（2048 维 1000 条约 7.8 MB / 0.25 ms）。ANN 在 10³ 量级毫无意义，而 loadable extension 的打包成本是实打实的；`numpy` 本就在依赖里。
+- **索引文本 = `[type] name: description` + 正文前 300 字**（实测依据：只用平均 42 字的 description 时平均 `top1 - median` 间距 0.132，加上正文后升到 0.145，且「你应该怎么跟我说话」的 top1 由错误项纠正为 persona 记忆）。
+- **`model_id` / `dim` 是硬校验而非元数据**：不同模型（乃至同模型不同 `dimensions`）的向量不可比，混用会静默给出垃圾相似度——这是这类设计最阴的失败模式。对账时任一不匹配即整表重嵌（这条有测试钉住：清表后必须同步清掉内存视图，否则漂移根本不触发重嵌）。
+- **对账走 stat 快路径**：mtime+size 未变就跳过（1000 条记忆不该每次召回都读 1000 个文件），疑似变化才构造索引文本算 hash；hash 一致（被 touch / 原子写重写同内容）则只刷新元数据不重嵌。拿不到文件时间戳的纯 dict 条目退化为纯 hash 对账。
+- **索引库路径由记忆目录派生**（与 Phase 17 备份目录同一条纪律）：写成全局固定路径会让任何触发提取/召回的测试污染真实库，而且同名库还会让两个记忆目录**按名字互相覆盖**。
+- **索引是纯派生数据，不进备份、不进隔离**：损坏时直接删库重建（与 `sessions.db` 刻意不同——没有抢救价值）。**懒索引**，不上启动路径（首次召回 / 提取后补齐），与 Phase 17「重活不上启动路径」同一条纪律。
+
+召回：`MEMORY_RECALL_MODE ∈ {auto, vector, llm, keyword}`。`auto`（默认）走「向量分 + 0.3 × 归一化关键词分」融合；向量路不可用（无 key / 端点报错 / 超时 / 索引为空）时退回改造前的 LLM 选序号 → 2-gram 关键词。**旧路径不是删掉而是降级链的末端**——未配 `EMBEDDING_*` 的用户行为**逐字节不变**（硬要求），回滚对照（取 git 里旧 `recall.py` 跑 56 组输入）零差异。融合而非替换的理由：2-gram 对专名 / 代码标识符 / 版本号天生比向量强（`sqlite-vec`、`MEMORY_RECALL_TIMEOUT` 这类串在向量空间几乎无区分度）。门控（`MIN_SCORE` / `MIN_MARGIN`）**默认全关**——实测 top1 只有 0.348~0.564，而"不相关"项的 median 高达 0.219~0.437，两区间重叠，**任何绝对阈值换模型即失效**。召回超时（`MEMORY_RECALL_TIMEOUT=2.0s`）在 `kitty_agent` 层用 `asyncio.wait_for` 兜底：降级为关键词结果先注入，被超时的 `to_thread` 任务**不会被取消**、继续把索引补完，下一轮即命中缓存——**记忆召回绝不阻塞一个 turn**。
+
+另两条链路：**提取去重视图**改为向量检索 top-8（token 预算 1500）替代 4000 字符截断；**整合预筛**用两两余弦（`M @ M.T`，1000 条约 4 MB / 1 ms）只把 `cos >= 0.86` 的近重复候选对交给模型。两条保护：记忆数 < `MEMORY_CONSOLIDATE_FULL_MAX=40` 或向量不可用则保留全量行为（小库上全量更准，也便于回滚对照）；预筛只缩候选集，`_plan_ops` 的「未被提及 = 保留」语义不变——**漏掉的对子不会丢数据**，只是这轮不合并。
+
+实测（真实库 12 条 + 真实端点）：冷建索引 12 条 / **1187 ms**（一次网络往返），二次 `sync` **0.9 ms**（stat 快路径），索引库 16 KB（512 维，实测 `dimensions=512` 被端点支持，比 2048 维省 4 倍常驻）；4 个中文 query **全部 top1 命中**；每次召回 ~180 ms（一次 query embedding，且按会话冻结，不是每轮）。单轮注入量不变（5 条 × 800 字 ≈ 2340 字符）——变的是"这 5 条怎么选出来"。
+
+规模化实测（同一套真实代码路径 + 假索引，只量 prompt 长度，不打网络；旧值取自 git 里的旧 `recall.py`）：
+
+| 记忆条数 | 召回 prompt（旧） | 召回 LLM 调用（新） | 提取去重视图 tok 旧→新 | 旧视图能看到深处记忆 | 新视图 | 整合 prompt tok 旧→新 |
+|---:|---:|---:|---|---|:---:|---|
+| 12 | 320 | **0** | 268 → 1425 | 是（12/12） | 是 | 2,545 → 966 |
+| 50 | 1,170 | **0** | 1,118 → 1,386 | 是（50/50） | 是 | 10,267 → 966 |
+| 100 | 2,289 | **0** | 1,696 → 1,386 | **否**（只见前 76 条） | 是 | 20,427 → 966 |
+| 300 | 6,866 | **0** | 1,696 → 1,342 | **否**（同上） | 是 | 62,618 → 966 |
+| 1000 | 22,884 | **0** | 1,696 → 1,342 | **否**（同上） | 是 | 210,287 → 966 |
+
+三点读法：① 召回不再产生任何 LLM prompt（只有一次 ~30 tok 的 query embedding），而旧路径 1000 条时要 22.9k tok 且选序号准确率随目录变长下降；② 提取去重视图 **从 100 条起就看不到"深处"记忆**（4000 字符截断只覆盖按文件名排序的前 76 条，与相关性无关），新路径始终能看到语义最相关的那条——注意小库（12 条）上新视图 token 反而更高（含正文前 300 字），这是**有意的代价**：多花约 1.1k tok 换"看得见正文的去重判断"；③ 整合 prompt 从线性膨胀（1000 条 210k tok）变成只含近重复候选对。
+
+隐私：启用后**记忆正文（截断到 300 字）会发给 embedding 端点**，这是记忆内容第一次离开本机。`MEMORY_RECALL_MODE=keyword` 提供零外发模式；`.env.example` 与 `README.md` 均已标注。
+
+**不做第三方记忆后端抽象**（mem0 / honcho 式）：它与自研检索是**替代关系**而非叠加——接进来等于把上述三条链路整个作废；且可插拔层最贵的部分正是接口本身（mem0 的 `add/search/delete` + `user_id/agent_id/run_id` 作用域、Honcho 的 workspace/peer/representation 模型与我们的 `write/list/snapshot` 形状差很远），在只有一个实现时是投机性抽象；还会丢掉 Markdown 的「人类可读 / 可 git / 改一条即生效」。若将来真要接：首选 **mem0 的 OSS 或自托管模式**（数据不出本机），避开 Platform；**Honcho 是 AGPL-3.0**，闭源产品需先过合规。
 
 ---
 
