@@ -71,6 +71,8 @@ def extract_memories(messages: list[dict], llm, memory_store) -> bool:
                 mem_type=candidate["type"],
                 description=candidate["description"],
                 body=candidate["body"],
+                source={"via": "extract"},
+                actor="extract",
             )
             logger.info("提取记忆: %s", candidate["name"])
             wrote_any = True
@@ -198,13 +200,20 @@ def _consolidate(llm, memory_store) -> None:
             return
 
         updates, deletions = _plan_ops(ops, by_name)
+        # 合并的来源要记住"被并进谁"，才能把墓碑写上 merged_into（可追溯、可恢复）
+        merged_into = _merge_targets(ops, by_name)
         for item in updates:  # 先写后删：合并来源的正文已被并进目标
+            # merge=False：正文已经是本地拼接好的最终结果，再走一次合并只会重复拼接
             memory_store.write(
                 item["name"], item["type"], item["description"], item["body"],
+                merge=False, actor="consolidate",
             )
         for name in deletions:
-            if not memory_store.delete(name):
-                logger.warning("记忆整合：删除未生效（未找到文件）%s", name)
+            # **软删**（移入 _trash/，可 restore）——"两条是否重复"是模型的主观判断，
+            # 误判时必须能把记忆拿回来，所以这里绝不物理删除。
+            if not memory_store.delete(name, merged_into=merged_into.get(name),
+                                       actor="consolidate"):
+                logger.warning("记忆整合：软删未生效（未找到文件）%s", name)
         logger.info(
             "记忆整合: 候选 %d 条（共 %d 条）→ %d 条（重写 %d 条，移除 %d 条）",
             len(by_name), len(memories), memory_store.count(), len(updates), len(deletions),
@@ -253,6 +262,27 @@ def _consolidate_candidates(memory_store, memories: list[dict]) -> list[dict] | 
         len(memories), len(chosen), len(pairs), cfg.MEMORY_CONSOLIDATE_MIN_SIM,
     )
     return chosen
+
+
+def _merge_targets(ops: list, by_name: dict[str, dict]) -> dict[str, str]:
+    """从模型指令里取出「来源名 → 被并入的目标名」映射（纯函数，便于单测）。
+
+    `_plan_ops` 关心"谁该消失"，这里关心"它被并进了谁"——墓碑要写上 `merged_into`
+    才能回答"这条为什么不见了、去哪了"。输出的是**名字**（模型只给名字）；
+    `MemoryStore.delete()` 会在落盘前把它归一成目标 `id`，名字改名后墓碑仍是活链。
+    """
+    mapping: dict[str, str] = {}
+    for op in ops:
+        if not isinstance(op, dict) or op.get("op") != "merge":
+            continue
+        into = op.get("into")
+        sources = op.get("from")
+        if into not in by_name or not isinstance(sources, list):
+            continue
+        for src in sources:
+            if isinstance(src, str) and src in by_name and src != into:
+                mapping.setdefault(src, into)
+    return mapping
 
 
 def _plan_ops(ops: list, by_name: dict[str, dict]) -> tuple[list[dict], list[str]]:

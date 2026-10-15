@@ -232,7 +232,6 @@ class ToolAuditLog:
 
 # ── 进程级单例（所有 Agent / 子 Agent 共享一个连接 + 一份日志） ──
 
-# 单元素 list 当持有者：避免 `global` 语句（ruff PLW0603），与 core/llm_trace.py 一致
 _instance: list[ToolAuditLog | None] = [None]
 _instance_lock = threading.Lock()
 

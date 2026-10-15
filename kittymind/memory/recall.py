@@ -26,11 +26,13 @@ import json
 import logging
 import re
 import statistics
+import time
 
 from ..config import cfg
 from ..core.llm_json import extract_json_text, log_parse_failure
 from ..prompts import MEMORY_RECALL_SECTION_HEADER, build_memory_recall_select_prompt
 from .index import get_memory_index
+from .ledger import get_memory_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -66,35 +68,92 @@ class MemoryRecall:
         # 延迟到调用时取索引单例：配置热更新（换模型/换维度）后能拿到新的实例。
         # 索引库路径由记忆目录派生，测试的临时 store 天然隔离。
         self._get_index = index_getter or self._default_index
+        # 本轮召回的留痕素材（候选集/间距/降级原因），由 select_relevant 写出。
+        self._trace: dict = {}
+        self._session: tuple[str | None, int] = (None, 0)
 
     def _default_index(self):
         return get_memory_index(self._store.directory)
 
+    def bind_session(self, session_id: str | None, turn_seq: int = 0) -> None:
+        """绑定本轮的会话上下文，供召回留痕使用。
+
+        刻意做成"先绑定、再调用"，而不是给 `select_relevant` 加参数：召回对象是鸭子
+        类型接口（测试替身只实现 select_relevant / build_recall_section），给热路径加
+        关键字参数会让签名不匹配的替身抛 TypeError，而那个异常会被上层当成"召回失败"
+        静默吞掉——记忆召回会**无声失效**。绑定是可选钩子，缺了只是这一轮没留痕。
+        """
+        self._session = (session_id, int(turn_seq or 0))
+
     def select_relevant(self, user_input: str) -> list[dict]:
-        """返回与 user_input 相关的记忆列表（最多 MAX_RELEVANT 条）。"""
+        """返回与 user_input 相关的记忆（最多 MAX_RELEVANT 条），并写一行召回留痕。
+
+        留痕是 P0 的一部分：**没有"这轮注入了哪几条"的记录，门控阈值与重排参数的
+        任何调整都无法评估**，只能靠感觉。
+        """
+        started = time.perf_counter()
+        self._trace = {"mode": self.MODE, "candidates": [], "margin": 0.0,
+                       "gate_blocked": []}
+        result = self._select_relevant(user_input)
+        self._log_recall(user_input, result, started)
+        return result
+
+    def _select_relevant(self, user_input: str) -> list[dict]:
         memories = self._store.all_memories()
         if not memories:
             return []
 
         mode = self.MODE
         if mode == "keyword":
+            self._trace["mode"] = "keyword"
             return self._keyword_only(user_input, memories)
         if mode == "llm":
+            self._trace["mode"] = "llm"
             return self._llm_then_keyword(user_input, memories)
 
         fused = self._fused_select(user_input, memories)
         if fused is not None:
             return fused
         if mode == "vector":
+            self._trace["mode"] = "vector→keyword"
             return self._keyword_only(user_input, memories)
+        self._trace["mode"] = "auto→fallback"
         return self._llm_then_keyword(user_input, memories)
 
     def select_relevant_keyword(self, user_input: str) -> list[dict]:
-        """纯关键词召回 —— 召回超时时的兜底（完全不碰网络）。"""
+        """纯关键词召回 —— 召回超时时的兜底（完全不碰网络）。同样留痕。"""
+        started = time.perf_counter()
+        self._trace = {"mode": "keyword-fallback", "candidates": [], "margin": 0.0,
+                       "gate_blocked": []}
         memories = self._store.all_memories()
-        if not memories:
-            return []
-        return self._keyword_only(user_input, memories)
+        result = self._keyword_only(user_input, memories) if memories else []
+        self._log_recall(user_input, result, started)
+        return result
+
+    def _log_recall(self, user_input: str, result: list[dict], started: float) -> None:
+        """写召回留痕。**失败只 debug**——留痕绝不能影响一轮对话。"""
+        try:
+            store = self._store
+            if store is None:
+                return
+            ledger = get_memory_ledger(store.directory)
+            if ledger is None:
+                return
+            trace = self._trace or {}
+            session_id, turn_seq = self._session
+            ledger.log_recall(
+                session_id=session_id,
+                mode=str(trace.get("mode") or self.MODE),
+                query_text=user_input,
+                candidates=trace.get("candidates") or [],
+                injected=[str(m.get("name") or "") for m in result],
+                gate_blocked=trace.get("gate_blocked") or [],
+                margin=float(trace.get("margin") or 0.0),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                turn_seq=turn_seq,
+            )
+        except Exception as e:
+            logger.debug("召回留痕失败：%s: %s", type(e).__name__, e)
 
     def build_recall_section(self, memories: list[dict]) -> str:
         """把召回的记忆格式化为可追加到 system prompt 的文本块。"""
@@ -140,6 +199,13 @@ class MemoryRecall:
 
         # 门控只看**向量分**（与实测口径一致：top1 0.348~0.564，不相关项 median
         # 0.219~0.437，两区间重叠——所以任何绝对阈值换模型即失效，默认全关）。
+        # 留痕先于门控：即使本轮被拦下，也要留下"本来会注入什么"的记录。
+        values = sorted(sims.values(), reverse=True)
+        self._trace["candidates"] = [
+            (name, score)
+            for score, name in sorted(ranked, key=lambda t: -t[0])[:cfg.MEMORY_VECTOR_TOP_K]
+        ]
+        self._trace["margin"] = (values[0] - statistics.median(values)) if values else 0.0
         if self._rejected_by_gate(sims):
             return []
 

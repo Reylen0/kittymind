@@ -52,11 +52,16 @@ class WriteMemoryTool(BaseTool):
         self._store = memory_store
 
     def execute(self, parameters: WriteMemoryToolParam) -> ToolResult:
+        # merge=False：工具调用是**显式更新**，语义是替换正文而不是追加。旧正文会
+        # 写进 events.jsonl，所以仍然可追溯（同名绝不静默覆盖）。
         path = self._store.write(
             name=parameters.name,
             mem_type=parameters.mem_type,
             description=parameters.description,
             body=parameters.body,
+            merge=False,
+            source={"via": "tool"},
+            actor="assistant",
         )
         logger.info("写入记忆: %s", path.name)
         return ToolResult(True, f"Memory saved: {parameters.name} ({parameters.mem_type})")

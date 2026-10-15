@@ -134,9 +134,11 @@ async def main() -> None:
         # 正常退出 / Ctrl-C / 端口耗尽，都把 SQLite 连接关干净（WAL checkpoint 随之完成）
         if agent.session_manager is not None:
             agent.session_manager.close()
-        # 记忆索引库也收尾：不关的话 WAL 会跨会话累积（它是独立库，不跟着 session_manager 走）
+        # 记忆派生库也收尾：不关的话 WAL 会跨会话累积（它是独立库，不跟着 session_manager 走）
         from kittymind.memory.index import reset_memory_index
+        from kittymind.memory.ledger import reset_memory_ledger
         reset_memory_index()
+        reset_memory_ledger()
 
 
 if __name__ == "__main__":

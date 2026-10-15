@@ -72,8 +72,12 @@ class ContextCompressor:
         summary_msg = self._make_summary(head, mid)
 
         if summary_msg is None:
-            # LLM 失败：若不压缩会溢出则强制硬裁剪保命，否则保持原样
-            used = tracker.used_tokens(messages)
+            # LLM 失败：若不压缩会溢出则强制硬裁剪保命，否则保持原样。
+            # 用 current_tokens 而非 used_tokens：后者有实测值时返回上一轮的
+            # usage，而那个读数测于 prune_tool_outputs 之前、且当时的 messages
+            # 更短——拿它判断"当前列表会不会溢出"会误砍已腾出空间的列表
+            # （或漏掉真正溢出的列表）。
+            used = tracker.current_tokens(messages)
             if used >= tracker.effective_window:
                 return self._hard_fallback(head, tail)
             return messages
@@ -130,9 +134,16 @@ class ContextCompressor:
     # ── 摘要生成 ───────────────────────────────────────────────────
 
     def _make_summary(self, head: list[dict], mid: list[dict]) -> dict | None:
-        """调 LLM 生成摘要消息，失败返回 None。"""
-        # 已有摘要则迭代合并
+        """调 LLM 生成摘要消息，失败返回 None。
+
+        已有摘要可能在 head 里，也可能在 mid 里：首次压缩后 protect_first_n
+        衰减为 0，上一轮插入的摘要消息紧跟在当时的 head_end 之后——下一轮
+        head_end 缩短后，它就不再属于新 head，而是落进新 mid 的第一条。
+        只查 head 会导致从第二次压缩起永远找不到"已有摘要"，旧摘要被当成
+        普通历史行重新喂给 LLM 摘要，而不是显式合并，多轮后信息会逐步漂移。
+        """
         existing_summary = ""
+        mid_rest = mid
         for msg in head:
             if msg.get(_SUMMARY_MARKER):
                 existing_summary = (
@@ -140,8 +151,17 @@ class ContextCompressor:
                     + (msg.get("content") or "")
                 )
                 break
+        else:
+            for i, msg in enumerate(mid):
+                if msg.get(_SUMMARY_MARKER):
+                    existing_summary = (
+                        "=== 已有摘要（请在此基础上合并新历史段）===\n"
+                        + (msg.get("content") or "")
+                    )
+                    mid_rest = mid[:i] + mid[i + 1:]  # 避免与 existing_summary 重复出现在 prompt 里
+                    break
 
-        history_text = self._render_history(mid)
+        history_text = self._render_history(mid_rest)
         prompt = build_compression_summary_prompt(
             existing_summary=existing_summary or "(无已有摘要，这是首次压缩)",
             history_text=history_text,

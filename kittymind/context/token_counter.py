@@ -66,6 +66,17 @@ class TokenTracker:
             return self._last_prompt_tokens
         return estimate_tokens(messages)
 
+    def current_tokens(self, messages: list[dict]) -> int:
+        """当前 messages 的估算体量（**永不**读 _last_prompt_tokens）。
+
+        与 used_tokens 的分工：used_tokens 有实测值时返回**上一轮**的真实
+        usage，用于展示与校准估算器偏差；本方法只回答"现在这个列表有多大"。
+        溢出判断必须用本方法——那个实测值描述的是某个更早、更短的列表
+        （此后循环 append 了 assistant 消息与 tool 结果，_compression_trigger
+        又 prune 过 tool 输出），拿它判断当前列表是否溢出会误砍或漏砍。
+        """
+        return estimate_tokens(messages)
+
     @property
     def effective_window(self) -> int:
         return self._effective

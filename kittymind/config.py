@@ -123,8 +123,16 @@ MEMORY_EXTRACT_CATALOG_TOKENS = 1_500
 MEMORY_CONSOLIDATE_MIN_SIM  = 0.86  # 两两余弦达到此值才视为近重复候选
 MEMORY_CONSOLIDATE_FULL_MAX = 40    # 记忆数低于此值时保留全量行为（小库上全量更准）
 
+# ── 记忆账本与召回留痕（v2 P0）───────────────────────────────────
+# 每轮召回写一行 memory_recall_log（候选集/实际注入/影子门控/耗时）。量级：
+# 含 top-12 候选约 1~2 KB/行，1000 轮 1~2 MB。**没有它，门控与重排的任何调参
+# 都无法评估**，所以它和"数据安全"同属 P0。
+MEMORY_RECALL_LOG_RETENTION_DAYS = 30   # <=0 = 永久保留
+# 软删/被合并的条目先落在这里，可 restore；真删只有两个入口（保留期 GC / 用户显式）。
+MEMORY_TRASH_RETENTION_DAYS = 90        # <=0 = 永久保留墓碑
+
 # ── Agent ────────────────────────────────────────────────────────
-AGENT_MAX_ITERATIONS = 30
+AGENT_MAX_ITERATIONS = 50
 
 # ── 子 Agent 委派 ─────────────────────────────────────────────────
 SUBAGENT_MAX_DEPTH      = 3   # 子 Agent 嵌套层数（不含 root）
@@ -257,6 +265,7 @@ _OVERRIDABLE = {
     "MEMORY_INDEX_TEXT_BODY_CHARS",
     "MEMORY_EXTRACT_CATALOG_TOP_N", "MEMORY_EXTRACT_CATALOG_TOKENS",
     "MEMORY_CONSOLIDATE_MIN_SIM", "MEMORY_CONSOLIDATE_FULL_MAX",
+    "MEMORY_RECALL_LOG_RETENTION_DAYS", "MEMORY_TRASH_RETENTION_DAYS",
     "AGENT_MAX_ITERATIONS",
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",

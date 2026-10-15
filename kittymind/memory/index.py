@@ -1,4 +1,6 @@
-"""记忆向量索引 —— 与记忆文件同级的独立库 `memory_index.db`（Phase 17M）。
+"""记忆向量索引 —— 落在派生库 `memory.db` 的 `memory_vec` 表里（v2 起与召回留痕同库）。
+
+库的路径、版本链与损坏重建策略都在 `memory/db.py`；本文只管向量的对账与检索。
 
 职责范围很窄：把记忆文本编码成向量、落库、对账、提供余弦检索。**它不读记忆
 目录**——调用方把 `MemoryStore.all_memories()` 的结果传进来，索引只回答
@@ -41,40 +43,13 @@ import numpy as np
 
 from ..config import cfg
 from ..embeddings import get_embedding
-from ..storage import (
-    Migration,
-    MigrationFailedError,
-    checkpoint,
-    quick_check,
-    run_migrations,
-)
+from ..storage import checkpoint
+from .db import memory_db_path, open_memory_db
 
 logger = logging.getLogger(__name__)
 
 # 向量以 float32 小端紧凑数组存 BLOB：2048 维 = 8 KB/条，512 维 = 2 KB/条。
 _VECTOR_DTYPE = "<f4"
-
-_DDL = """
-CREATE TABLE IF NOT EXISTS memory_vec (
-    name       TEXT PRIMARY KEY,
-    file       TEXT NOT NULL,
-    text_hash  TEXT NOT NULL,      -- 索引文本（含正文前 N 字）的 sha256，不是文件字节
-    mtime_ns   INTEGER NOT NULL DEFAULT 0,   -- 0 = 无文件信息，必须走 hash 对账
-    file_size  INTEGER NOT NULL DEFAULT 0,
-    model_id   TEXT NOT NULL,      -- 向量来源模型（硬校验，见模块 docstring ②）
-    dim        INTEGER NOT NULL,
-    indexed_at TEXT NOT NULL,
-    vector     BLOB NOT NULL
-);
-"""
-
-
-def _m_init_memory_vec(conn: sqlite3.Connection) -> None:
-    """v1：建向量表（幂等）。"""
-    conn.executescript(_DDL)
-
-
-_MIGRATIONS = [Migration(1, "create_memory_vec", _m_init_memory_vec)]
 
 
 def index_text(memory: dict, body_chars: int = 300) -> str:
@@ -117,46 +92,11 @@ class MemoryVectorIndex:
         self._lock = threading.Lock()
         self._cache: tuple[np.ndarray, list[str]] | None = None
         self._maintenance = cfg.DB_MAINTENANCE_ENABLED if maintenance is None else maintenance
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = self._prepare()
+        # 派生库的路径/版本链/损坏重建策略统一在 memory/db.py（与召回留痕共用一个文件，
+        # 一个文件上挂两条迁移链会互相踩 user_version）。
+        self._conn = open_memory_db(self._path, maintenance=self._maintenance)
 
     # ── 生命周期 ──────────────────────────────────────────────────
-
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(str(self._path), check_same_thread=False, isolation_level=None)
-
-    def _discard(self, conn: sqlite3.Connection) -> None:
-        """删掉库文件（连同 -wal/-shm）。
-
-        与 `session/store.py` 的"隔离留档"刻意不同：记忆索引是纯派生数据，
-        可以从 Markdown 全量重建，没有抢救价值——留档只会堆垃圾文件。
-        """
-        with contextlib.suppress(Exception):
-            conn.close()
-        for suffix in ("", "-wal", "-shm"):
-            with contextlib.suppress(OSError):
-                Path(str(self._path) + suffix).unlink()
-
-    def _prepare(self) -> sqlite3.Connection:
-        conn = self._connect()
-        with contextlib.suppress(Exception):
-            conn.execute("PRAGMA journal_mode=WAL")
-        if self._maintenance and cfg.DB_SELF_CHECK and quick_check(conn) != "ok":
-            logger.warning("记忆索引库损坏，删库重建（记忆文件不受影响）")
-            self._discard(conn)
-            conn = self._connect()
-        try:
-            outcome = run_migrations(conn, _MIGRATIONS)
-        except MigrationFailedError as e:
-            logger.warning("记忆索引库迁移失败，删库重建：%s", e)
-            self._discard(conn)
-            conn = self._connect()
-            outcome = run_migrations(conn, _MIGRATIONS)
-        if outcome.changed:
-            logger.info("记忆索引库 %s", outcome.describe())
-        with contextlib.suppress(Exception):
-            checkpoint(conn, "TRUNCATE")
-        return conn
 
     def close(self) -> None:
         """关闭连接（幂等）。"""
@@ -401,20 +341,10 @@ class MemoryVectorIndex:
 
 _INDEX_CACHE: dict[tuple, MemoryVectorIndex] = {}
 
-# 索引库文件名模板。路径**由记忆目录派生**而不是写成全局配置里的固定路径——与
-# Phase 17 的备份目录同一条纪律：测试用临时记忆目录时天然隔离，不会往用户的
-# ~/.kittymind 写垃圾（少了这条，任何触发提取/召回的测试都会污染真实索引库）。
-#
-# 名字里带记忆目录名（`memory` → `memory_index.db`）而不是固定叫 `memory_index.db`：
-# 两个记忆目录若同处一个父目录，固定名会让它们共用同一个索引库，而索引是**按名字
-# 对齐**的——两个库的记忆会互相覆盖，是最难查的那类串味。
-_INDEX_DB_SUFFIX = "_index.db"
-
 
 def index_db_path(memory_dir: str | Path | None = None) -> Path:
-    """索引库路径：与记忆目录同级、以记忆目录名派生的独立库。"""
-    base = Path(memory_dir) if memory_dir else cfg.MEMORY_DIR
-    return base.parent / f"{base.name}{_INDEX_DB_SUFFIX}"
+    """派生库路径（保留旧名以便调用点平滑迁移，实现已收到 `memory/db.py`）。"""
+    return memory_db_path(memory_dir)
 
 
 def get_memory_index(memory_dir: str | Path | None = None) -> MemoryVectorIndex | None:

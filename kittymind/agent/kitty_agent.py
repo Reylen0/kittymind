@@ -35,6 +35,7 @@ from ..memory.extract import extract_memories
 from ..memory.recall import MemoryRecall
 from ..memory.store import MemoryStore
 from ..session.manager import SessionManager
+from ..workspace.manager import WorkspaceManager
 from ..tools.base import BaseTool
 from ..usage import UsageRecorder
 from ..tools.builtin.bash_tool import bash_cwd
@@ -95,7 +96,7 @@ class KittyAgent(Agent):
         # 集成层（子 Agent 不传）
         event_bus: EventBus | None = None,
         session_manager: SessionManager | None = None,
-        workspace_manager=None,
+        workspace_manager: WorkspaceManager | None = None,
         memory: MemoryStore | None = None,
         ask_fn=None,
         # 是否是交互式，决定是否启用工具守护栏block（非交互态或全局 HARD_STOP 配置时启用 block）
@@ -129,7 +130,7 @@ class KittyAgent(Agent):
 
         self.event_bus: EventBus = event_bus or EventBus()
         self.session_manager: SessionManager | None = session_manager
-        self.workspace_manager = workspace_manager
+        self.workspace_manager: WorkspaceManager | None = workspace_manager
         self.memory: MemoryStore | None = memory
         self._memory_recall: MemoryRecall | None = (
             MemoryRecall(memory, self.aux_model) if memory else None
@@ -285,7 +286,7 @@ class KittyAgent(Agent):
                                 })
                                 if did_compress:
                                     cooldown_until, ineffective_count = self._check_anti_thrash(
-                                        event.usage, cooldown_until, ineffective_count
+                                        event.usage, tracker, cooldown_until, ineffective_count
                                     )
                                     did_compress = False
                     except Exception as e:
@@ -384,27 +385,36 @@ class KittyAgent(Agent):
         """返回本会话冻结的召回段；未命中（首次/被淘汰/压缩后）才重算。"""
         if not session_id:
             # 无会话（无从跨轮）：现算现用，不缓存
-            return await self._compute_recall_section(input_text)
+            return await self._compute_recall_section(input_text, session_id=None)
         cached = self._recall_cache.get(session_id)
         if cached is not None and cached is not _RECALL_STALE:
             self._recall_cache.move_to_end(session_id)
             return cached
-        section = await self._compute_recall_section(input_text)
+        section = await self._compute_recall_section(input_text, session_id=session_id)
         self._recall_cache[session_id] = section  # 空串也缓存，避免每轮重算
         self._recall_cache.move_to_end(session_id)
         while len(self._recall_cache) > _RECALL_CACHE_MAX:
             self._recall_cache.popitem(last=False)
         return section
 
-    async def _compute_recall_section(self, input_text: str) -> str:
+    async def _compute_recall_section(self, input_text: str,
+                                      session_id: str | None = None) -> str:
         """算召回段。**记忆召回绝不能阻塞一个 turn**，所以这里是超时一等公民。
 
         向量路首建索引要一次网络往返（实测 12 条 1.7s）、端点抖动、额度耗尽都会
         真实发生。超时就用本地关键词结果先注入，而 `to_thread` 里的向量任务**不会
-        被取消**——它继续把索引补进 `memory_index.db`，下一轮（或压缩后重算时）就
+        被取消**——它继续把索引补进 `memory.db`，下一轮（或压缩后重算时）就
         命中缓存了。代价只是这一轮召回质量略低。
+
+        `session_id` 只用于召回留痕（`memory_recall_log`）：没有它，"这轮注入了
+        哪几条"就无从追溯，后面门控与重排的任何调参都无法评估。绑定走可选钩子
+        `bind_session`，**不给 `select_relevant` 加参数**——替身签名不匹配会抛
+        TypeError 并被当成"召回失败"静默吞掉（见 `MemoryRecall.bind_session`）。
         """
         timeout = cfg.MEMORY_RECALL_TIMEOUT
+        bind = getattr(self._memory_recall, "bind_session", None)
+        if callable(bind):
+            bind(session_id)
         try:
             relevant = await asyncio.wait_for(
                 asyncio.to_thread(self._memory_recall.select_relevant, input_text),
@@ -526,11 +536,17 @@ class KittyAgent(Agent):
     def _check_anti_thrash(
         self,
         usage: dict,
+        tracker: TokenTracker,
         cooldown_until: float,
         ineffective_count: int,
     ) -> tuple[float, int]:
         pt = usage.get("prompt_tokens", 0)
-        threshold = int(cfg.LLM_CONTEXT_WINDOW * cfg.COMPRESS_THRESHOLD_RATIO)
+        # 分母必须与触发压缩的闸门一致（_compression_trigger 用 tracker.ratio，
+        # 即 pt / effective_window）。原先用 LLM_CONTEXT_WINDOW（未减保留输出）
+        # 当分母，门槛偏高，pt 落在 [eff*0.7, window*0.7) 时占用比例其实仍
+        # ≥0.70（压缩没把它压下来），却会被漏判成"有效"而不计失败，连抖两次
+        # 也不进冷却。改用 effective_window 才能及时识别压不下去的情况。
+        threshold = int(tracker.effective_window * cfg.COMPRESS_THRESHOLD_RATIO)
         if pt >= threshold:
             ineffective_count += 1
             if ineffective_count >= 2:

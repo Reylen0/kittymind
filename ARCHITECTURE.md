@@ -75,7 +75,8 @@ kittymind/                      # 项目根目录
 │   ├── context/                # token_counter / micro_compaction / compressor（压缩管线）
 │   ├── tools/                  # base / registry / executor / permission / guardrails / audit
 │   │                           #   / redaction + builtin/（14 个工具 + _paths/_fmt/_dangerous 辅助）
-│   ├── memory/                 # store / extract / recall / index（向量索引库）—— LLM 驱动的长期记忆
+│   ├── memory/                 # store / extract / recall / index（向量索引）
+│   │                           #   / schema（v2 frontmatter）/ db（派生库）/ ledger（事件+召回留痕）
 │   ├── embeddings/             # base（Protocol）/ openai_compat / get_embedding（Phase 17M 语义检索）
 │   ├── storage/                # migrations（版本链）/ maintenance（自检·备份·回收）/ atomic（原子写）
 │   ├── events/                 # bus（asyncio Pub/Sub，唯一事件出口）/ types
@@ -93,7 +94,7 @@ kittymind/                      # 项目根目录
 │   │   └── overlay/            # 全局悬浮覆盖层
 │   ├── vite.config.ts
 │   └── package.json
-├── test/                       # 38 个测试文件 / 684 个用例（特征测试 + 回归）
+├── test/                       # 39 个测试文件 / 707 个用例（特征测试 + 回归）
 ├── assets/                     # 应用图标 / 托盘图
 ├── chat_async.py               # CLI 演示入口
 ├── build-python.spec           # PyInstaller 打包配置
@@ -102,13 +103,13 @@ kittymind/                      # 项目根目录
 
 内置工具（14）：`bash` `file_read/write/edit` `glob` `grep` `ls` `git` `screenshot` `clipboard` `get_current_time` `write_memory` `verify`（自我验证）`task`（子任务）。
 
-运行时数据目录 `~/.kittymind/`：`sessions.db`（SQLite 会话库）、`tool_audit.db` + `tool_audit.jsonl`（工具审计）、`memory/`（长期记忆 Markdown）、`memory_index.db`（记忆向量索引，纯派生数据可删）、`workspaces.json`、`settings.json`、`backups/`（会话库备份）。
+运行时数据目录 `~/.kittymind/`：`sessions.db`（SQLite 会话库）、`tool_audit.db` + `tool_audit.jsonl`（工具审计）、`memory/`（长期记忆 Markdown + `events.jsonl` 变更真相源 + `_trash/` 软删墓碑 + `_quarantine/` 损坏隔离）、`memory.db`（记忆派生库：向量 + 召回留痕，纯派生数据可删）、`workspaces.json`、`settings.json`、`backups/`（会话库与记忆目录备份）。
 
 ---
 
 ## 5. 开发路线与实现状态（Phase 1-30）
 
-> 依据**当前代码**（2026-09，684 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
+> 依据**当前代码**（2026-10，707 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
 > 对标参照：Nous Research 的 hermes-agent（仅借鉴其 Agent 侧设计，服务端重型能力不在路线内）。
 
 ### 里程碑总览
@@ -117,7 +118,7 @@ kittymind/                      # 项目根目录
 |--------|------|-----------|:----:|
 | MVP | 跑通「输入→流式→工具→桌宠→持久化」闭环 | 1-9 | 🟡 核心 ✅ / 打包 🟡 |
 | **M-A** | Agent 核心智能（压缩/委派/守护/验证） | 10-13 | ✅ |
-| **M-B** | 健壮持久化 + 记忆检索 | 14-17M | ✅ |
+| **M-B** | 健壮持久化 + 记忆检索 | 14-17N | ✅ 检索 ✅ / v2-P0 后端 ✅ |
 | **M-C** | 工具与扩展生态 | 18-22 | ⬜ |
 | **M-D** | 可观测与产品化交付 | 23-26 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 27-28 | ⬜ |
@@ -173,7 +174,7 @@ kittymind/                      # 项目根目录
 
 ---
 
-### 里程碑 M-B：健壮持久化 + 记忆检索（Phase 14-17M）✅
+### 里程碑 M-B：健壮持久化 + 记忆检索（Phase 14-17N）✅
 
 **Phase 14 — SQLite 会话存储 ✅（核心）**
 架构：单文件 `~/.kittymind/sessions.db`，sessions/messages 表 + WAL；`archive_and_compact` 单事务原子压缩落库（旧消息 `active=0,compacted=1` 不删除，摘要+尾部作为新活跃行写入）——压缩视图持久化，**重启无需重压**；双视图读取：模型视图 `WHERE active=1`（加载即已压缩状态）、完整视图含 compacted 行（审计/回溯）；session_state 跨轮保存压缩冷却/校准基线。JSONL 后端已移除。
@@ -232,6 +233,32 @@ kittymind/                      # 项目根目录
 隐私：启用后**记忆正文（截断到 300 字）会发给 embedding 端点**，这是记忆内容第一次离开本机。`MEMORY_RECALL_MODE=keyword` 提供零外发模式；`.env.example` 与 `README.md` 均已标注。
 
 **不做第三方记忆后端抽象**（mem0 / honcho 式）：它与自研检索是**替代关系**而非叠加——接进来等于把上述三条链路整个作废；且可插拔层最贵的部分正是接口本身（mem0 的 `add/search/delete` + `user_id/agent_id/run_id` 作用域、Honcho 的 workspace/peer/representation 模型与我们的 `write/list/snapshot` 形状差很远），在只有一个实现时是投机性抽象；还会丢掉 Markdown 的「人类可读 / 可 git / 改一条即生效」。若将来真要接：首选 **mem0 的 OSS 或自托管模式**（数据不出本机），避开 Platform；**Honcho 是 AGPL-3.0**，闭源产品需先过合规。
+
+**Phase 17N — 记忆系统 v2 / P0：数据安全 + 审计轨迹 ✅（后端）**
+
+设计文档 `.workbuddy/artifacts/memory-system-redesign.md`（写入 / 检索 / 治理 / 遗忘 / 存储五维）的 P0 阶段。P0 修的**不是新功能，而是旧实现会静默丢数据的三条路径**：
+
+| 旧行为 | 后果 | P0 之后 |
+|---|---|---|
+| 身份 = 文件名（`slugify(name)`） | `write("My Note")` 把 `write("my note")` 静默吃掉（实测 count 2→1）；改名即失忆；事件无法与文件对应 | 身份 = 稳定 `id`（`mem-<yyyymmdd-HHMMSS>-<rand4>`）；名字不同但 slug 撞车则**新条目 + 文件名加 `-<id8>`** |
+| 同名写入 = 覆盖 | 旧正文无痕消失 | 同名 → 保留 `id` / `created_at`，旧正文进 `events.jsonl`（`update` 事件带 `old_body` + `old_hash`/`new_hash`），可回溯 |
+| 整合 `drop` = `path.unlink()` | 模型误判一次，记忆永久消失 | 软删：`status=forgotten` + 移入 `_trash/`，`restore_item()` 可恢复；物理删除只有显式 `hard_delete()` |
+
+新增三个模块，落点都在 `kittymind/memory/`：
+
+- **`schema.py`**（v2 frontmatter 模型）：`SCHEMA_VERSION=2`，21 个字段（只增不删，v1 的 `name/type/description/updated_at` 原样保留，读出仍是同样字符串 → 现有调用点零改动）。`dumps()` 用 `yaml.safe_dump` 并**做 round-trip 断言**，不一致就拒绝写入——"写得出去但读不回来"的文件根本不允许产生。**读侧刻意不用 `safe_load`**：实测它读旧文件会（a）把 `2026-09-21 17:19:49` 推断成 `datetime`、（b）吃掉 `# 备注`、（c）在 `[草稿]` 开头的值上直接 ParserError。所以用 `schema: 2` 首键做分发——v2 文件走 YAML，v1 文件走正则、不做任何类型推断。
+- **`db.py`**（派生库 `memory.db`）：`memory_vec`（向量）+ `memory_recall_log`（召回留痕）共用一条 `user_version` 版本链。路径由**记忆目录名派生**（`<parent>/<记忆目录名>.db`）——同父目录下两个记忆目录若用固定名会共用同一个库，而库按主键对齐，会互相覆盖（Phase 17M 踩过）。旧的 `memory_index.db` 由 `purge_legacy_index_db()` 清理。
+- **`ledger.py`**（双载体账本）：`events.jsonl` 是**真相源**（append-only、`O_APPEND`+`fsync`、坏行跳过不删、人类可读可 git、随记忆目录一起备份）；`memory_recall_log` 是**派生**（仅统计素材、不进备份、损坏删库重建）。召回留痕**不依赖 embedding**——`keyword` 隐私模式下同样写，与 `MemoryVectorIndex` 是两条独立取用路径。
+
+**迁移的纪律（真实库验证过）**：`migrate_v2()` 用「正则读、YAML 写」，**文件名与位置不变**（git diff 只有内容变化，没有几十个 rename）；缺失的 `created_at`/`updated_at` 用**文件 mtime** 兜底（比"现在"更接近事实）。
+
+真实库（12 条）验收结果：改写 12 条、四个原字段**逐字节一致**、正文一字未动、0 条被隔离、幂等（二次改写 0 条）。验证脚本 `.workbuddy/artifacts/verify-memory-v2-migration.py` 自带一把**独立正则尺子**——用 `store.read()` 当尺子量自己是无效的（`normalize()` 的 bug 会让两边同时错）。
+
+真实库这一跑暴露两个顺序/形状缺陷，均已修并钉住测试：
+- **迁移标记必须最后落**：`_v2_migrated` 是最高优先级的快速出口，一落下 `migrate_v2` 就再也不会重进，所以清旧库 / 写审计都得排在它前面。现场出现过"标记写着 `items=12`、旧索引库却还在、审计也没写"的形态——一旦如此就是永久的。现在清理失败（旧库被占用是 Windows 常态）**不写标记**，下次启动重试，代价只是重扫一遍目录。
+- **`append_event` 的 `**detail` 签名**：传 `detail={...}` 会落成 `detail.detail`（真实库第一版就是这样落盘的），改为直接传 kwargs。
+
+P0 尚未做完的部分：`memory/*` RPC 命名空间与最小前端面板（list / get / update / delete / restore / pin / stats / events / recall-log / review / reindex / export）。
 
 ---
 

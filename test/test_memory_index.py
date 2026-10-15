@@ -234,9 +234,14 @@ def test_get_embedding_env_wins_over_settings(monkeypatch, fake_openai):
 # ── 17M-2：索引 —— 路径与检索 ────────────────────────────────────
 
 def test_index_db_path_follows_memory_dir(tmp_path):
-    """索引库路径由记忆目录派生（测试天然隔离，不往 ~/.kittymind 写）。"""
+    """派生库路径由记忆目录名派生（测试天然隔离，不往 ~/.kittymind 写）。
+
+    v2 起库名是 `<记忆目录名>.db`（真实目录叫 `memory`，于是正好是 `memory.db`）。
+    带目录名而不是写死 `memory.db`，是为了同父目录下的两个记忆目录不互相覆盖。
+    """
     path = index_db_path(tmp_path / "memory")
-    assert path == tmp_path / "memory_index.db"
+    assert path == tmp_path / "memory.db"
+    assert index_db_path(tmp_path / "other") == tmp_path / "other.db"
 
 
 def test_index_text_includes_body_head():

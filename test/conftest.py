@@ -31,9 +31,12 @@ def _disable_embedding(monkeypatch):
 
     from kittymind.embeddings import reset_embedding
     from kittymind.memory.index import reset_memory_index
+    from kittymind.memory.ledger import reset_memory_ledger
 
     reset_embedding()
     reset_memory_index()
+    reset_memory_ledger()
     yield
     reset_embedding()
     reset_memory_index()
+    reset_memory_ledger()
