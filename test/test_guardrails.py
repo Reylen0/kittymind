@@ -8,7 +8,7 @@ from kittymind.tools.guardrails import (
     GuardrailTurnState,
     ToolCallSignature,
 )
-from kittymind.tools.executor import ToolExecutor, TurnContext
+from kittymind.tools.executor import ToolExecutor
 from kittymind.tools.base import BaseTool, ToolResult
 
 
@@ -209,13 +209,13 @@ async def test_executor_block_skips_execution():
 
     args = {}
     call = _make_call(args=args)
-    ctx = TurnContext()
+    state = GuardrailTurnState()
 
     # 跑满 streak（after_call 3 次相同）
     for _ in range(3):
-        ctrl.after_call(ctx.guardrail_state, "fake", args, "same", False)
+        ctrl.after_call(state, "fake", args, "same", False)
 
-    result = await executor.execute(call, ctx=ctx)
+    result = await executor.execute(call, guardrail_state=state)
     assert "已阻断" in result["content"]
     # 确认工具本身没被调用（返回值不含 "ok"）
     assert "ok" not in result["content"]
@@ -230,11 +230,11 @@ async def test_executor_warn_appends_guidance():
 
     args = {"cmd": "x"}
     call = _make_call(args=args)
-    ctx = TurnContext()
+    state = GuardrailTurnState()
 
     # 执行 2 次触发 warn（exact_failure_warn 阈值 = 2）
-    await executor.execute(call, ctx=ctx)
-    result = await executor.execute(call, ctx=ctx)
+    await executor.execute(call, guardrail_state=state)
+    result = await executor.execute(call, guardrail_state=state)
     assert "守护栏警告" in result["content"]
 
 
@@ -247,23 +247,23 @@ async def test_executor_hard_deny_without_ask_fn():
         "id": "x",
         "function": {"name": "bash", "arguments": json.dumps({"command": "rm -rf /"})}
     }
-    result = await executor.execute(call, ctx=TurnContext())
+    result = await executor.execute(call)
     assert "Permission denied" in result["content"]
 
 
 async def test_executor_fresh_turn_context_resets_guardrail():
-    """新建一份 TurnContext 就是从零开始，不需要专门的 begin_turn 方法。"""
+    """新建一份 GuardrailTurnState 就是从零开始，不需要专门的 begin_turn 方法。"""
     tool = _FakeTool("Error: fail", ok=False)
     ctrl = GuardrailController(interactive=True)
     reg = _FakeRegistry(tool)
     executor = ToolExecutor(reg, guardrail=ctrl)
 
     call = _make_call()
-    ctx = TurnContext()
+    state = GuardrailTurnState()
     for _ in range(4):
-        await executor.execute(call, ctx=ctx)
+        await executor.execute(call, guardrail_state=state)
 
-    # 新的一轮：新建 TurnContext，第 1 次不应有 warn
-    new_ctx = TurnContext()
-    result = await executor.execute(call, ctx=new_ctx)
+    # 新的一轮：新建 GuardrailTurnState，第 1 次不应有 warn
+    new_state = GuardrailTurnState()
+    result = await executor.execute(call, guardrail_state=new_state)
     assert "守护栏警告" not in result["content"]

@@ -24,7 +24,7 @@ import contextlib
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from ..config import cfg
 from ..core.llm_json import parse_tool_arguments
@@ -36,13 +36,6 @@ from .redaction import redact, redact_args_for_audit
 from .registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class TurnContext:
-    """一轮工具调用期间的运行态，随调用显式传递；轮结束即弹，不需要任何隔离机制。"""
-    session_id: str | None = None
-    guardrail_state: GuardrailTurnState = field(default_factory=GuardrailTurnState)
 
 
 @dataclass
@@ -75,7 +68,9 @@ class ToolExecutor:
 
     # ── 决策段（串行）────────────────────────────────────────────
 
-    async def decide(self, tool_call: dict, ctx: TurnContext) -> _Decision:
+    async def decide(
+        self, tool_call: dict, session_id: str | None, guardrail_state: GuardrailTurnState,
+    ) -> _Decision:
         t0 = time.monotonic()
         tool_call_id = tool_call.get("id", "")
         function = tool_call.get("function", {})
@@ -97,16 +92,16 @@ class ToolExecutor:
 
         # ── 1. 守护栏前置：循环/无进展 block ──────────────────
         if self._guardrail is not None:
-            decision = self._guardrail.before_call(ctx.guardrail_state, name, args)
+            decision = self._guardrail.before_call(guardrail_state, name, args)
             if decision.is_block:
-                self._record(ctx.session_id, name, args, "block", decision.message, False, t0)
+                self._record(session_id, name, args, "block", decision.message, False, t0)
                 return _Decision(tool_call_id, name, args, t0, tool=None,
                                  blocked=_tool_result(tool_call_id, decision.message))
 
         # ── 2. 权限闸门（硬拒绝始终生效；ask_fn=None 跳过用户审批）──
         reason = await check_permission(name, args, self._ask_fn)
         if reason is not None:
-            self._record(ctx.session_id, name, args, "denied", reason, False, t0)
+            self._record(session_id, name, args, "denied", reason, False, t0)
             return _Decision(tool_call_id, name, args, t0, tool=None,
                              blocked=_tool_result(tool_call_id, f"Permission denied: {reason}"))
 
@@ -143,28 +138,44 @@ class ToolExecutor:
 
     # ── 收尾段（按声明序串行）────────────────────────────────────
 
-    async def finalize(self, d: _Decision, ctx: TurnContext, ok: bool, content: str) -> dict:
+    async def finalize(
+        self, d: _Decision, session_id: str | None, guardrail_state: GuardrailTurnState,
+        ok: bool, content: str,
+    ) -> dict:
         failed = not ok
         decision_str, audit_reason = "allow", ""
         if self._guardrail is not None:
-            decision = self._guardrail.after_call(ctx.guardrail_state, d.name, d.args, content, failed)
+            decision = self._guardrail.after_call(guardrail_state, d.name, d.args, content, failed)
             if decision.action == "warn" and decision.message:
                 content = content + f"\n\n[守护栏警告: {decision.message}]"
                 decision_str, audit_reason = "warn", decision.message
-        self._record(ctx.session_id, d.name, d.args, decision_str, audit_reason, failed, d.t0)
+        self._record(session_id, d.name, d.args, decision_str, audit_reason, failed, d.t0)
         return _tool_result(d.tool_call_id, content)
 
     # ── 组合入口 ─────────────────────────────────────────────────
 
-    async def execute(self, tool_call: dict, ctx: TurnContext) -> dict:
-        """单调用完整管线（decide → _run_body → finalize）。"""
-        d = await self.decide(tool_call, ctx)
+    async def execute(
+        self, tool_call: dict,
+        session_id: str | None = None,
+        guardrail_state: GuardrailTurnState | None = None,
+    ) -> dict:
+        """单调用完整管线（decide → _run_body → finalize）。
+
+        `guardrail_state` 未传时新建一份——调用方只有单发工具调用、不需要跨调用
+        累计 streak 时可以不管这个参数。
+        """
+        guardrail_state = guardrail_state if guardrail_state is not None else GuardrailTurnState()
+        d = await self.decide(tool_call, session_id, guardrail_state)
         if d.blocked is not None:
             return d.blocked
         ok, content = await self._run_body(d)
-        return await self.finalize(d, ctx, ok, content)
+        return await self.finalize(d, session_id, guardrail_state, ok, content)
 
-    async def execute_batch(self, tool_calls: list[dict], ctx: TurnContext) -> list[dict]:
+    async def execute_batch(
+        self, tool_calls: list[dict],
+        session_id: str | None = None,
+        guardrail_state: GuardrailTurnState | None = None,
+    ) -> list[dict]:
         """同批 tool_calls 的分区并行执行，结果按声明序返回。
 
         分区规则：
@@ -175,15 +186,19 @@ class ToolExecutor:
           - 未声明安全的工具一律串行（fail-closed，BaseTool 默认 False）；
           - 并行区执行完后按声明序 finalize，再进入下一区——跨区守护栏记账
             顺序与串行执行一致。
+
+        `guardrail_state` 未传时新建一份，整批共用同一份——不能让 `decide` 自己
+        按调用默认，否则每个 tool_call 都会拿到一份新 state，streak 记账全部归零。
         """
-        decisions = [await self.decide(tc, ctx) for tc in tool_calls]
+        guardrail_state = guardrail_state if guardrail_state is not None else GuardrailTurnState()
+        decisions = [await self.decide(tc, session_id, guardrail_state) for tc in tool_calls]
         results: list[dict | None] = [None] * len(decisions)
         i = 0
         while i < len(decisions):
             d = decisions[i]
             if d.blocked is not None or not _is_safe(d.tool):
                 results[i] = d.blocked if d.blocked is not None \
-                    else await self._finish_one(d, ctx)
+                    else await self._finish_one(d, session_id, guardrail_state)
                 i += 1
                 continue
             j = i
@@ -194,13 +209,15 @@ class ToolExecutor:
             segment = decisions[i:j]
             outs = await asyncio.gather(*(self._run_body(d) for d in segment))
             for k, (seg_d, (ok, content)) in enumerate(zip(segment, outs, strict=True)):
-                results[i + k] = await self.finalize(seg_d, ctx, ok, content)
+                results[i + k] = await self.finalize(seg_d, session_id, guardrail_state, ok, content)
             i = j
         return results  # type: ignore[return-value]
 
-    async def _finish_one(self, d: _Decision, ctx: TurnContext) -> dict:
+    async def _finish_one(
+        self, d: _Decision, session_id: str | None, guardrail_state: GuardrailTurnState,
+    ) -> dict:
         ok, content = await self._run_body(d)
-        return await self.finalize(d, ctx, ok, content)
+        return await self.finalize(d, session_id, guardrail_state, ok, content)
 
     def _record(
         self, session_id: str | None, name: str, args: dict,

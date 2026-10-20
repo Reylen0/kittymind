@@ -15,7 +15,7 @@ import time
 
 
 from kittymind.tools.base import BaseTool, ToolResult
-from kittymind.tools.executor import ToolExecutor, TurnContext
+from kittymind.tools.executor import ToolExecutor
 
 
 # ── 测试基建 ─────────────────────────────────────────────────────────
@@ -88,9 +88,7 @@ async def test_consecutive_safe_tools_run_in_parallel():
         for i in range(3)
     })
     executor = ToolExecutor(reg)
-    results = await executor.execute_batch(
-        [_call(f"read{i}") for i in range(3)], ctx=TurnContext()
-    )
+    results = await executor.execute_batch([_call(f"read{i}") for i in range(3)])
     assert [r["tool_call_id"] for r in results] == [f"call_read{i}" for i in range(3)]
     assert _max_concurrency(timeline) == 3, "安全工具应当并行执行"
 
@@ -104,9 +102,7 @@ async def test_unsafe_tool_is_serial_barrier():
         "read2": _ProbeTool(name="read2", safe=True, timeline=timeline),
     })
     executor = ToolExecutor(reg)
-    results = await executor.execute_batch(
-        [_call("read1"), _call("bash"), _call("read2")], ctx=TurnContext()
-    )
+    results = await executor.execute_batch([_call("read1"), _call("bash"), _call("read2")])
     assert [r["tool_call_id"] for r in results] == ["call_read1", "call_bash", "call_read2"]
     assert _max_concurrency(timeline) == 1, "变更工具必须成为并行屏障"
 
@@ -123,7 +119,7 @@ async def test_undeclared_tool_defaults_to_serial():
         "u2": _Undeclared(name="u2", timeline=timeline),
     })
     executor = ToolExecutor(reg)
-    await executor.execute_batch([_call("u1"), _call("u2")], ctx=TurnContext())
+    await executor.execute_batch([_call("u1"), _call("u2")])
     assert _max_concurrency(timeline) == 1, "未声明安全的工具必须串行"
 
 
@@ -133,9 +129,7 @@ async def test_unknown_tool_errors_without_killing_batch():
         "read": _ProbeTool(name="read", safe=True, result="fine"),
     })
     executor = ToolExecutor(reg)
-    results = await executor.execute_batch(
-        [_call("no_such_tool"), _call("read")], ctx=TurnContext()
-    )
+    results = await executor.execute_batch([_call("no_such_tool"), _call("read")])
     assert "no_such_tool" in results[0]["content"] or "KeyError" in results[0]["content"]
     assert results[1]["content"] == "fine"
 
@@ -155,7 +149,7 @@ async def test_sequential_barrier_preserves_guardrail_escalation():
     })
     executor = ToolExecutor(reg, guardrail=GuardrailController(interactive=True))
     call = _call("bash", args={"cmd": "x"})
-    results = await executor.execute_batch([call, dict(call, id="call_b")], ctx=TurnContext())
+    results = await executor.execute_batch([call, dict(call, id="call_b")])
     assert "守护栏警告" not in results[0]["content"]
     assert "守护栏警告" in results[1]["content"], "第二次相同失败必须升级为 warn"
 
@@ -192,7 +186,7 @@ async def test_permission_denied_short_circuits_execution():
     ]
     try:
         results = await executor.execute_batch(
-            [_call("bash", {"command": "ls"}), _call("read")], ctx=TurnContext()
+            [_call("bash", {"command": "ls"}), _call("read")]
         )
     finally:
         perm_mod._RULES = original_rules
@@ -230,9 +224,7 @@ async def test_invalid_arguments_are_rejected_without_running_tool():
     seen: list[dict] = []
     executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
 
-    results = await executor.execute_batch(
-        [_raw_call("probe", '{"a": 1,')], ctx=TurnContext()
-    )
+    results = await executor.execute_batch([_raw_call("probe", '{"a": 1,')])
 
     assert seen == [], "参数解析失败时工具不得执行"
     assert len(results) == 1 and results[0]["tool_call_id"] == "c1"
@@ -247,7 +239,7 @@ async def test_empty_and_missing_arguments_are_legitimate():
     await executor.execute_batch([
         _raw_call("probe", None, "c1"),
         _raw_call("probe", "", "c2"),
-    ], ctx=TurnContext())
+    ])
 
     assert seen == [{}, {}]
 
@@ -257,9 +249,7 @@ async def test_non_object_arguments_are_rejected():
     seen: list[dict] = []
     executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
 
-    results = await executor.execute_batch(
-        [_raw_call("probe", "[1, 2]")], ctx=TurnContext()
-    )
+    results = await executor.execute_batch([_raw_call("probe", "[1, 2]")])
 
     assert seen == [] and "JSON" in results[0]["content"]
 
@@ -268,7 +258,7 @@ async def test_valid_arguments_reach_tool_unchanged():
     seen: list[dict] = []
     executor = ToolExecutor(_MapRegistry({"probe": _ArgRecorder(seen, name="probe")}))
 
-    await executor.execute_batch([_call("probe", {"x": [1, 2]})], ctx=TurnContext())
+    await executor.execute_batch([_call("probe", {"x": [1, 2]})])
 
     assert seen == [{"x": [1, 2]}]
 

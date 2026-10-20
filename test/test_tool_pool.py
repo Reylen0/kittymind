@@ -24,7 +24,7 @@ import threading
 from pydantic import BaseModel
 
 from kittymind.tools.base import BaseTool, ToolResult
-from kittymind.tools.executor import ToolExecutor, TurnContext
+from kittymind.tools.executor import ToolExecutor
 from kittymind.tools.registry import ToolRegistry
 
 _MARKER: contextvars.ContextVar[str | None] = contextvars.ContextVar("km_test_marker", default=None)
@@ -62,7 +62,6 @@ def make_executor() -> tuple[ToolExecutor, _RecordingTool]:
 async def _call(executor: ToolExecutor, call_id: str = "c1"):
     return await executor.execute(
         {"id": call_id, "function": {"name": "noop", "arguments": "{}"}},
-        TurnContext(),
     )
 
 

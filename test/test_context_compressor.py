@@ -3,8 +3,8 @@
 背景：Phase 25 引入了第二条前导 system 消息（记忆召回段，见
 kitty_agent._inject_memory_recall），旧实现 _find_head_end 只跳过
 messages[0]，导致 protect_first_n 衰减为 0 后（跨轮持久化，见
-KittyAgent._new_turn），召回段会被当成"历史"落进 mid 段参与摘要、
-被摘要替换掉。
+KittyAgent.run_conversation 里的本轮运行态组装），召回段会被当成"历史"落进
+mid 段参与摘要、被摘要替换掉。
 """
 
 from types import SimpleNamespace

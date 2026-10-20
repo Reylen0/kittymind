@@ -4,7 +4,7 @@
 来多次。这里把每次的真值（prompt_tokens / completion_tokens）累加起来，供
 `_commit_turn` 落库时一次性写入 model_usage。
 
-子 Agent 也各自持有一个 recorder（经 session_id=None 的 async_stream_run），
+子 Agent 也各自持有一个 recorder（经 session_id=None 的 run_conversation），
 其聚合结果通过委派机制回传父级，父级合并计入同一会话。
 """
 

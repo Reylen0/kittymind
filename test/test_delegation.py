@@ -252,10 +252,10 @@ async def test_task_tool_emit_no_crash_when_event_bus_none():
         reset_root_budget(token)
 
 
-async def test_async_stream_run_root_false_does_not_reset_budget():
-    """子 Agent 传 root=False 时，async_stream_run 不得重置委派预算/根 session 标签。
+async def test_run_conversation_root_false_does_not_reset_budget():
+    """子 Agent 传 root=False 时，run_conversation 不得重置委派预算/根 session 标签。
 
-    async_stream_run 默认 root=True 会无条件 set_root_budget（新建全零预算）——
+    run_conversation 默认 root=True 会无条件 set_root_budget（新建全零预算）——
     子 Agent 若直接调用它，递归防爆栏当场归零，等于给子 Agent 开无限委派权限。
     root=False 必须原样沿用父级已经建立的作用域。
     """
@@ -279,7 +279,7 @@ async def test_async_stream_run_root_false_does_not_reset_budget():
         )
         result = "".join([
             chunk async for chunk in
-            agent.async_stream_run(session_id=None, input_text="hi", root=False)
+            agent.run_conversation(session_id=None, input_text="hi", root=False)
         ])
 
         assert result == "done"

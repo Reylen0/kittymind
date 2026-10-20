@@ -41,7 +41,7 @@ def agent(monkeypatch):
 
 async def _collect(agent):
     chunks = []
-    async for chunk in agent.async_stream_run(session_id=None, input_text="hi"):
+    async for chunk in agent.run_conversation(session_id=None, input_text="hi"):
         chunks.append(chunk)
     return "".join(chunks)
 

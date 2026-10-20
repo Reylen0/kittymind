@@ -89,9 +89,9 @@ def current_root_session() -> str | None:
     return _root_session_id.get()
 
 
-def set_root_usage_recorder(recorder) -> None:
-    """注入根 Agent 当前 turn 的用量聚合器，供子 Agent（task_tool）回传合并。"""
-    _root_usage_recorder.set(recorder)
+def set_root_usage_recorder(recorder):
+    """注入根 Agent 当前 turn 的用量聚合器，返回 token 供 finally 中 reset。"""
+    return _root_usage_recorder.set(recorder)
 
 
 def reset_root_usage_recorder(token) -> None:

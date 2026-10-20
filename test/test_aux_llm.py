@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from kittymind.config import cfg
+from kittymind.context import ContextCompressor
 from kittymind.core.llm import get_aux_llm, reset_aux_llm
 from kittymind.agent.kitty_agent import KittyAgent
 
@@ -114,7 +115,7 @@ def test_compressor_uses_aux_model():
     aux = MagicMock()
     agent, _main = make_agent(aux=aux)
     assert agent.aux_model is aux
-    _, compressor, _ = agent._new_turn(None)
+    compressor = ContextCompressor(agent.aux_model)
     assert compressor._llm is aux
 
 
@@ -144,7 +145,7 @@ def test_fallback_to_main_when_aux_unset():
     """未配置 LLM_AUX_MODEL_ID：显式传 None 时全部回退主模型（旧行为）。"""
     agent, main = make_agent(aux=None)
     assert agent.aux_model is main
-    _, compressor, _ = agent._new_turn(None)
+    compressor = ContextCompressor(agent.aux_model)
     assert compressor._llm is main
 
 
@@ -160,7 +161,7 @@ def test_auto_resolution_picks_env_model(monkeypatch):
     agent, _main = make_agent()
     assert agent.aux_llm is not None
     assert agent.aux_llm.model == "qwen-turbo"
-    _, compressor, _ = agent._new_turn(None)
+    compressor = ContextCompressor(agent.aux_model)
     assert compressor._llm is agent.aux_llm
 
 
@@ -185,7 +186,7 @@ def test_compression_summary_hits_aux_model_only():
     agent = KittyAgent(
         name="kitty", llm=main, system_prompt="sp", tools=[], aux_llm=aux
     )
-    _, compressor, _ = agent._new_turn(None)
+    compressor = ContextCompressor(agent.aux_model)
 
     summary = compressor._make_summary(
         [{"role": "system", "content": "sp"}],

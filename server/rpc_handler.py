@@ -180,7 +180,7 @@ class RpcHandler:
                 else None
             )
             try:
-                async for _ in self.agent.async_stream_run(
+                async for _ in self.agent.run_conversation(
                     session_id, text, workspace_id=workspace_id
                 ):
                     pass  # 文字 delta 已由 fwd_chunk 推给客户端

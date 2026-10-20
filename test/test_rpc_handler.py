@@ -20,12 +20,12 @@ def make_mock_agent(tmp_path):
     agent.event_bus = EventBus()
     agent.session_manager = SessionManager(db_path=tmp_path / "test.db")
 
-    # async_stream_run yields nothing (instant done)
+    # run_conversation yields nothing (instant done)
     async def _noop_stream(*args, **kwargs):
         return
         yield  # make it an async generator
 
-    agent.async_stream_run = _noop_stream
+    agent.run_conversation = _noop_stream
     return agent
 
 
@@ -318,7 +318,7 @@ async def test_turn_run_twice_keeps_new_task_registered(tmp_path):
         await asyncio.sleep(30)
         yield "never"
 
-    agent.async_stream_run = _slow_stream
+    agent.run_conversation = _slow_stream
     handler = RpcHandler(agent, ws)
 
     await handler.dispatch({"id": 1, "method": "turn/run",

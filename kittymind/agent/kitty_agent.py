@@ -1,12 +1,13 @@
 """KittyMind 主 Agent。
 
 直接继承 Agent，包含：
-  - 工具 ReAct 引擎（异步流式 async_stream_run，唯一入口）
+  - 工具 ReAct 引擎（`run_conversation` 为唯一入口：解析工作目录、组装本轮运行态、
+    管理根作用域生命周期；循环本体委派给 `async_stream_run`）
   - 上下文压缩（压缩状态跨轮持久化到 SessionManager）
   - 桌面集成（EventBus / SessionManager / WorkspaceManager / MemoryStore）
   - 委派守护（DelegationBudget 根预算）
 
-子 Agent 调 `async_stream_run(session_id=None, root=False)`：`session_id=None`
+子 Agent 调 `run_conversation(session_id=None, root=False)`：`session_id=None`
 跳过落库/记忆召回（这两者本就要求真实会话），`root=False` 复用父级已建立的
 根作用域（cwd / 委派预算 / 根 session 标签），不重新解析或重置。
 
@@ -39,9 +40,9 @@ from ..workspace.manager import WorkspaceManager
 from ..tools.base import BaseTool
 from ..usage import UsageRecorder
 from ..tools.builtin.bash_tool import bash_cwd
-from ..tools.executor import ToolExecutor, TurnContext
+from ..tools.executor import ToolExecutor
 from ..tools.audit import get_tool_audit_log
-from ..tools.guardrails import GuardrailController
+from ..tools.guardrails import GuardrailController, GuardrailTurnState
 from ..tools.registry import ToolRegistry
 from .base import Agent
 from .delegation import (
@@ -69,15 +70,31 @@ def _fresh_tracker() -> TokenTracker:
     """新建 TokenTracker：上限与保留额取自配置（调用时求值，cfg.reload() 后生效）。"""
     return TokenTracker(cfg.LLM_CONTEXT_WINDOW, cfg.LLM_RESERVED_OUTPUT_TOKENS)
 
-@dataclass(frozen=True)
-class _TurnSetup:
-    """每轮开始时的运行态，`_begin_turn` 统一构造。"""
+@dataclass
+class TurnContext:
+    """一轮 ReAct 循环的完整运行态，`run_conversation` 统一组装，循环体与收尾段
+    （在 `async_stream_run` 里）原地读写。
+
+    生命周期等同一次 `run_conversation` 调用，轮结束即弃，不需要任何跨轮隔离。
+    不是 frozen——`messages`/`tracker` 会在压缩后被整体替换，`final_text` 等
+    字段在循环推进中逐步写入。
+    """
     messages: list[dict]
     loaded_seqs: list
     tools_schema: list[dict] | None
     tracker: TokenTracker
     compressor: ContextCompressor
-    ctx: TurnContext
+    session_id: str | None
+    effective_workspace_id: str | None
+    turn_messages: list[dict]
+    final_text: str | None = None
+    compressed_this_turn: bool = False
+    cooldown_until: float = 0.0
+    ineffective_count: int = 0
+    guardrail_state: GuardrailTurnState = field(default_factory=GuardrailTurnState)
+    # usage 事件多次来，这里累加后随 _commit_turn 落库；子 Agent（session_id=None）
+    # 同样持有一个，其聚合结果经委派回传父级合并。
+    recorder: UsageRecorder = field(default_factory=UsageRecorder)
 
 
 @dataclass
@@ -85,7 +102,7 @@ class RunResult:
     """`KittyAgent.run()` 的返回值：本轮最终文本 + 回灌消息 + 用量聚合器。
 
     这三者是一轮内的瞬时产出，不挂在 agent 实例上——`run()` 内部把它们传给
-    `async_stream_run` 就地填充，跑完直接整体返回给调用方（如 task_tool）。
+    `run_conversation` 就地填充，跑完直接整体返回给调用方（如 task_tool）。
     """
     text: str = ""
     messages: list[dict] = field(default_factory=list)
@@ -154,53 +171,6 @@ class KittyAgent(Agent):
         """
         return self.aux_llm or self.llm
 
-    # ── 每轮初始化 ──────────────────────────────────────────────────
-
-    def _new_turn(self, session_id: str | None) -> tuple[TokenTracker, ContextCompressor, TurnContext]:
-        """每轮开始时的运行态：tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。"""
-        tracker = _fresh_tracker()
-        compressor = ContextCompressor(self.aux_model)
-        if session_id and self.session_manager:
-            state = self.session_manager.get_session_state(session_id)
-            if state.get("compressed_once"):
-                compressor._compressed_once = True
-            if state.get("last_prompt_tokens") is not None:
-                tracker._last_prompt_tokens = state["last_prompt_tokens"]
-        return tracker, compressor, TurnContext(session_id=session_id)
-
-    def _begin_turn(self, session_id: str | None, input_text: str) -> _TurnSetup:
-        """每轮共用初始化：上下文 + 工具表 + 运行态。
-
-        `session_id` 为空（子 Agent）时历史为空、loaded_seqs=[]；记忆召回由
-        `async_stream_run` 在拿到 messages 之后另行注入。
-        """
-        messages, loaded_seqs = self._build_messages(session_id, input_text)
-        tracker, compressor, ctx = self._new_turn(session_id)
-        return _TurnSetup(
-            messages=messages,
-            loaded_seqs=loaded_seqs,
-            tools_schema=self.tool_registry.get_schemas() or None,
-            tracker=tracker,
-            compressor=compressor,
-            ctx=ctx,
-        )
-
-    def _resolve_workspace(
-        self, session_id: str | None, workspace_id: str | None
-    ) -> tuple[str | None, str]:
-        """解析本轮工作目录：显式 workspace_id > 会话记录里的 workspace_id > 默认目录。"""
-        effective = workspace_id
-        if not effective and self.session_manager and session_id:
-            # 只取 header：这里只要 workspace_id，不该顺带加载整个会话的消息
-            header = self.session_manager.get_session_header(session_id)
-            if header:
-                effective = header.get("workspace_id")
-        if effective and self.workspace_manager:
-            ws = self.workspace_manager.get_workspace(effective)
-            if ws and ws.get("path"):
-                return effective, ws["path"]
-        return effective, str(cfg.DEFAULT_WORKSPACE_DIR)
-
     # ── 循环内共用规则 ────────────────────────────────────────────
 
     @staticmethod
@@ -216,12 +186,13 @@ class KittyAgent(Agent):
 
     # ── 异步流式 ReAct（唯一入口，含所有集成层）─────────────────
 
-    async def async_stream_run(
+    async def run_conversation(
         self, session_id: str | None, input_text: str,
         workspace_id: str | None = None, root: bool = True,
-        _result: RunResult | None = None, **kwargs
+        _result: RunResult | None = None, **kwargs,
     ) -> AsyncIterator[str]:
-        """带事件广播的异步流式 ReAct 循环。
+        """解析工作目录、组装本轮运行态（`TurnContext`）、管理根作用域生命周期；
+        循环本体委派给 `async_stream_run`。
 
         root=False：子 Agent 复用父级已建立的根作用域——不重新设置 cwd（沿用父级
         工作目录）、不重置委派预算（`child_scope` 已经递增过深度，重置等于让递归
@@ -230,157 +201,192 @@ class KittyAgent(Agent):
         `_result`：仅供 `run()` 内部传入，用于回填本轮 messages / usage_recorder——
         这俩是一轮内的瞬时状态，不挂在 agent 实例上，外部调用方不需要关心此参数。
         """
-        effective_workspace_id, cwd_path = self._resolve_workspace(session_id, workspace_id)
+        # ── 解析本轮工作目录：显式 workspace_id > 会话记录里的 workspace_id > 默认目录 ──
+        effective_workspace_id = workspace_id
+        if not effective_workspace_id and self.session_manager and session_id:
+            header = self.session_manager.get_session_header(session_id)
+            if header:
+                effective_workspace_id = header.get("workspace_id")
+        cwd_path = str(cfg.DEFAULT_WORKSPACE_DIR)
+        if effective_workspace_id and self.workspace_manager:
+            ws = self.workspace_manager.get_workspace(effective_workspace_id)
+            if ws and ws.get("path"):
+                cwd_path = ws["path"]
+
+        # ── 组装本轮运行态：session_id 为空（子 Agent）时历史为空、loaded_seqs=[]；
+        # 记忆召回由 async_stream_run 在拿到 messages 之后另行注入。
+        # tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。
+        messages, loaded_seqs = self._build_messages(session_id, input_text)
+        tracker = _fresh_tracker()
+        compressor = ContextCompressor(self.aux_model)
+        if session_id and self.session_manager:
+            state = self.session_manager.get_session_state(session_id)
+            if state.get("compressed_once"):
+                compressor._compressed_once = True
+            if state.get("last_prompt_tokens") is not None:
+                tracker._last_prompt_tokens = state["last_prompt_tokens"]
+        turn = TurnContext(
+            messages=messages,
+            loaded_seqs=loaded_seqs,
+            tools_schema=self.tool_registry.get_schemas() or None,
+            tracker=tracker,
+            compressor=compressor,
+            session_id=session_id,
+            effective_workspace_id=effective_workspace_id,
+            turn_messages=[{"role": "user", "content": input_text}],
+        )
 
         cwd_token = budget_token = session_token = usage_token = None
         if root:
             cwd_token     = bash_cwd.set(cwd_path)
             budget_token  = set_root_budget(cfg.SUBAGENT_MAX_DEPTH, cfg.SUBAGENT_MAX_TOTAL)
             session_token = set_root_session(session_id)
+            usage_token   = set_root_usage_recorder(turn.recorder)
         try:
-            await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
-
-            setup = self._begin_turn(session_id, input_text)
-            messages, loaded_seqs = setup.messages, setup.loaded_seqs
-            tools_schema, tracker = setup.tools_schema, setup.tracker
-            compressor, ctx = setup.compressor, setup.ctx
-
-            # 记忆召回作为独立 system 消息插在主 system 之后。
-            await self._inject_memory_recall(messages, input_text, session_id)
-
-            final_text: str | None = None
-            turn_messages: list[dict] = [{"role": "user", "content": input_text}]
-            compressed_this_turn = False
-            cooldown_until = 0.0
-            ineffective_count = 0
-            # 本 turn 的用量聚合器：usage 事件多次来，这里累加后随 _commit_turn 落库。
-            # 子 Agent（session_id=None）同样持有一个，其聚合结果经委派回传父级合并。
-            recorder = UsageRecorder()
-            if root:
-                usage_token = set_root_usage_recorder(recorder)
-
-            try:
-                for _ in range(self.max_iterations):
-                    messages, tracker, did_compress = await self._maybe_compress_async(
-                        messages, tracker, compressor, cooldown_until
-                    )
-                    if did_compress:
-                        compressed_this_turn = True
-                        # 历史前缀已被重写，跨轮缓存反正失效 —— 顺势标记召回段待重算
-                        self._mark_recall_stale(session_id)
-
-                    await self.event_bus.emit(AGENT_THINKING, {"session_id": session_id})
-
-                    text_chunks: list[str] = []
-                    tool_calls: list[dict] = []
-
-                    try:
-                        async for event in self.llm.async_stream_with_tools(
-                            messages=self._strip_internal(messages),
-                            tools=tools_schema, **kwargs,
-                        ):
-                            if event.type == "text_delta":
-                                text_chunks.append(event.delta)
-                                await self.event_bus.emit(AGENT_CHUNK, {
-                                    "delta": event.delta, "session_id": session_id,
-                                })
-                                yield event.delta
-                            elif event.type == "tool_calls_done":
-                                tool_calls = event.tool_calls
-                            elif event.type == "usage" and event.usage:
-                                tracker.update_from_usage(event.usage)
-                                recorder.record(event.usage, self.llm.model)
-                                await self.event_bus.emit(AGENT_CONTEXT_USAGE, {
-                                    "session_id":   session_id,
-                                    "used_tokens":  tracker.used_tokens(messages),
-                                    "total_tokens": tracker._effective,
-                                    "ratio":        min(tracker.ratio(messages), 1.0),
-                                })
-                                if did_compress:
-                                    cooldown_until, ineffective_count = self._check_anti_thrash(
-                                        event.usage, tracker, cooldown_until, ineffective_count
-                                    )
-                                    did_compress = False
-                    except Exception as e:
-                        raise LLMException(f"LLM流式调用失败: {e}") from e
-
-                    step_text = "".join(text_chunks)
-
-                    if not tool_calls:
-                        final_text = step_text
-                        break
-
-                    assistant_msg = self._assistant_message(step_text or None, tool_calls)
-                    messages.append(assistant_msg)
-                    turn_messages.append(assistant_msg)
-
-                    # 同批工具调用：分区并行执行（executor 内部决策串行、只读区并行、
-                    # 按声明序回灌）。事件按声明序：先推全部 tool_call，执行完再按序推
-                    # tool_result——前端工具卡片按模型声明顺序出现；同进程内的轻量
-                    # 探针（如 task_tool 统计子 Agent 工具数）也订阅这些事件。
-                    for tool_call in tool_calls:
-                        name = tool_call["function"]["name"]
-                        await self.event_bus.emit(AGENT_TOOL_CALL, {
-                            "name": name,
-                            "args": tool_call["function"].get("arguments"),
-                            "session_id": session_id,
-                        })
-                    results = await self.tool_executor.execute_batch(tool_calls, ctx)
-                    for tool_call, result in zip(tool_calls, results, strict=True):
-                        name = tool_call["function"]["name"]
-                        await self.event_bus.emit(AGENT_TOOL_RESULT, {
-                            "name": name,
-                            "result": result.get("content"),
-                            "session_id": session_id,
-                        })
-                        messages.append(result)
-                        turn_messages.append(result)
-
-                final_text = self._ensure_final_text(final_text)
-
-                if _result is not None:
-                    _result.messages = messages + [self._assistant_message(final_text, [])]
-                    _result.usage_recorder = recorder
-
-                turn_messages.append({"role": "assistant", "content": final_text})
-
-                if session_id is not None:
-                    self._commit_turn(
-                        session_id, messages, turn_messages,
-                        compressor, tracker, effective_workspace_id, input_text,
-                        compressed_this_turn, loaded_seqs, recorder,
-                    )
-
-                await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": final_text})
-
-                if self.memory is not None:
-                    task = asyncio.create_task(self._extract_memories_bg(turn_messages))
-                    self._bg_tasks.add(task)
-                    task.add_done_callback(self._bg_tasks.discard)
-
-            except Exception as e:
-                await self.event_bus.emit(AGENT_ERROR, {"session_id": session_id, "error": str(e)})
-                raise
-
+            async for chunk in self.async_stream_run(
+                turn, session_id, input_text, _result=_result, **kwargs
+            ):
+                yield chunk
         finally:
             if root:
                 bash_cwd.reset(cwd_token)
                 reset_root_budget(budget_token)
                 reset_root_session(session_token)
-                if usage_token is not None:
-                    reset_root_usage_recorder(usage_token)
+                reset_root_usage_recorder(usage_token)
+
+    async def async_stream_run(
+        self, turn: TurnContext, session_id: str | None, input_text: str,
+        _result: RunResult | None = None, **kwargs,
+    ) -> AsyncIterator[str]:
+        """给定已组装好的本轮运行态 `turn`，驱动 ReAct 循环直到收尾。
+
+        由 `run_conversation` 负责解析工作目录、组装 `turn`、管理根作用域生命周期后
+        调用，不单独对外暴露。
+
+        `_result`：仅供 `run()` 内部传入，用于回填本轮 messages / usage_recorder——
+        这俩是一轮内的瞬时状态，不挂在 agent 实例上，外部调用方不需要关心此参数。
+        """
+        await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
+
+        # 记忆召回作为独立 system 消息插在主 system 之后。
+        await self._inject_memory_recall(turn.messages, input_text, session_id)
+
+        try:
+            for _ in range(self.max_iterations):
+                turn.messages, turn.tracker, did_compress = await self._maybe_compress_async(
+                    turn.messages, turn.tracker, turn.compressor, turn.cooldown_until
+                )
+                if did_compress:
+                    turn.compressed_this_turn = True
+                    # 历史前缀已被重写，跨轮缓存反正失效 —— 顺势标记召回段待重算
+                    self._mark_recall_stale(session_id)
+
+                await self.event_bus.emit(AGENT_THINKING, {"session_id": session_id})
+
+                text_chunks: list[str] = []
+                tool_calls: list[dict] = []
+
+                try:
+                    async for event in self.llm.async_stream_with_tools(
+                        messages=self._strip_internal(turn.messages),
+                        tools=turn.tools_schema, **kwargs,
+                    ):
+                        if event.type == "text_delta":
+                            text_chunks.append(event.delta)
+                            await self.event_bus.emit(AGENT_CHUNK, {
+                                "delta": event.delta, "session_id": session_id,
+                            })
+                            yield event.delta
+                        elif event.type == "tool_calls_done":
+                            tool_calls = event.tool_calls
+                        elif event.type == "usage" and event.usage:
+                            turn.tracker.update_from_usage(event.usage)
+                            turn.recorder.record(event.usage, self.llm.model)
+                            await self.event_bus.emit(AGENT_CONTEXT_USAGE, {
+                                "session_id":   session_id,
+                                "used_tokens":  turn.tracker.used_tokens(turn.messages),
+                                "total_tokens": turn.tracker._effective,
+                                "ratio":        min(turn.tracker.ratio(turn.messages), 1.0),
+                            })
+                            if did_compress:
+                                turn.cooldown_until, turn.ineffective_count = self._check_anti_thrash(
+                                    event.usage, turn.tracker, turn.cooldown_until, turn.ineffective_count
+                                )
+                                did_compress = False
+                except Exception as e:
+                    raise LLMException(f"LLM流式调用失败: {e}") from e
+
+                step_text = "".join(text_chunks)
+
+                if not tool_calls:
+                    turn.final_text = step_text
+                    break
+
+                assistant_msg = self._assistant_message(step_text or None, tool_calls)
+                turn.messages.append(assistant_msg)
+                turn.turn_messages.append(assistant_msg)
+
+                # 同批工具调用：分区并行执行（executor 内部决策串行、只读区并行、
+                # 按声明序回灌）。事件按声明序：先推全部 tool_call，执行完再按序推
+                # tool_result——前端工具卡片按模型声明顺序出现；同进程内的轻量
+                # 探针（如 task_tool 统计子 Agent 工具数）也订阅这些事件。
+                for tool_call in tool_calls:
+                    name = tool_call["function"]["name"]
+                    await self.event_bus.emit(AGENT_TOOL_CALL, {
+                        "name": name,
+                        "args": tool_call["function"].get("arguments"),
+                        "session_id": session_id,
+                    })
+                results = await self.tool_executor.execute_batch(
+                    tool_calls, turn.session_id, turn.guardrail_state
+                )
+                for tool_call, result in zip(tool_calls, results, strict=True):
+                    name = tool_call["function"]["name"]
+                    await self.event_bus.emit(AGENT_TOOL_RESULT, {
+                        "name": name,
+                        "result": result.get("content"),
+                        "session_id": session_id,
+                    })
+                    turn.messages.append(result)
+                    turn.turn_messages.append(result)
+
+            turn.final_text = self._ensure_final_text(turn.final_text)
+
+            if _result is not None:
+                _result.messages = turn.messages + [self._assistant_message(turn.final_text, [])]
+                _result.usage_recorder = turn.recorder
+
+            turn.turn_messages.append({"role": "assistant", "content": turn.final_text})
+
+            if session_id is not None:
+                self._commit_turn(
+                    session_id, turn.messages, turn.turn_messages,
+                    turn.compressor, turn.tracker, turn.effective_workspace_id, input_text,
+                    turn.compressed_this_turn, turn.loaded_seqs, turn.recorder,
+                )
+
+            await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": turn.final_text})
+
+            if self.memory is not None:
+                task = asyncio.create_task(self._extract_memories_bg(turn.turn_messages))
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
+
+        except Exception as e:
+            await self.event_bus.emit(AGENT_ERROR, {"session_id": session_id, "error": str(e)})
+            raise
 
     async def run(
         self, session_id: str | None, input_text: str,
         workspace_id: str | None = None, root: bool = True, **kwargs,
     ) -> RunResult:
-        """驱动 `async_stream_run` 跑到完成，一次性返回文本 + 消息 + 用量聚合器。
+        """驱动 `run_conversation` 跑到完成，一次性返回文本 + 消息 + 用量聚合器。
 
         给只要最终结果、不需要逐字消费流式输出的调用方用（如 task_tool 跑子 Agent）。
         """
         result = RunResult()
         chunks = [
-            chunk async for chunk in self.async_stream_run(
+            chunk async for chunk in self.run_conversation(
                 session_id, input_text, workspace_id=workspace_id, root=root,
                 _result=result, **kwargs,
             )

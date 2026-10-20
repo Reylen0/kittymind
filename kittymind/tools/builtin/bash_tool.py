@@ -9,7 +9,7 @@ from ..base import BaseTool, ToolResult
 from ...config import cfg
 from ._dangerous import find_dangerous
 
-# 由 KittyAgent 在每次 async_stream_run 开始前设置
+# 由 KittyAgent 在每次 run_conversation 开始前设置
 bash_cwd: ContextVar[str] = ContextVar("bash_cwd", default=str(cfg.DEFAULT_WORKSPACE_DIR))
 
 if sys.platform == "win32":

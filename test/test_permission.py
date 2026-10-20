@@ -19,7 +19,7 @@ from kittymind.tools.builtin.glob_tool import GlobTool
 from kittymind.tools.builtin.grep_tool import GrepTool
 from kittymind.tools.builtin.ls_tool import LsTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
-from kittymind.tools.executor import ToolExecutor, TurnContext
+from kittymind.tools.executor import ToolExecutor
 from kittymind.tools.permission import (
     _GIT_DANGEROUS_FLAGS,
     _has_flag,
@@ -175,7 +175,7 @@ async def _run_tool(tool, args: dict, ask_fn):
     executor = ToolExecutor(registry, ask_fn=ask_fn)
     return await executor.execute(
         {"id": "c1", "function": {"name": tool.name, "arguments": json.dumps(args)}},
-        TurnContext(session_id="s1"),
+        session_id="s1",
     )
 
 

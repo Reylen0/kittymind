@@ -1,9 +1,10 @@
-"""ReAct 循环（`async_stream_run`）的特征测试（无需真实 LLM）。
+"""ReAct 循环（`run_conversation` / `async_stream_run`）的特征测试（无需真实 LLM）。
 
 `kitty_agent.py` 曾经有 `run()`（同步，子 Agent 专用）与 `async_stream_run()`
 （异步，生产路径）两套并行实现，各自重复一遍「迭代 → 压缩 → 调 LLM → 执行
-工具 → 判断 max_iterations」。两者已合并：现在只有 `async_stream_run()`
-一份实现，子 Agent 与根 Agent 都走它——区别只是两个参数：
+工具 → 判断 max_iterations」。两者已合并：现在 `run_conversation()` 解析工作
+目录、组装本轮运行态、管理根作用域生命周期，循环本体委派给 `async_stream_run()`
+——子 Agent 与根 Agent 都走 `run_conversation()`，区别只是两个参数：
 
   - `root`：`True`（默认，根 Agent）会重新设置 cwd / 重置委派预算 / 覆盖根
     session 标签；`False`（子 Agent）原样沿用父级已建立的作用域。
@@ -78,14 +79,14 @@ class _RecordingExecutor:
     def __init__(self):
         self.calls: list[dict] = []
 
-    async def execute(self, tool_call, ctx):
+    async def execute(self, tool_call, session_id=None, guardrail_state=None):
         self.calls.append(tool_call)
         name = tool_call["function"]["name"]
         return {"role": "tool", "tool_call_id": tool_call.get("id"), "content": f"ran:{name}"}
 
-    async def execute_batch(self, tool_calls, ctx):
+    async def execute_batch(self, tool_calls, session_id=None, guardrail_state=None):
         """与真实 execute_batch 的契约对齐：结果按声明序返回。"""
-        return [await self.execute(tc, ctx) for tc in tool_calls]
+        return [await self.execute(tc, session_id, guardrail_state) for tc in tool_calls]
 
 
 class _Recorder:
@@ -104,9 +105,9 @@ class _Recorder:
 
 
 class _FakeSessionManager:
-    """只给出 `_resolve_workspace` / `_build_messages` / `_new_turn` / `_commit_turn`
-    需要的最小接口（不碰 SQLite；本文件的测试不落压缩分支，故 `session_exists`/
-    `archive_and_compact` 均不需要实现）。
+    """只给出 `run_conversation`（工作目录解析 + 组装本轮运行态）/ `_build_messages` /
+    `_commit_turn` 需要的最小接口（不碰 SQLite；本文件的测试不落压缩分支，故
+    `session_exists` / `archive_and_compact` 均不需要实现）。
     """
 
     def __init__(self, rows: list[dict]):
@@ -151,7 +152,7 @@ def make_agent(steps, *, max_iterations=30, memory=None, session_manager=None):
 async def run_agent(agent, session_id="s1", text="hi", root=True) -> str:
     return "".join([
         c async for c in
-        agent.async_stream_run(session_id=session_id, input_text=text, root=root)
+        agent.run_conversation(session_id=session_id, input_text=text, root=root)
     ])
 
 

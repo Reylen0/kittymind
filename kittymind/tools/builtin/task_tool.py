@@ -9,9 +9,9 @@
   - 用量回传（工具数/耗时/估算 tokens）
   - subagent.start / subagent.done 生命周期事件
 
-本工具是异步工具（`is_async = True`）：子 Agent 走 `async_stream_run(root=False)`，
+本工具是异步工具（`is_async = True`）：子 Agent 走 `run_conversation(root=False)`，
 `root=False` 表示复用父 Agent 已经建立的作用域——不重新设置 cwd、不重置委派预算
-（否则递归防爆栏归零）、不覆盖根 session 标签，详见 `KittyAgent.async_stream_run`。
+（否则递归防爆栏归零）、不覆盖根 session 标签，详见 `KittyAgent.run_conversation`。
 """
 
 import time
