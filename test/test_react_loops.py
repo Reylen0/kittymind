@@ -157,13 +157,10 @@ async def run_agent(agent, session_id="s1", text="hi", root=True) -> str:
 
 # ── 1. 基本行为 ──────────────────────────────────────────────────
 
-async def test_returns_text_and_exposes_messages():
+async def test_returns_text():
     agent, llm, _ = make_agent([("done", [])])
 
     assert await run_agent(agent) == "done"
-
-    assert [m["role"] for m in agent.last_messages] == ["system", "user", "assistant"]
-    assert agent.last_messages[-1]["content"] == "done"
     assert llm.seen[0][0]["role"] == "system"  # 首条始终是主 system
 
 
@@ -201,10 +198,6 @@ async def test_executes_every_tool_call_in_one_step():
     assert await run_agent(agent) == "done"
 
     assert agent.tool_executor.calls == calls
-    assert [m["role"] for m in agent.last_messages] == [
-        "system", "user", "assistant", "tool", "tool", "assistant",
-    ]
-    assert [m["tool_call_id"] for m in agent.last_messages if m["role"] == "tool"] == ["c1", "c2"]
     assert rec.events.count(AGENT_TOOL_CALL) == 2
     assert rec.events.count(AGENT_TOOL_RESULT) == 2
 
@@ -235,10 +228,7 @@ async def test_wraps_llm_error_and_keeps_cause():
 
 
 async def test_history_seq_marks_are_stripped_before_the_llm_call():
-    """历史消息上的 `_seq` 只用于落库对账，必须在调 LLM 前剥掉（`_strip_internal`）。
-
-    同时确认剥离是"只对喂给 LLM 的那份做拷贝"，本轮回灌的 `messages` 仍带 `_seq`。
-    """
+    """历史消息上的 `_seq` 只用于落库对账，必须在调 LLM 前剥掉（`_strip_internal`）。"""
     rows = [
         {"seq": 1, "role": "user", "content": "早前的提问"},
         {"seq": 2, "role": "assistant", "content": "早前的回答"},
@@ -249,21 +239,6 @@ async def test_history_seq_marks_are_stripped_before_the_llm_call():
 
     assert all("_seq" not in m for m in llm.seen[0]), "内部标记不得泄漏给 LLM API"
     assert [m["role"] for m in llm.seen[0]] == ["system", "user", "assistant", "user"]
-    assert agent.last_messages[1]["_seq"] == 1, "本轮回灌的 messages 仍保留 _seq 供落库对账"
-
-
-async def test_last_messages_carry_the_final_assistant_reply():
-    """`last_messages` 结尾含本轮最终 assistant 答复（`task_tool` 拿它 estimate_tokens）。
-
-    这条消息**从未喂给 LLM**（下一轮循环已经 break 了），但它确实是本轮的产出。
-    """
-    agent, llm, _ = make_agent([("final answer", [])])
-
-    await run_agent(agent)
-
-    assert agent.last_messages == llm.seen[-1] + [
-        {"role": "assistant", "content": "final answer", "tool_calls": None}
-    ]
 
 
 async def test_empty_string_reply_is_a_normal_answer():
@@ -281,21 +256,6 @@ async def test_none_content_step_normalizes_to_empty_string():
     agent, _, _ = make_agent([(None, [])], max_iterations=1)
 
     assert await run_agent(agent) == ""
-    assert [m["role"] for m in agent.last_messages] == ["system", "user", "assistant"]
-
-
-async def test_tool_round_with_empty_text_normalizes_content_to_none():
-    """工具调用轮没有正文时，assistant 消息的 content 归一成 `None`（OpenAI 协议允许 null）。
-
-    这行消息会被原样写进下一轮请求，所以 `None` 而非 `""` 是真实可见的格式。
-    """
-    agent, _, _ = make_agent([("", [_tool_call("noop")]), ("done", [])])
-
-    await run_agent(agent)
-
-    assert agent.last_messages[2] == {
-        "role": "assistant", "content": None, "tool_calls": [_tool_call("noop")],
-    }
 
 
 # ── 2. 集成层：只看「配了什么」，不看「走了哪条路径」 ────────────

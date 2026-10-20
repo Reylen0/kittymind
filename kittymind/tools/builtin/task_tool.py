@@ -153,12 +153,12 @@ class TaskTool(BaseTool):
 
                 ok = True
                 result = ""
+                run_result = None
                 try:
-                    result = "".join([
-                        chunk async for chunk in sub_agent.async_stream_run(
-                            session_id=None, input_text=parameters.prompt, root=False,
-                        )
-                    ])
+                    run_result = await sub_agent.run(
+                        session_id=None, input_text=parameters.prompt, root=False,
+                    )
+                    result = run_result.text
                     if not result.strip():
                         ok = False
                         result = "子任务无输出"
@@ -167,10 +167,10 @@ class TaskTool(BaseTool):
                     result = f"子任务执行失败: {e}"
                 finally:
                     elapsed = time.monotonic() - t0
-                    tokens = estimate_tokens(sub_agent.last_messages)
+                    tokens = estimate_tokens(run_result.messages if run_result else [])
                     # 子 Agent 的真实 token 用量回传父级：合并进根 Agent 的 recorder，
                     # 随父 turn 落库计入父会话成本（估算值仅作脚注展示，不落库）。
-                    sub_rec = sub_agent.last_usage_recorder
+                    sub_rec = run_result.usage_recorder if run_result else None
                     root_rec = current_root_usage_recorder()
                     if sub_rec is not None and root_rec is not None:
                         root_rec.merge(sub_rec)

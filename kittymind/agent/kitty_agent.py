@@ -19,7 +19,7 @@ import logging
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..config import cfg
 from ..context import ContextCompressor, TokenTracker, prune_tool_outputs
@@ -80,6 +80,18 @@ class _TurnSetup:
     ctx: TurnContext
 
 
+@dataclass
+class RunResult:
+    """`KittyAgent.run()` 的返回值：本轮最终文本 + 回灌消息 + 用量聚合器。
+
+    这三者是一轮内的瞬时产出，不挂在 agent 实例上——`run()` 内部把它们传给
+    `async_stream_run` 就地填充，跑完直接整体返回给调用方（如 task_tool）。
+    """
+    text: str = ""
+    messages: list[dict] = field(default_factory=list)
+    usage_recorder: UsageRecorder | None = None
+
+
 class KittyAgent(Agent):
     """KittyMind 统一 Agent。"""
 
@@ -114,10 +126,6 @@ class KittyAgent(Agent):
         self.tool_executor = ToolExecutor(
             self.tool_registry, ask_fn=ask_fn, guardrail=guardrail, audit=audit
         )
-        self.last_messages: list[dict] = []
-        # 上一次 run 的用量聚合结果（含子 Agent 合并前的主体消耗）。
-        # task_tool 在子 Agent 跑完后读它，回传给父 Agent 合并计入父会话。
-        self.last_usage_recorder: UsageRecorder | None = None
 
         # 辅助小模型：未配置 LLM_AUX_MODEL_ID 时为 None，辅助任务自动回退主模型
         self.aux_llm: BaseAgentLLM | None = (
@@ -210,13 +218,17 @@ class KittyAgent(Agent):
 
     async def async_stream_run(
         self, session_id: str | None, input_text: str,
-        workspace_id: str | None = None, root: bool = True, **kwargs
+        workspace_id: str | None = None, root: bool = True,
+        _result: RunResult | None = None, **kwargs
     ) -> AsyncIterator[str]:
         """带事件广播的异步流式 ReAct 循环。
 
         root=False：子 Agent 复用父级已建立的根作用域——不重新设置 cwd（沿用父级
         工作目录）、不重置委派预算（`child_scope` 已经递增过深度，重置等于让递归
         防爆栏归零）、不覆盖根 session 标签（子事件仍打父级真实 session_id）。
+
+        `_result`：仅供 `run()` 内部传入，用于回填本轮 messages / usage_recorder——
+        这俩是一轮内的瞬时状态，不挂在 agent 实例上，外部调用方不需要关心此参数。
         """
         effective_workspace_id, cwd_path = self._resolve_workspace(session_id, workspace_id)
 
@@ -326,9 +338,9 @@ class KittyAgent(Agent):
 
                 final_text = self._ensure_final_text(final_text)
 
-                self.last_messages = messages + [self._assistant_message(final_text, [])]
-                # 保存本 run 的用量聚合结果：task_tool 在子 Agent 跑完后读它回传。
-                self.last_usage_recorder = recorder
+                if _result is not None:
+                    _result.messages = messages + [self._assistant_message(final_text, [])]
+                    _result.usage_recorder = recorder
 
                 turn_messages.append({"role": "assistant", "content": final_text})
 
@@ -357,6 +369,24 @@ class KittyAgent(Agent):
                 reset_root_session(session_token)
                 if usage_token is not None:
                     reset_root_usage_recorder(usage_token)
+
+    async def run(
+        self, session_id: str | None, input_text: str,
+        workspace_id: str | None = None, root: bool = True, **kwargs,
+    ) -> RunResult:
+        """驱动 `async_stream_run` 跑到完成，一次性返回文本 + 消息 + 用量聚合器。
+
+        给只要最终结果、不需要逐字消费流式输出的调用方用（如 task_tool 跑子 Agent）。
+        """
+        result = RunResult()
+        chunks = [
+            chunk async for chunk in self.async_stream_run(
+                session_id, input_text, workspace_id=workspace_id, root=root,
+                _result=result, **kwargs,
+            )
+        ]
+        result.text = "".join(chunks)
+        return result
 
     # ── 记忆召回 ────
 
