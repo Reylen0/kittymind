@@ -188,7 +188,12 @@ export default function MessageItem({ message }: Props) {
           ? <div className="error-card">{message.content}</div>
           : (
             <div className="msg-content">
-              <Markdown>{message.content}</Markdown>
+              {/* 流式阶段文本结构尚未定型（代码块可能还没闭合），逐 delta 全量跑一遍
+                  Markdown/高亮解析会让 DOM 结构频繁大改，是打字机效果"抖"的主因——
+                  流式期间只展示纯文本（保留换行），收到 agent.done 后再整体渲染一次 Markdown。 */}
+              {message.isStreaming
+                ? <div className="md-streaming">{message.content}</div>
+                : <Markdown>{message.content}</Markdown>}
               {message.isStreaming && <span className="cursor" />}
             </div>
           )}

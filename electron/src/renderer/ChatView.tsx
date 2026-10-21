@@ -156,7 +156,14 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
       el.scrollTop = el.scrollHeight
       return
     }
-    // 会话进行中（新消息 / 流式增量）：保持贴底的平滑跟随
+    // 流式增量每秒触发十几次：用 smooth 会让上一次滚动动画被连续打断重新规划，
+    // 叠加气泡高度随文字增长变化，视觉上就是来回拉扯的抖动——流式期间瞬时跟随到底。
+    // 非流式的新消息到达（如用户刚发送）保留一次性的平滑过渡。
+    const streaming = messages[messages.length - 1]?.isStreaming === true
+    if (streaming) {
+      el.scrollTop = el.scrollHeight
+      return
+    }
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 

@@ -55,8 +55,7 @@ _STR_FIELDS = (
     "supersedes", "superseded_by", "merged_into", "content_hash",
 )
 
-# 新建条目的默认值。**只增不删**：v1 的 name/type/description/updated_at
-# 原样保留，读出来仍是同样的字符串，现有调用点零改动。
+# 新建条目的默认值。**只增不删**
 DEFAULTS: dict = {
     "schema": SCHEMA_VERSION,
     "id": "",
@@ -105,11 +104,7 @@ def is_valid_id(value: str) -> bool:
 
 
 def now_stamp() -> str:
-    """人类可读的本地时间戳（与 v1 的 `updated_at` 完全同格式，保证逐字节兼容）。
-
-    刻意不用 ISO8601：旧文件的 `updated_at` 是 `2026-09-21 17:19:49`，
-    换格式会让"迁移前后原字段逐字节一致"这条验收标准失效。
-    """
+    """人类可读的本地时间戳"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
@@ -128,12 +123,7 @@ def slugify(name: str) -> str:
 
 
 def normalize_description(text: str, limit: int = MAX_DESCRIPTION_CHARS) -> str:
-    """描述归一为**单行**。
-
-    旧实现把 description 直接拼进 frontmatter，且 `_KV_RE` 只认单行——含换行的
-    描述第二行会被静默丢弃（实测写回只剩第一行）。这里换成空格：内容一个字不少，
-    只是不再跨行。超长则截断（frontmatter 不是正文该待的地方）。
-    """
+    """描述归一为**单行**"""
     flat = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(flat) > limit:
         logger.debug("记忆描述超长（%d 字），截断到 %d 字", len(flat), limit)
@@ -167,8 +157,7 @@ def _as_optional_str(value) -> str | None:
 def normalize(meta: dict) -> dict:
     """把任意来源（正则 / YAML / 手工构造）的元数据补齐并归一类型。
 
-    **对旧值只做类型归一，不改语义**：`updated_at` 保持原字符串不重新格式化，
-    因为"迁移前后原字段逐字节一致"是验收标准。
+    **对旧值只做类型归一，不改语义**：`updated_at` 保持原字符串不重新格式化
     """
     out: dict = dict(DEFAULTS)
     for key, value in (meta or {}).items():
