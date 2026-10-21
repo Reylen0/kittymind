@@ -9,19 +9,15 @@
 
 Phase 17M 把两条链路从 O(全量) 改成 O(候选集)：
 
-  - **提取去重视图**（`_dedup_view`）：原来 `existing_catalog[:4000]` 硬截断 ≈ 32 条，
-    之后后半记忆对提取完全失明 → 同一事实被反复提取成新记忆。改为向量检索出与
-    本轮对话语义相关的 top-N 条。
-  - **整合预筛**（`_consolidate_candidates`）：原来把全部正文灌进 prompt，
-    300 条时实测 68k tokens（小模型上下文必爆）。改为只把近重复候选对交给模型。
+  - **提取去重视图**（`_dedup_view`）：向量检索出与本轮对话语义相关的 top-N 条。
+  - **整合预筛**（`_consolidate_candidates`）：把近重复候选对交给模型。
 
-两者在无 embedding 时都退回改造前的行为（4000 字符截断 / 全量），所以没配
+两者在无 embedding 时都退回（4000 字符截断 / 全量），所以没配
 embedding 的用户不受影响。
 
 整合的两条设计约束（都是踩坑换来的）：
   - **模型不碰转义**：模型只输出「保留/合并/删除」指令，不输出正文，
-    因此不必自行完成 `\\"` / `\\n` 转义（旧实现让它重写多行正文，一次
-    漏转义整批就失败）。见 _consolidate。
+    因此不必自行完成 `\\"` / `\\n`转义。见 _consolidate。
   - **未被提及 = 保留**：只执行模型显式给出的删除/合并，漏写不会丢记忆。
     预筛只缩小"模型能看到什么"，不改变这条语义——漏掉的对子只是这轮不合并。
 
@@ -93,9 +89,8 @@ def extract_memories(messages: list[dict], llm, memory_store) -> bool:
 def _dedup_view(memory_store, history_text: str) -> str:
     """提取去重视图：与**本轮对话**语义相关的既有记忆（描述 + 正文前 N 字）。
 
-    今天用 `catalog()[:4000]`（≈32 条）硬截断；改为向量检索后，语义相关的既有
-    记忆永远在模型的视野里，与记忆总条数无关。无 embedding / 检索失败 / 索引为空
-    时退回今天的截断行为——**行为与改造前一致**。
+    向量检索，无 embedding / 检索失败 / 索引为空
+    时退回截断行为——`catalog()[:4000]`（≈32 条）硬截断。
     """
     fallback = memory_store.catalog()[:4000]
     index = get_memory_index(memory_store.directory)

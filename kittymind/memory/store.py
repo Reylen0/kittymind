@@ -8,7 +8,6 @@
     events.jsonl       ← 追加式变更历史（真相源）
     _trash/            ← 软删 / 被合并条目的墓碑（可 restore）
     _quarantine/       ← 无法解析的损坏文件（启动自检时移入，不删除）
-    .v2_migrated       ← 迁移标记（幂等重跑的快速出口）
 
 ## v2 的三条硬规矩（P0 修的是"静默丢数据"）
 
@@ -36,7 +35,6 @@ from pathlib import Path
 from ..config import cfg
 from ..storage import atomic_write_text
 from . import schema
-from .db import purge_legacy_index_db
 from .ledger import append_event
 from .schema import MEMORY_TYPES, document, normalize, parse, slugify
 
@@ -45,7 +43,6 @@ logger = logging.getLogger(__name__)
 _INDEX_FILE = "MEMORY.md"
 _QUARANTINE_DIR = "_quarantine"
 _TRASH_DIR = "_trash"
-_MIGRATED_MARKER = ".v2_migrated"
 
 __all__ = ["MEMORY_TYPES", "MemoryStore"]
 
@@ -60,7 +57,6 @@ class MemoryStore:
         enabled = cfg.DB_MAINTENANCE_ENABLED if selfcheck is None else selfcheck
         if enabled:
             self.selfcheck()
-            self.migrate_v2()
 
     # ── 公开接口 ──────────────────────────────────────────────────
 
@@ -276,7 +272,7 @@ class MemoryStore:
                     logger.debug("清理回滚残留墓碑失败 %s: %s", ghost.name, e)
         self._rebuild_index()
 
-    # ── 启动自检与迁移 ────────────────────────────────────────────
+    # ── 启动自检 ──────────────────────────────────────────────────
 
     def selfcheck(self) -> list[Path]:
         """扫描记忆目录，把解析不出来的文件移入 `_quarantine/`，返回被移走的路径。
@@ -300,77 +296,6 @@ class MemoryStore:
         if moved:
             self._rebuild_index()
         return moved
-
-    def migrate_v2(self) -> int:
-        """一次性补齐 v2 frontmatter 字段（幂等）。返回本次改写的条数。
-
-        两条纪律：
-
-        - **解析用旧正则、序列化用 YAML**。直接用 `safe_load` 读旧文件会让一批记忆
-          从"能读"变成"读不出"或"内容被吃掉"（见 `schema.py` 的实测表），所以旧
-          文件必须先用正则读懂，再按新格式写回。
-        - **文件名与位置不变**（只补 frontmatter），于是 git diff 只有内容变化，
-          没有几十个 rename。
-
-        带 `.v2_migrated` 标记做快速出口：标记在且版本一致就直接返回，不再逐个读文件。
-        **标记必须最后落**：它一落下这段逻辑就再也不会重进，所以清旧库、写审计
-        都得排在它前面，否则一次中断会永久留下半截痕迹（真实库上出现过：标记写着
-        `items=12`，旧索引库却还在，事件也没写）。清理没成功就不写标记，
-        下次启动靠同一个快速出口之外的重试补上——重试代价只是重扫一遍目录。
-        """
-        # 旧索引库的清理是幂等的（文件不在就只是一次 stat），放在快速出口**之前**：
-        # 万一它后来又冒出来（回退到 Phase 17M 代码再升回来），也不会被标记挡住。
-        legacy_clean = purge_legacy_index_db(self._dir)
-        if self._v2_done():
-            return 0
-        changed = 0
-        for path in list(self._iter_items()):
-            record = self._load_file(path)
-            if record is None:
-                continue
-            if schema.is_valid_id(record.get("id")) and record.get("created_at"):
-                continue
-            meta = normalize(record)
-            if not schema.is_valid_id(meta.get("id")):
-                meta["id"] = schema.new_id()
-            if not meta.get("created_at"):
-                meta["created_at"] = _mtime_stamp(path)
-            if not meta.get("updated_at"):
-                meta["updated_at"] = _mtime_stamp(path)
-            meta["status"] = meta.get("status") or "active"
-            meta["content_hash"] = _digest(str(record.get("body", "")))
-            self._write_atomic(path, meta, str(record.get("body", "")))
-            changed += 1
-        if changed:
-            # 传 kwargs 而不是 `detail={...}`：`append_event` 的签名是 `**detail`，
-            # 再套一层会写成 `detail.detail`（真实库上第一版就是这样落盘的）。
-            append_event(self._dir, "migrate", actor="system",
-                         version=schema.SCHEMA_VERSION, items=changed)
-            logger.info("记忆 frontmatter 迁移到 v2：改写 %d 条", changed)
-        if not legacy_clean:
-            return changed          # 不写标记 → 下次启动重试（重试代价只是重扫一遍目录）
-        self._write_marker(changed)
-        return changed
-
-    def _v2_done(self) -> bool:
-        marker = self._dir / _MIGRATED_MARKER
-        if not marker.is_file():
-            return False
-        try:
-            first = marker.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return False
-        return bool(first) and first[0].strip() == str(schema.SCHEMA_VERSION)
-
-    def _write_marker(self, changed: int) -> None:
-        try:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            (self._dir / _MIGRATED_MARKER).write_text(
-                f"{schema.SCHEMA_VERSION}\n# at={schema.now_stamp()} items={changed}\n",
-                encoding="utf-8",
-            )
-        except OSError as e:
-            logger.debug("迁移标记写入失败（下次会重扫）：%s", e)
 
     # ── 内部工具 ──────────────────────────────────────────────────
 
@@ -519,14 +444,6 @@ class MemoryStore:
 
 def _digest(text: str) -> str:
     return "sha256:" + hashlib.sha256(str(text or "").encode("utf-8")).hexdigest()[:16]
-
-
-def _mtime_stamp(path: Path) -> str:
-    """用文件 mtime 当 `created_at` 的近似值（迁移时的兜底，比"现在"更接近事实）。"""
-    try:
-        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-    except OSError:
-        return schema.now_stamp()
 
 
 def _merge_bodies(bodies: list[str]) -> str:

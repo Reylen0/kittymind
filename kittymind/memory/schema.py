@@ -1,30 +1,8 @@
 """记忆条目的 frontmatter 模型（v2）—— 字段定义、生成、序列化、解析。
 
-## 为什么写入用 YAML、读取却以正则为主
-
-直觉是"换成标准 YAML 就安全了"，但实测发现**读写两侧风险完全不对称**：
-
-| 场景 | 实测结果 |
-|---|---|
-| `safe_dump` 写时间串 / 含 `#` `[` 的文本 | ✅ 自动加引号，安全 |
-| `safe_load` 读旧文件 `updated_at: 2026-09-21 17:19:49` | ❌ 变成 `datetime`（**类型变了**） |
-| `safe_load` 读 `description: 见 https://a.com/x # 备注` | ❌ `# 备注` **被静默吃掉** |
-| `safe_load` 读 `description: [草稿] 偏好简短` | ❌ `ParserError`，**整条读不出来** |
-
-所以 `safe_load` 直接读旧文件比原来的正则还糟。定下的规矩是：
-
-  - **写入侧**：一律 `yaml.safe_dump`，写后立刻 round-trip 断言
-    （`safe_load(safe_dump(d)) == d`）。不通过就抛错、拒绝写盘——
-    **绝不产生一条"能写进去但读不出来"的记忆**。
-  - **读取侧**：按 `schema` 标记分流——v2 文件走 YAML，v1（旧格式）走正则。
-    正则对旧格式天然安全，且不会做 YAML 类型推断。
-
-## 为什么用 `schema: 2` 做分流标记而不是"猜"
-
-旧文件经正则解析后**字段也是齐的**（每个键都在一行上），靠"字段缺不缺"判断不出
-格式。而 v2 的 `source: {via: extract, ...}`、`related: [a, b]` 用正则会读成
-**字符串**（类型错），带引号的值还会把引号一起吃进去。所以必须有一个显式标记：
-v2 写入时把 `schema` 作为第一个键写出，读取时先看它。
+写入一律用 `yaml.safe_dump`，写后立刻做 round-trip 断言
+（`safe_load(safe_dump(d)) == d`）：不一致就拒绝写盘，绝不产生一条
+"写得进去但读不出来"的记忆（见 `dumps()`）。
 """
 
 from __future__ import annotations
@@ -81,7 +59,6 @@ DEFAULTS: dict = {
 }
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-_KV_RE = re.compile(r"^(\w[\w-]*)\s*:\s*(.+)$", re.MULTILINE)
 _ID_RE = re.compile(r"^mem-\d{8}-\d{6}-[0-9a-f]{4}$")
 
 MAX_DESCRIPTION_CHARS = 200
@@ -253,35 +230,14 @@ def loads(text: str) -> dict | None:
     return normalize(parsed)
 
 
-def _loads_regex(text: str) -> dict:
-    """旧格式（v1）解析：只认单行 `key: value`，不做任何类型推断。"""
-    return normalize({k.strip(): v.strip() for k, v in _KV_RE.findall(text)})
-
-
 def parse(content: str) -> tuple[dict | None, str]:
-    """把整份文件拆成 (元数据, 正文)。元数据解析不出来时返回 (None, 剩余文本)。
-
-    分流规则见模块 docstring：带 `schema: 2` 走 YAML，否则走旧正则。
-    """
+    """把整份文件拆成 (元数据, 正文)。元数据解析不出来时返回 (None, 剩余文本)。"""
     m = _FRONTMATTER_RE.match(content)
     if not m:
         return None, content
     block = m.group(1)
     body = content[m.end():].strip()
-
-    if _declares_schema2(block):
-        meta = loads(block)
-        if meta is not None:
-            return meta, body
-        logger.warning("v2 frontmatter 用 YAML 解析失败，退回旧正则")
-    return _loads_regex(block), body
-
-
-def _declares_schema2(block: str) -> bool:
-    for key, value in _KV_RE.findall(block):
-        if key.strip() == "schema":
-            return str(value).strip().strip("'\"") == str(SCHEMA_VERSION)
-    return False
+    return loads(block), body
 
 
 def document(meta: dict, body: str) -> str:

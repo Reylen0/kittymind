@@ -34,7 +34,6 @@ from ..storage import (
 logger = logging.getLogger(__name__)
 
 _DB_SUFFIX = ".db"
-_LEGACY_SUFFIX = "_index.db"
 
 _VEC_DDL = """
 CREATE TABLE IF NOT EXISTS memory_vec (
@@ -90,35 +89,11 @@ def memory_db_path(memory_dir: str | Path | None = None) -> Path:
     return base.parent / f"{base.name}{_DB_SUFFIX}"
 
 
-def legacy_index_db_path(memory_dir: str | Path | None = None) -> Path:
-    """Phase 17M 的旧索引库位置（`<记忆目录名>_index.db`），只在清理时用。"""
-    base = Path(memory_dir) if memory_dir else cfg.MEMORY_DIR
-    return base.parent / f"{base.name}{_LEGACY_SUFFIX}"
-
-
 def discard_db(path: str | Path) -> None:
     """删库文件（连同 `-wal` / `-shm`）。仅用于**派生**库的损坏重建。"""
     for suffix in ("", "-wal", "-shm"):
         with contextlib.suppress(OSError):
             Path(str(path) + suffix).unlink()
-
-
-def purge_legacy_index_db(memory_dir: str | Path | None = None) -> bool:
-    """删除 Phase 17M 的旧索引库（向量是派生数据，重嵌即可）。
-
-    返回的是「现在干净了吗」，不是「刚删了东西吗」——调用方（迁移）要用它决定
-    能不能落下迁移标记：旧库在 Windows 上被别的进程打开时删不掉是常态，
-    这种时候必须让迁移保持"没做完"，下次启动才有机会重试。
-    """
-    legacy = legacy_index_db_path(memory_dir)
-    if not legacy.exists():
-        return True
-    discard_db(legacy)
-    if legacy.exists():
-        logger.warning("旧记忆索引库 %s 仍被占用，本次未清理（下次启动重试）", legacy.name)
-        return False
-    logger.info("已清理旧记忆索引库 %s（向量将按需重嵌）", legacy.name)
-    return True
 
 
 def open_memory_db(path: str | Path, *, maintenance: bool | None = None) -> sqlite3.Connection:

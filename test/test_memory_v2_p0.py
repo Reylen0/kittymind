@@ -14,10 +14,8 @@ import types
 import pytest
 
 from kittymind.config import cfg
-from kittymind.memory import db
 from kittymind.memory import extract as ex
 from kittymind.memory import schema
-from kittymind.memory.db import memory_db_path
 from kittymind.memory.ledger import MemoryLedger, get_memory_ledger, read_events
 from kittymind.memory.recall import MemoryRecall
 from kittymind.memory.store import MemoryStore
@@ -43,19 +41,11 @@ class _NoLLM:
         raise AssertionError("这条路径不该调用 LLM")
 
 
-def _legacy_doc(name, mem_type, desc, body, updated) -> str:
-    """Phase v2 之前的文件格式（字符串拼接 + 单行 key: value）。"""
-    return (
-        f"---\nname: {name}\ntype: {mem_type}\n"
-        f"description: {desc}\nupdated_at: {updated}\n---\n\n{body}\n"
-    )
-
-
 # ── ① frontmatter：不存在"能写进去但读不出来"的文件 ─────────────────
 
 
 def test_frontmatter_round_trip_survives_hostile_text(mem):
-    """description / 正文里塞满 YAML 与老正则的杀手字符，读回来必须一字不差。"""
+    """description / 正文里塞满 YAML 杀手字符，读回来必须一字不差。"""
     body = "第一行\n\n- 列表项\n--- 分隔线\n: 冒号开头的行\n结尾带引号\"与#井号"
     mem.write("hostile", "user", "多行\n描述: 带冒号 --- 分隔 # 井号 [方括号]", body)
 
@@ -69,18 +59,6 @@ def test_frontmatter_round_trip_survives_hostile_text(mem):
     assert meta is not None and meta["name"] == "hostile"
     assert parsed_body == body
     assert raw.split("---")[1].strip().startswith("schema: 2")
-
-
-def test_v1_file_is_read_by_regex_not_yaml(tmp_path):
-    """旧文件必须走正则：`safe_load` 会把 `# 备注` 吃掉、把时间串变成 datetime。"""
-    (tmp_path / "old.md").write_text(
-        _legacy_doc("old-note", "user", "见 https://a.com/x # 备注", "旧正文", "2026-09-21 17:19:49"),
-        encoding="utf-8",
-    )
-    record = MemoryStore(tmp_path, selfcheck=False).read("old-note")
-
-    assert record["description"] == "见 https://a.com/x # 备注"
-    assert record["updated_at"] == "2026-09-21 17:19:49"
 
 
 def test_frontmatter_type_coercion(tmp_path):
@@ -321,97 +299,6 @@ def test_recall_log_retention_nonpositive_keeps_rows(tmp_path):
     assert ledger.prune(0) == 0
     assert ledger.stats()["count"] == 1
     ledger.close()
-
-
-# ── ⑤ 迁移：解析用正则、序列化用 YAML，原字段逐字节一致 ─────────────
-
-
-def test_migrate_v2_preserves_legacy_values_byte_for_byte(tmp_path):
-    memory_dir = tmp_path / "memory"
-    memory_dir.mkdir()
-    legacy_desc = "见 https://a.com/x # 备注"
-    (memory_dir / "legacy.md").write_text(
-        _legacy_doc("legacy-note", "user", legacy_desc, "旧正文", "2026-09-21 17:19:49"),
-        encoding="utf-8",
-    )
-
-    store = MemoryStore(memory_dir, selfcheck=False)
-    assert store.migrate_v2() == 1
-
-    record = store.read("legacy-note")
-    assert record["name"] == "legacy-note"
-    assert record["type"] == "user"
-    assert record["description"] == legacy_desc, "YAML 会吃掉 `# 备注`，这里必须完整"
-    assert record["updated_at"] == "2026-09-21 17:19:49", "不能被推断成 datetime"
-    assert record["body"] == "旧正文"
-    assert schema.is_valid_id(record["id"])
-    assert record["status"] == "active"
-    assert record["created_at"], "缺失的创建时间用文件 mtime 兜底"
-    assert (memory_dir / "legacy.md").is_file(), "文件名与位置不变（git diff 只有内容变化）"
-
-    assert store.migrate_v2() == 0, "幂等：第二次不应再改写"
-    assert (memory_dir / ".v2_migrated").is_file()
-
-    migrate = [e for e in read_events(memory_dir) if e["event"] == "migrate"]
-    assert len(migrate) == 1
-    # detail 不能再套一层：`append_event(**detail)` 传 `detail={...}` 会写出
-    # `detail.detail` —— 真实库上落过这个盘。
-    assert migrate[0]["detail"] == {"version": 2, "items": 1}
-
-
-def test_migrate_v2_is_idempotent_across_reopen(tmp_path):
-    memory_dir = tmp_path / "memory"
-    store = MemoryStore(memory_dir, selfcheck=False)
-    store.write("已迁移", "project", "d", "正文")
-    memory_id = store.read("已迁移")["id"]
-
-    assert store.migrate_v2() == 0
-    assert MemoryStore(memory_dir, selfcheck=False).migrate_v2() == 0
-    assert store.read("已迁移")["id"] == memory_id
-
-
-def test_migrate_v2_purges_legacy_index_db(tmp_path):
-    memory_dir = tmp_path / "memory"
-    memory_dir.mkdir()
-    legacy = tmp_path / "memory_index.db"
-    legacy.write_text("x", encoding="utf-8")
-    (tmp_path / "memory_index.db-wal").write_text("x", encoding="utf-8")
-
-    MemoryStore(memory_dir, selfcheck=False).migrate_v2()
-
-    assert not legacy.exists()
-    assert not (tmp_path / "memory_index.db-wal").exists()
-    assert memory_db_path(memory_dir) == tmp_path / "memory.db"
-
-
-def test_migrate_v2_defers_marker_until_legacy_db_cleaned(tmp_path, monkeypatch):
-    """清理没成功就不能落迁移标记。
-
-    标记是最高优先级的快速出口：它一落下，`migrate_v2` 再也不会重进这段逻辑，
-    清旧库 / 写审计就永远没有第二次机会。旧索引库被别的进程打开而删不掉，在
-    Windows 上是常态（真实库上就出现过"标记写着 items=12、旧库却还在"的形态），
-    所以标记必须最后落，失败就当没迁完，下次启动重试。
-    """
-    memory_dir = tmp_path / "memory"
-    memory_dir.mkdir()
-    (memory_dir / "legacy.md").write_text(
-        _legacy_doc("legacy-note", "user", "说明", "旧正文", "2026-09-21 17:19:49"),
-        encoding="utf-8",
-    )
-    legacy = tmp_path / "memory_index.db"
-    legacy.write_text("x", encoding="utf-8")
-    store = MemoryStore(memory_dir, selfcheck=False)
-
-    monkeypatch.setattr(db, "discard_db", lambda _path: None)   # 模拟"删不掉"
-    assert store.migrate_v2() == 1
-    assert legacy.exists()
-    assert not (memory_dir / ".v2_migrated").is_file(), "清理失败却落了标记"
-
-    monkeypatch.undo()                                          # 占用解除
-    assert MemoryStore(memory_dir, selfcheck=False).migrate_v2() == 0
-    assert not legacy.exists()
-    assert (memory_dir / ".v2_migrated").is_file()
-    assert [e["event"] for e in read_events(memory_dir)].count("migrate") == 1, "不重复记"
 
 
 def test_events_jsonl_is_append_only_and_skips_broken_lines(tmp_path):
