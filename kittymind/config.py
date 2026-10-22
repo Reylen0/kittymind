@@ -78,7 +78,7 @@ SCREENSHOT_MONITOR = 1
 SCREENSHOT_KEEP_MAX = 200
 
 # ── 记忆系统 ─────────────────────────────────────────────────────
-MEMORY_CONSOLIDATE_THRESHOLD = 10
+MEMORY_CONSOLIDATE_THRESHOLD = 50
 MEMORY_MAX_HISTORY_CHARS     = 8_000
 MEMORY_RECALL_MAX_RELEVANT   = 5
 MEMORY_RECALL_MAX_BODY_CHARS = 800
@@ -200,7 +200,7 @@ TOOL_AUDIT_ENABLED        = True   # 是否记录工具调用审计（SQLite + J
 TOOL_REDACT_ENABLED       = True   # 是否对工具输出/审计参数做敏感信息脱敏
 TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出截断）
 
-# ── 用量与成本追踪（Phase 16） ───────────────────────
+# ── 用量与成本追踪 ───────────────────────
 # 价目表覆盖：{ "model_id": {"input": 美元/百万token, "output": 美元/百万token} }
 # 空 dict = 只用内置默认价目表。查不到的模型前端显示「无价目」，不编造成本。
 USAGE_PRICING = {}
@@ -212,7 +212,7 @@ VERIFY_PROBE_RETRIES  = 5       # probe 验证器默认重试次数
 VERIFY_PROBE_INTERVAL = 1.0     # probe 验证器重试间隔（秒）
 VERIFY_MAX_OUTPUT     = 20_000  # command 验证器证据截断长度
 
-# ── 数据维护与健壮性（Phase 17） ─────────────────────
+# ── 数据维护与健壮性 ─────────────────────
 # 总开关：关掉则不做启动自检、自动备份、checkpoint 与空间回收。
 DB_MAINTENANCE_ENABLED = True
 # 启动自检（PRAGMA quick_check）。关掉可省下大库的启动扫描时间。

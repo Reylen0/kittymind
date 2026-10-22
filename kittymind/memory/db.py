@@ -49,6 +49,25 @@ CREATE TABLE IF NOT EXISTS memory_vec (
 );
 """
 
+# v3：主键换成 id（见 _m_memory_vec_id_pk）。_VEC_DDL 保持原样不动——它是
+# Migration(1) 已发布的历史定义，老库靠 user_version 知道"这步已经做过"，
+# 改它会让"同一个版本号在不同时间点建出不同表"，版本链失去意义。
+_VEC_ID_PK_DDL = """
+DROP TABLE IF EXISTS memory_vec;
+CREATE TABLE memory_vec (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,      -- 可变属性，仅供检索结果展示，不再是行身份
+    file       TEXT NOT NULL,
+    text_hash  TEXT NOT NULL,      -- 索引文本（含正文前 N 字）的 sha256，不是文件字节
+    mtime_ns   INTEGER NOT NULL DEFAULT 0,   -- 0 = 无文件信息，必须走 hash 对账
+    file_size  INTEGER NOT NULL DEFAULT 0,
+    model_id   TEXT NOT NULL,      -- 向量来源模型（硬校验）
+    dim        INTEGER NOT NULL,
+    indexed_at TEXT NOT NULL,
+    vector     BLOB NOT NULL
+);
+"""
+
 _RECALL_DDL = """
 CREATE TABLE IF NOT EXISTS memory_recall_log (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,10 +95,24 @@ def _m_create_recall_log(conn: sqlite3.Connection) -> None:
     conn.executescript(_RECALL_DDL)
 
 
+def _m_memory_vec_id_pk(conn: sqlite3.Connection) -> None:
+    """`memory_vec` 主键从 `name` 换成 `id`。
+
+    `name` 只是记忆的可变属性，之前拿它当主键等于让这张缓存表的行唯一性
+    依赖"`store.py` 保证同一时刻没有两条活跃记忆同名"这个外部约定；`id`
+    才是全系统唯一真正保证不重复、不随操作变化的字段。
+
+    纯派生缓存表，不做行级数据迁移——直接删表重建，下次 `sync()` 按新
+    schema 全量重嵌一次即可，比对着旧行回填 `id` 更简单也更不容易出错。
+    """
+    conn.executescript(_VEC_ID_PK_DDL)
+
+
 # 只追加，不改已发布的步骤（改了就与老库的 user_version 对不上）
 MIGRATIONS = [
     Migration(1, "create_memory_vec", _m_create_memory_vec),
     Migration(2, "create_memory_recall_log", _m_create_recall_log),
+    Migration(3, "memory_vec_id_pk", _m_memory_vec_id_pk),
 ]
 
 
@@ -99,7 +132,7 @@ def discard_db(path: str | Path) -> None:
 def open_memory_db(path: str | Path, *, maintenance: bool | None = None) -> sqlite3.Connection:
     """打开（并在需要时重建）派生库，保证 schema 已升到最新。
 
-    与 Phase 17 的迁移纪律一致：**失败即删库重建**而不是留一个半截 schema——
+    **失败即删库重建**而不是留一个半截 schema——
     派生库没有需要抢救的数据，重建比带病运行便宜得多。
     """
     target = Path(path)

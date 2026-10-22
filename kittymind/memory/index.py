@@ -1,4 +1,4 @@
-"""记忆向量索引 —— 落在派生库 `memory.db` 的 `memory_vec` 表里（v2 起与召回留痕同库）。
+"""记忆向量索引 —— 落在派生库 `memory.db` 的 `memory_vec` 表里。
 
 库的路径、版本链与损坏重建策略都在 `memory/db.py`；本文只管向量的对账与检索。
 
@@ -84,7 +84,9 @@ def _file_stat(path: Path) -> tuple[int, int]:
 
 
 class MemoryVectorIndex:
-    """记忆名的向量索引。线程安全（递归调用点都在 `to_thread` 里）。"""
+    """记忆的向量索引。按 `id` 对账（`name` 只是检索结果里带出去的展示字段，
+    不再是行身份——详见 `memory/db.py` 的 `_m_memory_vec_id_pk`）。线程安全
+    （递归调用点都在 `to_thread` 里）。"""
 
     def __init__(self, db_path: str | Path, embedder, *, maintenance: bool | None = None):
         self._path = Path(db_path)
@@ -132,30 +134,31 @@ class MemoryVectorIndex:
             pending: list[tuple] = []
             seen: set[str] = set()
             for m in memories:
+                memory_id = str(m.get("id") or "")
                 name = str(m.get("name") or "")
-                if not name:
+                if not memory_id or not name:
                     continue
-                seen.add(name)
+                seen.add(memory_id)
                 path = Path(str(m.get("path") or ""))
                 mtime_ns, size = _file_stat(path)
-                row = rows.get(name)
+                row = rows.get(memory_id)
                 if row and mtime_ns > 0 and row["mtime_ns"] == mtime_ns and row["size"] == size:
                     continue  # 快路径：文件物理上没动过
                 text = index_text(m, cfg.MEMORY_INDEX_TEXT_BODY_CHARS)
                 digest = text_hash(text)
                 if row and row["text_hash"] == digest:
-                    self._touch(name, mtime_ns, size)  # 只是被 touch，向量仍然有效
+                    self._touch(memory_id, mtime_ns, size)  # 只是被 touch，向量仍然有效
                     continue
-                pending.append((name, str(path), digest, mtime_ns, size, text))
+                pending.append((memory_id, name, str(path), digest, mtime_ns, size, text))
 
-            orphans = [n for n in rows if n not in seen]
+            orphans = [i for i in rows if i not in seen]
             if orphans:
                 self._delete(orphans)
 
             if not pending:
                 return 0
 
-            vectors = self._embedder.embed([p[5] for p in pending])
+            vectors = self._embedder.embed([p[6] for p in pending])
             if len(vectors) != len(pending):
                 raise RuntimeError(
                     f"embedding 返回条数不匹配：期望 {len(pending)}，实际 {len(vectors)}"
@@ -167,7 +170,7 @@ class MemoryVectorIndex:
     def _read_meta(self) -> dict[str, dict]:
         try:
             rows = self._conn.execute(
-                "SELECT name, text_hash, mtime_ns, file_size, model_id, dim FROM memory_vec"
+                "SELECT id, text_hash, mtime_ns, file_size, model_id, dim FROM memory_vec"
             ).fetchall()
         except sqlite3.Error as e:
             logger.warning("读取记忆索引失败（按空索引处理）：%s", e)
@@ -192,30 +195,30 @@ class MemoryVectorIndex:
             self._conn.execute("DELETE FROM memory_vec")
         self._cache = None
 
-    def _touch(self, name: str, mtime_ns: int, size: int) -> None:
+    def _touch(self, memory_id: str, mtime_ns: int, size: int) -> None:
         """内容 hash 未变，只刷新文件时间戳（避免下次又走慢路径）。"""
         with contextlib.suppress(sqlite3.Error):
             self._conn.execute(
-                "UPDATE memory_vec SET mtime_ns=?, file_size=? WHERE name=?",
-                (mtime_ns, size, name),
+                "UPDATE memory_vec SET mtime_ns=?, file_size=? WHERE id=?",
+                (mtime_ns, size, memory_id),
             )
 
-    def _delete(self, names: list[str]) -> None:
+    def _delete(self, ids: list[str]) -> None:
         with contextlib.suppress(sqlite3.Error):
             self._conn.executemany(
-                "DELETE FROM memory_vec WHERE name=?", [(n,) for n in names]
+                "DELETE FROM memory_vec WHERE id=?", [(i,) for i in ids]
             )
         self._cache = None
 
     def _upsert(self, pending: list[tuple], vectors: Sequence) -> None:
         now = datetime.now(timezone.utc).isoformat()
         rows = []
-        for (name, file, digest, mtime_ns, size, _text), vec in zip(
+        for (memory_id, name, file, digest, mtime_ns, size, _text), vec in zip(
             pending, vectors, strict=False
         ):
             arr = np.asarray(vec, dtype=np.float32)
             rows.append((
-                name, file, digest, mtime_ns, size,
+                memory_id, name, file, digest, mtime_ns, size,
                 str(self._embedder.model_id), int(arr.size), now,
                 arr.tobytes(),
             ))
@@ -223,8 +226,8 @@ class MemoryVectorIndex:
         try:
             self._conn.executemany(
                 "INSERT OR REPLACE INTO memory_vec"
-                " (name, file, text_hash, mtime_ns, file_size, model_id, dim, indexed_at, vector)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " (id, name, file, text_hash, mtime_ns, file_size, model_id, dim, indexed_at, vector)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             self._conn.execute("COMMIT")

@@ -9,14 +9,11 @@
     _trash/            ← 软删 / 被合并条目的墓碑（可 restore）
     _quarantine/       ← 无法解析的损坏文件（启动自检时移入，不删除）
 
-## v2 的三条硬规矩（P0 修的是"静默丢数据"）
+三条硬规矩
 
-1. **身份是 `id`，不是文件名。** 旧实现的身份就是文件名（`_slug(name)`），于是
-   `write("My Note")` 会把 `write("my note")` 静默覆盖掉（实测 count 2→1），
-   改名等于失忆，事件日志也无法与文件对应。
+1. **身份是 `id`，不是文件名。**
 2. **同名写入永不静默覆盖。** 同名 → 保留 `id`、替换正文，旧正文进 `events.jsonl`
-   （可回溯）；`merge=True` 时改按行去重拼接。名字不同但 slug 撞车（`My Note` vs
-   `my note`，旧实现就在这里把第一条吃掉了）→ **新条目 + 文件名加 `-<id8>`**。
+   （可回溯）；`merge=True` 时改按行去重拼接。**新条目 + 文件名加 `-<id8>`**。
    两种情况都不会丢内容。
 3. **默认不删。** 删除 = `status=forgotten` + 文件移入 `_trash/`，可 `restore_item()`；
    物理删除只有 `hard_delete()` 一个入口，且只应由用户显式操作触发。
@@ -424,22 +421,6 @@ class MemoryStore:
             path.name, _QUARANTINE_DIR, target.name,
         )
         return target
-
-    # 兼容旧调用点（P0 起实际实现都在 schema.py）
-    _slug = staticmethod(slugify)
-
-    @staticmethod
-    def _document(name: str, mem_type: str, description: str,
-                  body: str, updated_at: str) -> str:
-        return document(normalize({
-            "name": name, "type": mem_type,
-            "description": description, "updated_at": updated_at,
-        }), body)
-
-    @staticmethod
-    def _parse_frontmatter(content: str) -> tuple[dict, str]:
-        meta, body = parse(content)
-        return (meta or {}), body
 
 
 def _digest(text: str) -> str:
