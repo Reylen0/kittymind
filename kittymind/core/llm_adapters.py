@@ -157,11 +157,14 @@ class OpenAIAdapter(BaseLLMAdapter):
                                 "id": "", "type": "function",
                                 "function": {"name": "", "arguments": ""},
                             }
-                        if tc.id:
-                            tool_calls_buf[idx]["id"] += tc.id
+                        # id / name 按协议只在首个 chunk 出现一次，只有 arguments 真正分片
+                        # 流式传输——有些网关（如多通道代理）会在每个 chunk 都重复回传完整
+                        # id，用 += 累加会把同一个 id 拼接 N 次，拼出一个巨长的 call_id。
+                        if tc.id and not tool_calls_buf[idx]["id"]:
+                            tool_calls_buf[idx]["id"] = tc.id
                         if tc.function:
-                            if tc.function.name:
-                                tool_calls_buf[idx]["function"]["name"] += tc.function.name
+                            if tc.function.name and not tool_calls_buf[idx]["function"]["name"]:
+                                tool_calls_buf[idx]["function"]["name"] = tc.function.name
                             if tc.function.arguments:
                                 tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
         except Exception as e:
