@@ -45,10 +45,7 @@ FILE_READ_MAX_BYTES  = 800_000
 FILE_EDIT_MAX_SIZE   = 2_000_000
 FILE_WRITE_MAX_BYTES = 1_000_000
 # 工具输出统一截断上限（executor 全局截断 + bash 流预截断共用）。
-# 原名 BASH_MAX_OUTPUT 名不副实（管的是所有工具），2026-09-18 改名；
-# 旧名保留为弃用别名，settings.json 里写旧名仍生效但会告警。
 TOOL_MAX_OUTPUT = 50_000
-BASH_MAX_OUTPUT = TOOL_MAX_OUTPUT  # 弃用别名，勿在新代码里引用
 
 # ── 搜索/列表限制 ────────────────────────────────────────────────
 GREP_MAX_RESULTS    = 100
@@ -74,7 +71,6 @@ LS_DEPTH           = 2
 GIT_LOG_COUNT      = 10
 SCREENSHOT_MONITOR = 1
 # 截图目录保留上限（按修改时间留最新 N 张，0 = 不清理）。
-# 截图会无限累积，长时间使用后 ~/.kittymind/screenshots 可达数百 MB。
 SCREENSHOT_KEEP_MAX = 200
 
 # ── 记忆系统 ─────────────────────────────────────────────────────
@@ -83,50 +79,43 @@ MEMORY_MAX_HISTORY_CHARS     = 8_000
 MEMORY_RECALL_MAX_RELEVANT   = 5
 MEMORY_RECALL_MAX_BODY_CHARS = 800
 
-# ── 记忆向量检索（Phase 17M）────────────────────────────────────
-# 端点配置。留空 = 关闭向量路，召回退回「LLM 选序号 → 2-gram 关键词」（与 17M 前一致）。
-# 密钥不进本文件，只从环境变量 EMBEDDING_API_KEY 读（与 LLM_AUX_API_KEY 一致）。
+# ── 记忆向量检索 ────────────────────────────────────
+# 端点配置。留空 = 关闭向量路，召回退回「LLM 选序号 → 2-gram 关键词。
+# 密钥不进本文件，只从环境变量 EMBEDDING_API_KEY 读。
 EMBEDDING_MODEL_ID = ""
 EMBEDDING_BASE_URL = ""
-# 0 = 用服务端默认维度。512 是实测值（智谱 embedding-3 支持 dimensions=512，
-# 向量常驻内存比 2048 维省 4 倍：1000 条 2.0 MB vs 7.8 MB）。
+# 0 = 用服务端默认维度。
 # 服务端不支持该参数时会自动降级重试并学习实际维度（见 embeddings/openai_compat.py）。
 EMBEDDING_DIM     = 512
-EMBEDDING_BATCH   = 16   # 单次请求编码的文本条数（智谱实测 16 条稳定）
+EMBEDDING_BATCH   = 16   # 单次请求编码的文本条数
 EMBEDDING_TIMEOUT = 30
 
 # 召回模式：
 #   auto    —— 配了 embedding 就用「向量+关键词融合」，否则自动退回 LLM 选序号
 #   vector  —— 只用向量+关键词融合（不调 LLM），向量不可用时退回关键词
-#   llm     —— 强制用改造前的 LLM 选序号路径
+#   llm     —— 强制用 LLM 选序号路径
 #   keyword —— 只用 2-gram 关键词（**零外发的隐私模式**：记忆正文不出本机）
 MEMORY_RECALL_MODE = "auto"
 MEMORY_VECTOR_TOP_K = 12            # 进入融合的向量候选数（最终仍取 MAX_RELEVANT 条）
 MEMORY_RECALL_KEYWORD_WEIGHT = 0.3  # 关键词分在融合里的权重
-MEMORY_RECALL_TIMEOUT = 2.0         # 召回超时（秒）；超时降级为关键词结果，绝不阻塞 turn
-# 门控（默认全关）。实测 top1 只有 0.348~0.564，而"不相关"的 median 高达
-# 0.219~0.437，两区间重叠——**任何绝对阈值换模型即失效**，所以默认不门控。
+MEMORY_RECALL_TIMEOUT = 3.0         # 召回超时（秒）；超时降级为关键词结果
+
+# 门控（默认全关）。
 MEMORY_RECALL_MIN_SCORE  = 0.0   # <=0 关闭绝对阈值
 MEMORY_RECALL_MIN_MARGIN = 0.0   # <=0 关闭相对门（top1 - median 低于它视为"无区分"）
 
-# 索引文本取正文前 N 字（实测依据：只嵌 42 字的 description 时平均 top1-median
-# 间距 0.132；加上正文前 300 字后升到 0.145，且 persona 类查询的 top1 由错误项纠正）。
+# 索引文本取正文前 N 字
 MEMORY_INDEX_TEXT_BODY_CHARS = 300
 
-# 提取去重视图：用向量检索出的相关记忆替代 `existing_catalog[:4000]` 硬截断
-# （4000 字符折算约 32 条，之后后半记忆对提取完全失明 → 同一事实反复提取）。
+# 提取去重视图
 MEMORY_EXTRACT_CATALOG_TOP_N = 8
 MEMORY_EXTRACT_CATALOG_TOKENS = 1_500
 
-# 整合预筛：只把「近重复候选对」交给模型判断 keep/merge/drop，替代全量正文灌 prompt
-# （300 条时实测 68k tokens，小模型上下文必爆）。
+# 整合预筛：只把「近重复候选对」交给模型判断 keep/merge/drop
 MEMORY_CONSOLIDATE_MIN_SIM  = 0.86  # 两两余弦达到此值才视为近重复候选
 MEMORY_CONSOLIDATE_FULL_MAX = 40    # 记忆数低于此值时保留全量行为（小库上全量更准）
 
-# ── 记忆账本与召回留痕（v2 P0）───────────────────────────────────
-# 每轮召回写一行 memory_recall_log（候选集/实际注入/影子门控/耗时）。量级：
-# 含 top-12 候选约 1~2 KB/行，1000 轮 1~2 MB。**没有它，门控与重排的任何调参
-# 都无法评估**，所以它和"数据安全"同属 P0。
+# 记忆召回日志保留天数
 MEMORY_RECALL_LOG_RETENTION_DAYS = 30   # <=0 = 永久保留
 # 软删/被合并的条目先落在这里，可 restore；真删只有两个入口（保留期 GC / 用户显式）。
 MEMORY_TRASH_RETENTION_DAYS = 90        # <=0 = 永久保留墓碑
@@ -137,7 +126,7 @@ AGENT_MAX_ITERATIONS = 50
 # ── 子 Agent 委派 ─────────────────────────────────────────────────
 SUBAGENT_MAX_DEPTH      = 3   # 子 Agent 嵌套层数（不含 root）
 SUBAGENT_MAX_TOTAL      = 8   # 单个 root turn 全树委派总数上限
-SUBAGENT_MAX_ITERATIONS = 20  # 子 Agent ReAct 循环上限
+SUBAGENT_MAX_ITERATIONS = 50  # 子 Agent ReAct 循环上限
 
 # ── WebSocket 服务器 ─────────────────────────────────────────────
 WS_HOST          = "127.0.0.1"
@@ -149,21 +138,17 @@ PORT_RETRY_COUNT = 20
 WS_ALLOW_NON_LOOPBACK = False
 
 # ── 日志 ─────────────────────────────────────────────────────────
-# 业务/诊断日志走 logging → stderr；stdout 留给启动横幅与 CLI 交互（见 logging_setup.py）
 LOG_LEVEL = "INFO"
 
 # ── 工具权限审批 ─────────────────────────────────────────────────
 # 用户点击允许/拒绝的等待上限；超时按「拒绝」处理并向前端推 permission_expired 撤回弹窗。
-# 审批是 await 一个 Future，不占用任何线程，超时值可以放宽松（不像旧的线程阻塞式
-# 设计那样要考虑线程占用）。
 PERMISSION_ASK_TIMEOUT = 300
 
 # ── LLM ─────────────────────────────────────────────────────────
 LLM_TEMPERATURE  = 0.7
 LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，OpenAI 可选）
 
-# LLM 调用留档：把每次真实调用的请求参数/响应结果写到 LLM_TRACE_JSONL。
-# 默认关闭（避免日常运行堆积文件），排查「模型侧 vs 代码侧」问题时打开。
+# LLM 调用留档
 LLM_TRACE_ENABLED = False
 
 # ── 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）──────────────
@@ -202,7 +187,7 @@ TOOL_AUDIT_ARGS_MAX_CHARS = 500    # 审计中参数串的最大长度（超出�
 
 # ── 用量与成本追踪 ───────────────────────
 # 价目表覆盖：{ "model_id": {"input": 美元/百万token, "output": 美元/百万token} }
-# 空 dict = 只用内置默认价目表。查不到的模型前端显示「无价目」，不编造成本。
+# 空 dict = 只用内置默认价目表。查不到的模型前端显示「无价目」
 USAGE_PRICING = {}
 
 # ── 自我验证（verify 工具） ──────────────────────────
@@ -234,14 +219,8 @@ DB_WAL_AUTOCHECKPOINT_PAGES  = 512
 
 LLM_TRACE_MAX_BYTES = 20 * 1024 * 1024     # 留档 JSONL 超过此体积轮转（0 = 不轮转）
 
-# 行数保留期（天）。<=0 表示不裁剪（永久保留）。
-# 两者分开定是因为性质不同：model_usage 是聚合数据（一个 turn 一行），增长极慢，
-# 且是成本审计凭证（删会话时刻意保留了 session_id），所以给长保留期；
-# tool_audit 是每次工具调用的明细，增长快得多，而它作为排查材料的价值随时间快速衰减。
-# 裁剪挂在启动后台维护线程里跑，不占启动路径（否则 Electron 就绪探测会超时）。
 USAGE_RETENTION_DAYS = 90      # model_usage 明细保留天数
 AUDIT_RETENTION_DAYS = 30      # tool_audit 明细保留天数（SQLite + JSONL 同步）
-
 
 # ── 运行时配置对象（支持 settings.json 覆盖） ──────────────────────
 
@@ -252,7 +231,6 @@ _OVERRIDABLE = {
     "BASH_TIMEOUT", "BASH_MAX_TIMEOUT", "GIT_TIMEOUT",
     "FILE_READ_MAX_LINES", "FILE_READ_MAX_BYTES",
     "FILE_EDIT_MAX_SIZE", "FILE_WRITE_MAX_BYTES", "TOOL_MAX_OUTPUT",
-    "BASH_MAX_OUTPUT",  # 弃用别名 → TOOL_MAX_OUTPUT（见 _DEPRECATED_ALIASES）
     "GREP_MAX_RESULTS", "GREP_MAX_FILE_SIZE", "LS_MAX_ENTRIES",
     "GREP_CONTEXT_LINES", "LS_DEPTH", "GIT_LOG_COUNT", "SCREENSHOT_MONITOR",
     "SCREENSHOT_KEEP_MAX",
@@ -302,7 +280,7 @@ _falsy_tokens = frozenset({"false", "0", "no", "n", "off", "disable", "disabled"
 
 # 配置项改名后的旧名映射：旧名仍可写进 settings.json（向后兼容），但会告警提示更新
 _DEPRECATED_ALIASES = {
-    "BASH_MAX_OUTPUT": "TOOL_MAX_OUTPUT",
+
 }
 
 
@@ -373,7 +351,7 @@ class _Config:
         if load_error:
             _warn(load_error)
         for raw_key, value in overrides.items():
-            # 弃用别名（BASH_MAX_OUTPUT → TOOL_MAX_OUTPUT）：旧名仍生效但必须告警
+            # 弃用别名：旧名仍生效但必须告警
             key = _DEPRECATED_ALIASES.get(raw_key, raw_key)
             if raw_key in _DEPRECATED_ALIASES:
                 _warn(
