@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from ..config import cfg
 from ..context import ContextCompressor, TokenTracker, prune_tool_outputs
 from ..context.compressor import _SUMMARY_MARKER
-from ..core.exceptions import AgentException, LLMException
+from ..core.exceptions import AgentException, BaseAgentException, LLMException
 from ..core.llm import BaseAgentLLM, get_aux_llm
 from ..events.bus import EventBus
 from ..events.types import (
@@ -313,6 +313,8 @@ class KittyAgent(Agent):
                                     event.usage, turn.tracker, turn.cooldown_until, turn.ineffective_count
                                 )
                                 did_compress = False
+                except BaseAgentException:
+                    raise  # llm.py 已经包过一次，不再重复包装前缀
                 except Exception as e:
                     raise LLMException(f"LLM流式调用失败: {e}") from e
 

@@ -228,6 +228,24 @@ async def test_wraps_llm_error_and_keeps_cause():
     assert isinstance(exc.value.__cause__, ValueError)  # 异常链不能丢
 
 
+async def test_does_not_double_wrap_llm_exception():
+    """`llm.py` 已经把供应商错误包成 LLMException——这里不能再包一层，
+    否则用户看到的提示会变成"LLM流式调用失败: LLM流式调用失败: ..."。"""
+    class _Boom(_ScriptedLLM):
+        async def async_stream_with_tools(self, messages, tools=None, **kwargs):
+            raise LLMException("LLM流式调用失败: <400> DataInspectionFailed")
+            yield  # 不可达；仅用于让函数体含 yield，成为异步生成器
+
+    agent, _, _ = make_agent([("unused", [])])
+    agent.llm = _Boom([("unused", [])])
+
+    with pytest.raises(LLMException) as exc:
+        await run_agent(agent)
+
+    assert str(exc.value) == "LLM流式调用失败: <400> DataInspectionFailed"
+    assert str(exc.value).count("LLM流式调用失败") == 1
+
+
 async def test_history_seq_marks_are_stripped_before_the_llm_call():
     """历史消息上的 `_seq` 只用于落库对账，必须在调 LLM 前剥掉（`_strip_internal`）。"""
     rows = [
