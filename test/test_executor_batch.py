@@ -275,7 +275,7 @@ def test_builtin_concurrency_flags_match_guardrail_classification():
             B.BashTool, B.ClipboardTool, B.FileEditTool, B.FileReadTool,
             B.FileWriteTool, B.GetCurrentTimeTool, B.GitTool, B.GlobTool,
             B.GrepTool, B.LsTool, B.ScreenshotTool, B.TaskTool,
-            B.VerifyTool, B.WriteMemoryTool,
+            B.VerifyTool, B.WriteMemoryTool, B.WebSearchTool,
         )
     }
     # 覆盖：每个注册工具必须被分类（漏一个 = 并发调度或守护栏统计的盲区）

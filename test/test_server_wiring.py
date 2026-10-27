@@ -14,7 +14,7 @@ BUILTIN_TOOL_NAMES = {
     "get_current_time", "ls", "glob", "grep",
     "file_read", "file_write", "file_edit",
     "git", "bash", "screenshot", "clipboard",
-    "write_memory", "verify",
+    "write_memory", "verify", "web_search",
 }
 
 

@@ -120,6 +120,15 @@ MEMORY_RECALL_LOG_RETENTION_DAYS = 30   # <=0 = 永久保留
 # 软删/被合并的条目先落在这里，可 restore；真删只有两个入口（保留期 GC / 用户显式）。
 MEMORY_TRASH_RETENTION_DAYS = 90        # <=0 = 永久保留墓碑
 
+# ── 联网搜索 ──────────────────────────────────────────
+# 后端选择。留空 = 关闭，web_search 工具返回"未配置"提示而不是报错中断主流程。
+# 密钥只从环境变量 WEB_SEARCH_API_KEY 读。
+WEB_SEARCH_BACKEND = "tavily"        # "" | "tavily" | "bing" | "searxng"
+# SearXNG 必填（指向自建实例）；Tavily/Bing 留空用各自官方默认端点。
+WEB_SEARCH_BASE_URL = ""
+WEB_SEARCH_MAX_RESULTS = 5     # 硬上限：防止模型传一个离谱的 top_k 把结果塞爆上下文
+WEB_SEARCH_TIMEOUT = 10
+
 # ── Agent ────────────────────────────────────────────────────────
 AGENT_MAX_ITERATIONS = 50
 
@@ -238,6 +247,7 @@ _OVERRIDABLE = {
     "MEMORY_RECALL_MAX_RELEVANT", "MEMORY_RECALL_MAX_BODY_CHARS",
     "EMBEDDING_MODEL_ID", "EMBEDDING_BASE_URL", "EMBEDDING_DIM",
     "EMBEDDING_BATCH", "EMBEDDING_TIMEOUT",
+    "WEB_SEARCH_BACKEND", "WEB_SEARCH_BASE_URL", "WEB_SEARCH_MAX_RESULTS", "WEB_SEARCH_TIMEOUT",
     "MEMORY_RECALL_MODE", "MEMORY_VECTOR_TOP_K", "MEMORY_RECALL_KEYWORD_WEIGHT",
     "MEMORY_RECALL_TIMEOUT", "MEMORY_RECALL_MIN_SCORE", "MEMORY_RECALL_MIN_MARGIN",
     "MEMORY_INDEX_TEXT_BODY_CHARS",

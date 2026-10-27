@@ -33,6 +33,7 @@ from kittymind.tools.builtin.get_current_time_tool import GetCurrentTimeTool
 from kittymind.tools.builtin.write_memory_tool import WriteMemoryTool
 from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
+from kittymind.tools.builtin.web_search_tool import WebSearchTool
 from kittymind.memory.store import MemoryStore
 from kittymind.logging_setup import setup_logging
 from kittymind.config import cfg
@@ -64,7 +65,7 @@ logger = logging.getLogger(__name__)
 def build_agent(bridge: PermissionBridge) -> KittyAgent:
     llm = BaseAgentLLM()
     memory_store = MemoryStore()
-    # 工具集与 CLI（chat_async.py）保持一致：13 个内置工具 + task 委派
+    # 工具集与 CLI（chat_async.py）保持一致：14 个内置工具 + task 委派
     base_tools = [
         GetCurrentTimeTool(),
         LsTool(),
@@ -79,6 +80,7 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         ClipboardTool(),
         WriteMemoryTool(memory_store),
         VerifyTool(),
+        WebSearchTool(),
     ]
     # bus 必须先建，再同时传给 TaskTool 和 KittyAgent——子事件要发到同一个总线
     bus  = EventBus()

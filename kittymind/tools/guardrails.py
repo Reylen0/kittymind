@@ -31,7 +31,7 @@ from ..config import cfg
 # 而不是给下面的判断加回 `and name not in MUTATING_TOOLS`（那是恒真冗余）。
 
 IDEMPOTENT_TOOLS: frozenset[str] = frozenset({
-    "file_read", "glob", "grep", "ls", "get_current_time",
+    "file_read", "glob", "grep", "ls", "get_current_time", "web_search",
 })
 
 MUTATING_TOOLS: frozenset[str] = frozenset({

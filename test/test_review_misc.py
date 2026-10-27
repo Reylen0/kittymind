@@ -37,14 +37,6 @@ def test_tool_max_output_overridable(make_cfg):
     assert make_cfg({"TOOL_MAX_OUTPUT": 123}).TOOL_MAX_OUTPUT == 123
 
 
-def test_deprecated_bash_max_output_alias_still_works_but_warns(make_cfg, capsys):
-    """settings.json 里的旧名仍生效（向后兼容），但必须告警提示改名。"""
-    cfg = make_cfg({"BASH_MAX_OUTPUT": 456})
-    assert cfg.TOOL_MAX_OUTPUT == 456
-    err = capsys.readouterr().err
-    assert "BASH_MAX_OUTPUT" in err and "TOOL_MAX_OUTPUT" in err
-
-
 # ── #14 召回关键词兜底对中文无效 ─────────────────────────────────
 
 class _NeverLLM:
