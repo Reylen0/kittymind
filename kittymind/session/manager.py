@@ -165,6 +165,17 @@ class SessionManager:
         """归档 / 取消归档（只影响侧栏可见性，不删数据）。"""
         return self.store.set_archived(session_id, archived)
 
+    def rename_session(self, session_id: str, title: str) -> bool:
+        """重命名会话标题，返回是否命中了会话。
+
+        空标题（或全是空白）拒绝执行，不静默落成空字符串——侧栏标题列为空会
+        整行塌陷成看不出是哪个会话。
+        """
+        clean = (title or "").strip()
+        if not clean:
+            return False
+        return self.store.update_header(session_id, {"title": clean})
+
     def clear_workspace(self, workspace_id: str) -> int:
         """删工作区时解除其下会话的归属（会话保留，移回「对话」分组）。"""
         return self.store.clear_workspace(workspace_id)

@@ -480,3 +480,65 @@ async def test_session_list_ignores_truthy_string_for_include_archived(tmp_path)
     await handler.dispatch({"id": 1, "method": "session/list",
                             "params": {"include_archived": "false"}})
     assert ws.sent[0]["result"] == []
+
+
+# ──────────────────────────────────────────────────────────────
+# session/rename
+# ──────────────────────────────────────────────────────────────
+
+async def test_session_rename_updates_title(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    sid = agent.session_manager.create_session(title="旧名")
+
+    await handler.dispatch({"id": 1, "method": "session/rename",
+                            "params": {"session_id": sid, "title": "新名"}})
+    assert ws.sent[0]["result"] == {"ok": True, "title": "新名"}
+
+    await handler.dispatch({"id": 2, "method": "session/list", "params": {}})
+    assert ws.sent[1]["result"][0]["title"] == "新名"
+
+
+async def test_session_rename_strips_whitespace(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    sid = agent.session_manager.create_session(title="旧名")
+
+    await handler.dispatch({"id": 1, "method": "session/rename",
+                            "params": {"session_id": sid, "title": "  新名  "}})
+    assert ws.sent[0]["result"] == {"ok": True, "title": "新名"}
+
+
+async def test_session_rename_unknown_id_reports_not_ok(tmp_path):
+    """如实返回：改不存在的会话给 ok=false，不谎报成功。"""
+    ws = FakeWs()
+    handler = RpcHandler(make_mock_agent(tmp_path), ws)
+
+    await handler.dispatch({"id": 1, "method": "session/rename",
+                            "params": {"session_id": "nope", "title": "新名"}})
+    assert ws.sent[0]["result"] == {"ok": False, "title": "新名"}
+
+
+async def test_session_rename_requires_session_id(tmp_path):
+    ws = FakeWs()
+    handler = RpcHandler(make_mock_agent(tmp_path), ws)
+
+    await handler.dispatch({"id": 1, "method": "session/rename",
+                            "params": {"title": "新名"}})
+    assert ws.sent[0].get("error") is not None
+
+
+async def test_session_rename_rejects_blank_title(tmp_path):
+    """空标题（或全空白）直接报错，不静默落成空字符串。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+    sid = agent.session_manager.create_session(title="旧名")
+
+    await handler.dispatch({"id": 1, "method": "session/rename",
+                            "params": {"session_id": sid, "title": "   "}})
+    assert ws.sent[0].get("error") is not None
+    assert agent.session_manager.get_session_header(sid)["title"] == "旧名"
+

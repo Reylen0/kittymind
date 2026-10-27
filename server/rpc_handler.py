@@ -44,6 +44,7 @@ class RpcHandler:
             "session/search":           self._session_search,
             "session/delete":           self._session_delete,
             "session/archive":          self._session_archive,
+            "session/rename":           self._session_rename,
             "agent/status":             self._agent_status,
             "usage/report":             self._usage_report,
             "workspace/list":           self._workspace_list,
@@ -346,6 +347,23 @@ class RpcHandler:
         ok = mgr.set_archived(session_id, archived)
         # ok=False = 会话不存在；archived 是**目标状态**，不是成功标志（避免歧义）
         await self._result(req_id, {"ok": ok, "archived": archived})
+
+    async def _session_rename(self, req_id: Any, params: dict) -> None:
+        """重命名会话标题。"""
+        mgr = self._mgr()
+        if not mgr:
+            await self._error(req_id, "no session manager configured")
+            return
+        session_id = params.get("session_id")
+        if not session_id:
+            await self._error(req_id, "session_id is required")
+            return
+        title = (params.get("title") or "").strip()
+        if not title:
+            await self._error(req_id, "title is required")
+            return
+        ok = mgr.rename_session(session_id, title)
+        await self._result(req_id, {"ok": ok, "title": title})
 
     # ──────────────────────────────────────────────────────────────
     # agent/status

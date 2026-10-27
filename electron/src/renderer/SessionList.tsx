@@ -15,6 +15,8 @@ interface Props {
   onDeleteWorkspace: (id: string) => void
   /** 归档 / 取消归档（只收起，不删数据） */
   onArchive:   (id: string, archived: boolean) => void
+  /** 重命名标题 */
+  onRename:    (id: string, title: string) => void
   onToggleArchived: () => void
   onToggle:    () => void
 }
@@ -84,6 +86,15 @@ function IcoArchive() {
   )
 }
 
+function IcoEdit() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9.4 1.8l2.8 2.8-7.6 7.6-3.1.6.6-3.1z"/>
+      <line x1="8.1" y1="3.1" x2="10.9" y2="5.9"/>
+    </svg>
+  )
+}
+
 function IcoGear() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -128,30 +139,76 @@ function revealSessionItem(box: HTMLElement, el: HTMLElement) {
   else if (r.bottom > c.bottom) box.scrollTop += r.bottom - c.bottom + MARGIN
 }
 
-function SessionItem({ s, currentId, onSelect, onAskDelete, onToggleArchive }: {
+function SessionItem({ s, currentId, onSelect, onAskDelete, onToggleArchive, onRename }: {
   s: Session; currentId: string | null
   onSelect: (id: string) => void
   onAskDelete: (s: Session) => void
   onToggleArchive: (s: Session) => void
+  onRename: (id: string, title: string) => void
 }) {
   const archived = !!s.archived
+  const displayTitle = s.title || '新对话'
+  const [editing, setEditing] = useState(false)
+  const [draft,   setDraft]   = useState(displayTitle)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!editing) return
+    const el = inputRef.current
+    el?.focus()
+    el?.select()
+  }, [editing])
+
+  function startEditing() {
+    setDraft(displayTitle)
+    setEditing(true)
+  }
+
+  function commit() {
+    const next = draft.trim()
+    setEditing(false)
+    if (next && next !== displayTitle) onRename(s.id, next)
+  }
+
   return (
     <div
       className={`session-item${s.id === currentId ? ' active' : ''}${archived ? ' archived' : ''}`}
       data-sid={s.id}
-      onClick={() => onSelect(s.id)}
+      onClick={() => !editing && onSelect(s.id)}
     >
-      <span className="session-title" title={archived ? `${s.title || '新对话'}（已归档）` : undefined}>
-        {s.title || '新对话'}
-      </span>
-      {/* 悬浮才出现的两个按钮。归档在前、删除在后：删除是破坏性操作，放最右边
-          远离视线中心，减少误点。归档只收起不删数据，所以不弹确认。 */}
+      {editing ? (
+        <input
+          ref={inputRef}
+          className="session-title-input"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onClick={e => e.stopPropagation()}
+          onBlur={commit}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Enter') commit()
+            else if (e.key === 'Escape') setEditing(false)
+          }}
+        />
+      ) : (
+        <span className="session-title" title={archived ? `${displayTitle}（已归档）` : undefined}>
+          {displayTitle}
+        </span>
+      )}
+      {/* 悬浮才出现的三个按钮：重命名最靠视线中心，删除是破坏性操作放最右边，
+          减少误点。归档只收起不删数据、重命名不丢数据，所以都不弹确认，只有删除弹。 */}
+      {!editing && (
+        <button className="session-rename" title="重命名" aria-label={`重命名对话 ${displayTitle}`}
+          onClick={e => { e.stopPropagation(); startEditing() }}>
+          <IcoEdit />
+        </button>
+      )}
       <button className="session-archive" title={archived ? '取消归档' : '归档'}
-        aria-label={`${archived ? '取消归档' : '归档'}对话 ${s.title || '新对话'}`}
+        aria-label={`${archived ? '取消归档' : '归档'}对话 ${displayTitle}`}
         onClick={e => { e.stopPropagation(); onToggleArchive(s) }}>
         <IcoArchive />
       </button>
-      <button className="session-delete" title="删除" aria-label={`删除对话 ${s.title || '新对话'}`}
+      <button className="session-delete" title="删除" aria-label={`删除对话 ${displayTitle}`}
         onClick={e => { e.stopPropagation(); onAskDelete(s) }}>
         <IcoTrash />
       </button>
@@ -181,7 +238,7 @@ function Highlight({ text, marks }: { text: string; marks: Array<[number, number
 export default function SessionList({
   sessions, workspaces, currentId, sidebarOpen, showArchived,
   onSelect, onCreate, onDelete, onDeleteWorkspace,
-  onArchive, onToggleArchived, onToggle,
+  onArchive, onRename, onToggleArchived, onToggle,
 }: Props) {
   const [searching,         setSearching]         = useState(false)
   const [query,             setQuery]             = useState('')
@@ -410,6 +467,7 @@ export default function SessionList({
               {filteredFree.map(s => (
                 <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
                   onToggleArchive={x => onArchive(x.id, !x.archived)}
+                  onRename={onRename}
                   onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
               ))}
               {filteredFree.length === 0 && !query && (
@@ -456,6 +514,7 @@ export default function SessionList({
                     {filteredWs.map(s => (
                       <SessionItem key={s.id} s={s} currentId={currentId} onSelect={onSelect}
                         onToggleArchive={x => onArchive(x.id, !x.archived)}
+                        onRename={onRename}
                         onAskDelete={x => setConfirmTarget({ kind: 'session', id: x.id, name: x.title || '新对话' })} />
                     ))}
                     {filteredWs.length === 0 && (

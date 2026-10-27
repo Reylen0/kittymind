@@ -635,3 +635,44 @@ def test_manager_set_archived_and_list(mgr):
     assert mgr.set_archived(sid, False) is True
     assert [s["id"] for s in mgr.list_sessions()] == [sid]
 
+
+# ── 会话重命名 ─────────────────────────────────────────────────────
+
+def test_store_update_header_renames_title(store):
+    store.write_header("s1", {"title": "旧名", "created_at": _CREATED})
+    assert store.update_header("s1", {"title": "新名"}) is True
+    assert store.read_header("s1")["title"] == "新名"
+
+
+def test_store_update_header_unknown_session_returns_false(store):
+    assert store.update_header("nope", {"title": "新名"}) is False
+
+
+def test_store_update_header_no_allowed_fields_returns_false(store):
+    """只给了不在白名单里的字段（或空字典）→ 没有列可更新，直接返回 False。"""
+    store.write_header("s1", {"title": "a", "created_at": _CREATED})
+    assert store.update_header("s1", {"created_at": "改不了"}) is False
+
+
+def test_manager_rename_session(mgr):
+    sid = mgr.create_session(title="旧名")
+    assert mgr.rename_session(sid, "新名") is True
+    assert mgr.get_session_header(sid)["title"] == "新名"
+
+
+def test_manager_rename_strips_whitespace(mgr):
+    sid = mgr.create_session(title="旧名")
+    assert mgr.rename_session(sid, "  带空格的新名  ") is True
+    assert mgr.get_session_header(sid)["title"] == "带空格的新名"
+
+
+def test_manager_rename_rejects_blank_title(mgr):
+    """空标题拒绝执行，不静默落成空字符串——原标题必须原样保留。"""
+    sid = mgr.create_session(title="旧名")
+    assert mgr.rename_session(sid, "   ") is False
+    assert mgr.get_session_header(sid)["title"] == "旧名"
+
+
+def test_manager_rename_unknown_session_returns_false(mgr):
+    assert mgr.rename_session("nope", "新名") is False
+

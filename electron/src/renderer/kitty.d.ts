@@ -47,6 +47,8 @@ declare global {
       deleteSession(sessionId: string): Promise<{ deleted: boolean }>
       /** 归档 / 取消归档：只影响侧栏可见性，数据一行不删（ok=false = 会话不存在） */
       setSessionArchived(sessionId: string, archived?: boolean): Promise<{ ok: boolean; archived: boolean }>
+      /** 重命名会话标题（ok=false = 会话不存在；空标题由调用方校验，不应发出） */
+      renameSession(sessionId: string, title: string): Promise<{ ok: boolean; title: string }>
       /** 全文搜索历史消息；结果按会话分组，每组带若干命中片段 */
       searchSessions(query: string, opts?: { sessionId?: string; limit?: number }): Promise<SearchGroup[]>
 

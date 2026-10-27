@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('kitty', {
       method: 'session/archive',
       params: { session_id: sessionId, archived },
     }),
+  renameSession: (sessionId, title) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'session/rename',
+      params: { session_id: sessionId, title },
+    }),
   // 全文搜索历史消息（结果按会话分组）
   // opts.sessionId → 只搜这个会话（省略 = 搜全部会话）
   // opts.limit     → 命中条数上限（省略 = 服务端默认上限）

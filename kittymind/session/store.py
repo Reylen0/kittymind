@@ -989,17 +989,19 @@ class SqliteSessionStore:
                 self._conn.execute("ROLLBACK")
                 raise
 
-    def update_header(self, session_id: str, updates: dict) -> None:
+    def update_header(self, session_id: str, updates: dict) -> bool:
+        """返回是否命中了会话（不存在，或没给任何可更新字段 → False）。"""
         allowed = {"title", "workspace_id"}
         cols = {k: v for k, v in updates.items() if k in allowed}
         if not cols:
-            return
+            return False
         set_clause = ", ".join(f"{k}=?" for k in cols)
         with self._lock:
-            self._conn.execute(
+            cur = self._conn.execute(
                 f"UPDATE sessions SET {set_clause}, updated_at=? WHERE id=?",
                 (*cols.values(), self._now_iso(), session_id),
             )
+            return cur.rowcount > 0
 
     def exists(self, session_id: str) -> bool:
         with self._lock:

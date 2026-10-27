@@ -233,6 +233,11 @@ w.kitty = {
     else archivedIds.delete(id)
     return { ok: true, archived }
   },
+  renameSession: async (id: string, title: string) => {
+    const s = mockSessions.find(s => s.id === id)
+    if (s) s.title = title
+    return { ok: !!s, title }
+  },
   // ?search 场景给固定结果；其余场景返回空数组（等价于「没搜到」）。
   // 带 200ms 延迟，好观察防抖与「搜索中…」占位。
   searchSessions: async (query: string) => {

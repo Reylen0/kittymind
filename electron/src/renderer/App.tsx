@@ -90,6 +90,11 @@ export default function App() {
     await loadSessions()
   }
 
+  async function renameSession(id: string, title: string) {
+    await window.kitty?.renameSession(id, title)
+    await loadSessions()
+  }
+
   // 删工作区：会话保留（后端已解除归属移回「对话」），这里同步两侧列表。
   // 若当前正在看的会话属于该工作区，它的数据没变，无需切换 currentId。
   async function deleteWorkspace(id: string) {
@@ -113,6 +118,7 @@ export default function App() {
           onDelete={deleteSession}
           onDeleteWorkspace={deleteWorkspace}
           onArchive={archiveSession}
+          onRename={renameSession}
           onToggleArchived={() => setShowArchived(v => !v)}
           onToggle={() => setSidebarOpen(v => !v)}
         />

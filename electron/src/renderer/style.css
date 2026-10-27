@@ -98,3 +98,7 @@
 .btn-confirm-danger:hover{filter:brightness(1.08)}
 .md-streaming{white-space:pre-wrap;word-break:break-word}
 [data-theme=dark] .confirm-overlay{background:rgba(0,0,0,.55)}
+.session-rename{display:flex;align-items:center;justify-content:center;flex-shrink:0;opacity:0;background:none;border:none;color:var(--text-3);cursor:pointer;padding:3px;border-radius:5px;line-height:1;transition:opacity .12s,background .1s,color .1s}
+.session-item:hover .session-rename{opacity:1}
+.session-rename:hover{background:var(--surface-3);color:var(--text)}
+.session-title-input{flex:1;min-width:0;background:var(--surface);border:1px solid var(--accent);border-radius:5px;padding:1px 5px;font-family:var(--font-sidebar);font-size:13.5px;color:var(--text);outline:none}
