@@ -51,7 +51,7 @@ class TokenTracker:
         """收到真实 API usage 时校准。"""
         pt = usage.get("prompt_tokens")
         if pt is not None:
-            self._last_prompt_tokens = int(pt)
+            self._last_prompt_tokens = int(pt) + int(usage.get("completion_tokens") or 0)
 
     def ratio(self, messages: list[dict]) -> float:
         """当前 messages 占有效窗口的比例（0.0~1.0+）。"""

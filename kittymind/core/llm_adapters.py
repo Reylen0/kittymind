@@ -7,7 +7,7 @@ from typing import ClassVar
 
 from .llm_json import parse_tool_arguments
 from .llm_response import LLMResponse, StreamEvent
-from .llm_trace import get_llm_trace_log
+from .llm_trace import get_llm_trace_log, trace_level
 from ..config import cfg
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class BaseLLMAdapter(ABC):
     async def async_stream_with_tools(self, messages: list[dict], tools: list[dict] | None = None, **kwargs):
         raise NotImplementedError
 
-    # ── 留档辅助（默认关闭，见 llm_trace.get_llm_trace_log） ──────
+    # ── 留档辅助（默认 on_error，见 llm_trace.get_llm_trace_log） ──
 
     def _trace(self, *, request: dict, response: dict | None = None,
                error: str | None = None, t0: float) -> None:
@@ -59,6 +59,8 @@ class BaseLLMAdapter(ABC):
         trace = get_llm_trace_log()
         if trace is None:
             return
+        if trace_level() == "on_error" and error is None:
+            return  # 这次调用成功，on_error 级别下不留档
         trace.record(
             model=self.model,
             base_url=self.base_url or "",
@@ -350,6 +352,17 @@ class AnthropicAdapter(BaseLLMAdapter):
             params["tools"] = ant_tools
         return params
 
+    # ── 用量：缓存命中时 prompt token 拆成三段 ──────────────────────
+
+    @staticmethod
+    def _prompt_tokens_from_usage(usage) -> int:
+        """Anthropic 的 prompt token 在启用 cache_control 后拆成三段、互不重叠"""
+        return (
+            (usage.input_tokens or 0)
+            + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            + (getattr(usage, "cache_read_input_tokens", 0) or 0)
+        )
+
     # ── 响应转换：tool_use 块 → 内部格式 ──────────────────────────
 
     @staticmethod
@@ -386,7 +399,13 @@ class AnthropicAdapter(BaseLLMAdapter):
         text, tool_calls = self._parse_content_blocks(resp.content)
         self._trace(
             request=params,
-            response={"content": text, "tool_calls": tool_calls},
+            response={
+                "content": text, "tool_calls": tool_calls,
+                "usage": {
+                    "prompt_tokens": self._prompt_tokens_from_usage(resp.usage),
+                    "completion_tokens": resp.usage.output_tokens,
+                },
+            },
             t0=t0,
         )
         return LLMResponse(content=text, tool_calls=tool_calls)
@@ -413,7 +432,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             async for event in stream:
                 etype = event.type
                 if etype == "message_start":
-                    input_tokens = event.message.usage.input_tokens
+                    input_tokens = self._prompt_tokens_from_usage(event.message.usage)
                 elif etype == "content_block_start":
                     cb = event.content_block
                     if cb.type == "tool_use":

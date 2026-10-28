@@ -157,8 +157,9 @@ PERMISSION_ASK_TIMEOUT = 300
 LLM_TEMPERATURE  = 0.7
 LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，OpenAI 可选）
 
-# LLM 调用留档
-LLM_TRACE_ENABLED = False
+# LLM 调用留档级别："off"（不记录）/ "on_error"（仅调用失败时记录，默认）/
+# "all"（成功失败都记录）。排查疑难问题时按需调高，默认只记错误避免日常堆积文件。
+LLM_TRACE_LEVEL = "on_error"
 
 # ── 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）──────────────
 # 留空 = 不启用，上述辅助任务回退主模型（与旧行为一致）。
@@ -260,7 +261,7 @@ _OVERRIDABLE = {
     "PERMISSION_ASK_TIMEOUT",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
-    "LLM_TRACE_ENABLED",
+    "LLM_TRACE_LEVEL",
     "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",
     "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",
     "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",

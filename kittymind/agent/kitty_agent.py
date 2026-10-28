@@ -578,12 +578,7 @@ class KittyAgent(Agent):
         cooldown_until: float,
         ineffective_count: int,
     ) -> tuple[float, int]:
-        pt = usage.get("prompt_tokens", 0)
-        # 分母必须与触发压缩的闸门一致（_compression_trigger 用 tracker.ratio，
-        # 即 pt / effective_window）。原先用 LLM_CONTEXT_WINDOW（未减保留输出）
-        # 当分母，门槛偏高，pt 落在 [eff*0.7, window*0.7) 时占用比例其实仍
-        # ≥0.70（压缩没把它压下来），却会被漏判成"有效"而不计失败，连抖两次
-        # 也不进冷却。改用 effective_window 才能及时识别压不下去的情况。
+        pt = usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
         threshold = int(tracker.effective_window * cfg.COMPRESS_THRESHOLD_RATIO)
         if pt >= threshold:
             ineffective_count += 1

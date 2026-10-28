@@ -94,7 +94,7 @@ async def main():
             break
 
         print("KittyMind: ", end="", flush=True)
-        async for chunk in agent.async_stream_run(session_id, user_input):
+        async for chunk in agent.run_conversation(session_id, user_input):
             print(chunk, end="", flush=True)
         print()
 

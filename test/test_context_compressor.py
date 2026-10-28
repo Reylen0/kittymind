@@ -121,6 +121,23 @@ def test_second_compression_finds_existing_summary_in_mid(monkeypatch):
     assert prompt.count("第一次摘要") == 1, "已有摘要不应同时出现在 existing_summary 字段和历史渲染里"
 
 
+# ── update_from_usage：真实占用要把 completion 也算进去 ────────────
+
+def test_update_from_usage_sums_prompt_and_completion():
+    """只记 prompt_tokens 会漏掉这次新生成、马上要追加进历史的回复——
+    下一次调用看到的真实体量是 prompt + completion 之和。"""
+    tracker = TokenTracker(context_window=1000, reserved_output=100)
+    tracker.update_from_usage({"prompt_tokens": 500, "completion_tokens": 200})
+    assert tracker._last_prompt_tokens == 700
+
+
+def test_update_from_usage_without_completion_field_falls_back_to_prompt_only():
+    """旧网关/非流式路径可能压根不带 completion_tokens 字段，不应报错。"""
+    tracker = TokenTracker(context_window=1000, reserved_output=100)
+    tracker.update_from_usage({"prompt_tokens": 500})
+    assert tracker._last_prompt_tokens == 500
+
+
 # ── 溢出闸门必须量「当前列表」，不能用上一轮的实测值 ─────────────────
 
 def _failing_llm():
@@ -239,4 +256,30 @@ def test_anti_thrash_uses_effective_window_denominator(monkeypatch):
         {"prompt_tokens": int(900 * 0.70) - 1}, tracker, 0.0, 0
     )
     assert count == 0, "占用已降到触发阈值之下，应重置计数"
+
+
+def test_anti_thrash_counts_completion_tokens_too(monkeypatch):
+    """反抖动的分子也要和 ratio() 一致：prompt+completion，不是单纯 prompt。
+
+    tracker.ratio() 存的是 update_from_usage 里 prompt+completion 的和，
+    _check_anti_thrash 若只拿 prompt_tokens 比较，分子口径就和触发闸门
+    错位——prompt 本身不过阈值、但加上 completion 后其实已经过线的情况，
+    会被漏判成"压缩有效"。
+    """
+    monkeypatch.setattr(cfg, "LLM_CONTEXT_WINDOW", 1000)
+    monkeypatch.setattr(cfg, "LLM_RESERVED_OUTPUT_TOKENS", 100)
+    monkeypatch.setattr(cfg, "COMPRESS_THRESHOLD_RATIO", 0.70)
+    monkeypatch.setattr(cfg, "COMPRESS_COOLDOWN_SECONDS", 300)
+
+    agent = KittyAgent(name="t", llm=MagicMock(), aux_llm=None)
+    tracker = TokenTracker(1000, 100)  # effective = 900, threshold = 630
+
+    # prompt 单独不过线，但加上 completion 后过线
+    usage = {"prompt_tokens": 600, "completion_tokens": 50}
+    assert usage["prompt_tokens"] < int(900 * 0.70) <= usage["prompt_tokens"] + usage["completion_tokens"]
+
+    _, count = agent._check_anti_thrash(usage, tracker, 0.0, 0)
+    assert count == 1, "只看 prompt_tokens 会漏判——必须把 completion_tokens 也算进去"
+
+
 

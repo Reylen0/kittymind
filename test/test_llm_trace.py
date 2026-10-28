@@ -1,10 +1,11 @@
 """LLM 调用留档（llm_trace）测试。
 
 覆盖：
-  1. 开启时成功调用留档（含请求/响应/耗时/模型/base_url）；
+  1. LLMTraceLog.record 本身无条件写（级别判断不在这一层）；
   2. 异常调用也留档（error 字段）；
-  3. 关闭时不留档（返回 None 且不写文件）；
-  4. 留档不含 api_key（脱敏）。
+  3. 三档级别（off/on_error/all）通过 _trace() 端到端生效；
+  4. 非法级别值回退 on_error 并告警一次；
+  5. 留档不含 api_key（脱敏）。
 """
 
 import json
@@ -12,7 +13,7 @@ import json
 import pytest
 
 from kittymind.core import llm_trace as lt
-from kittymind.core.llm_trace import LLMTraceLog, get_llm_trace_log
+from kittymind.core.llm_trace import LLMTraceLog, get_llm_trace_log, trace_level
 
 
 @pytest.fixture
@@ -74,65 +75,127 @@ def test_record_never_raises_on_bad_path(tmp_path):
     log.record(model="m", base_url="", stream=False, request={})  # 不应抛出
 
 
-# ── get_llm_trace_log 开关 ────────────────────────────────────────
+# ── get_llm_trace_log / trace_level 级别 ──────────────────────────
 
-def test_trace_disabled_returns_none(monkeypatch):
-    monkeypatch.setattr(lt.cfg, "LLM_TRACE_ENABLED", False)
-    # 清掉可能的单例残留
+@pytest.fixture(autouse=True)
+def clean_trace_state(monkeypatch):
+    """每个用例前清掉单例与告警去重集合，避免跨用例互相污染。"""
     lt._instance[0] = None
+    lt._WARNED_LEVELS.clear()
+    yield
+    lt._instance[0] = None
+    lt._WARNED_LEVELS.clear()
+
+
+def test_trace_level_off_returns_none(monkeypatch):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "off")
     assert get_llm_trace_log() is None
 
 
-def test_trace_enabled_returns_singleton(monkeypatch, tmp_jsonl):
-    monkeypatch.setattr(lt.cfg, "LLM_TRACE_ENABLED", True)
+def test_trace_level_on_error_returns_singleton(monkeypatch, tmp_jsonl):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "on_error")
     monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
-    lt._instance[0] = None
     a = get_llm_trace_log()
     b = get_llm_trace_log()
     assert a is b
     assert a is not None
 
 
-def test_trace_request_excludes_api_key():
-    # 留档内容由适配器构造（不含 api_key）；这里验证 _trace 组装后的 request
-    # 不携带 key——直接检查适配器层不把 key 放进 request。
+def test_trace_level_all_returns_singleton(monkeypatch, tmp_jsonl):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "all")
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
+    assert get_llm_trace_log() is not None
+
+
+def test_trace_level_invalid_value_falls_back_to_on_error(monkeypatch, caplog):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "verbose")
+    assert trace_level() == "on_error"
+    assert "verbose" in caplog.text
+
+
+def test_trace_level_invalid_value_warns_once(monkeypatch, caplog):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "nope")
+    trace_level()
+    trace_level()
+    assert caplog.text.count("LLM_TRACE_LEVEL") == 1
+
+
+def _fake_openai_adapter(monkeypatch):
+    """构造一个 invoke 必定成功、不碰真实网络的 OpenAIAdapter。"""
     from kittymind.core.llm_adapters import OpenAIAdapter
-    adapter = OpenAIAdapter("m", "sk-SECRET-KEY", "https://x/", 10)
-    # 构造一次 invoke 请求并捕获留档（用假的 client 避免真实网络）
+
     class _Msg:
-        def __init__(self):
-            self.tool_calls = None
-            self.content = "ok"
+        tool_calls = None
+        content = "ok"
+
     class _Choice:
-        def __init__(self):
-            self.message = _Msg()
+        message = _Msg()
+
     class _Resp:
-        def __init__(self):
-            self.choices = [_Choice()]
+        choices = [_Choice()]
+
     class _Client:
-        def __init__(self):
-            self.chat = self
+        chat = None
+
         class completions:
             @staticmethod
             def create(**kw):
                 return _Resp()
+
+    _Client.chat = _Client
+    adapter = OpenAIAdapter("m", "sk-SECRET-KEY", "https://x/", 10)
     adapter._client = _Client()
-    import tempfile
-    from kittymind.config import cfg as _cfg
-    old_enabled, old_path = _cfg.LLM_TRACE_ENABLED, _cfg.LLM_TRACE_JSONL
-    try:
-        with tempfile.TemporaryDirectory() as d:
-            _cfg.LLM_TRACE_ENABLED = True
-            _cfg.LLM_TRACE_JSONL = __import__("pathlib").Path(d) / "t.jsonl"
-            lt._instance[0] = None
-            adapter.invoke([{"role": "user", "content": "hi"}])
-            row = _read_lines(_cfg.LLM_TRACE_JSONL)[0]
-            blob = json.dumps(row, ensure_ascii=False)
-            assert "sk-SECRET-KEY" not in blob
-    finally:
-        _cfg.LLM_TRACE_ENABLED = old_enabled
-        _cfg.LLM_TRACE_JSONL = old_path
-        lt._instance[0] = None
+    return adapter
+
+
+def test_trace_level_on_error_skips_successful_call(monkeypatch, tmp_jsonl):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "on_error")
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
+    adapter = _fake_openai_adapter(monkeypatch)
+
+    adapter.invoke([{"role": "user", "content": "hi"}])
+
+    assert not tmp_jsonl.exists() or _read_lines(tmp_jsonl) == []
+
+
+def test_trace_level_on_error_records_failed_call(monkeypatch, tmp_jsonl):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "on_error")
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
+    adapter = _fake_openai_adapter(monkeypatch)
+    adapter._client.chat.completions.create = lambda **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+
+    with pytest.raises(Exception):
+        adapter.invoke([{"role": "user", "content": "hi"}])
+
+    rows = _read_lines(tmp_jsonl)
+    assert len(rows) == 1
+    assert "boom" in rows[0]["error"]
+
+
+def test_trace_level_all_records_successful_call(monkeypatch, tmp_jsonl):
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "all")
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
+    adapter = _fake_openai_adapter(monkeypatch)
+
+    adapter.invoke([{"role": "user", "content": "hi"}])
+
+    rows = _read_lines(tmp_jsonl)
+    assert len(rows) == 1
+    assert rows[0]["error"] is None
+
+
+def test_trace_request_excludes_api_key(monkeypatch, tmp_jsonl):
+    # 留档内容由适配器构造（不含 api_key）；all 级别下成功调用也会写，
+    # 这里验证 _trace 组装后的 request 不携带 key。
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_LEVEL", "all")
+    monkeypatch.setattr(lt.cfg, "LLM_TRACE_JSONL", tmp_jsonl)
+    adapter = _fake_openai_adapter(monkeypatch)
+
+    adapter.invoke([{"role": "user", "content": "hi"}])
+
+    row = _read_lines(tmp_jsonl)[0]
+    blob = json.dumps(row, ensure_ascii=False)
+    assert "sk-SECRET-KEY" not in blob
 
 
 # ── 体积轮转（Phase 17：留档文件不能无限增长）─────────────────────

@@ -8,7 +8,10 @@
   - 追加写 JSONL，一行一个调用，便于 tail / jq / grep 排查；
   - 写入失败绝不影响 LLM 主流程（record 内部吞异常）；
   - 线程安全（invoke 可能经 to_thread 并发，异步流式也可能并行）。
-  - 默认关闭（LLM_TRACE_ENABLED=False），排查时打开，避免日常运行堆积文件。
+  - 三档级别（LLM_TRACE_LEVEL）：`off` 不记录；`on_error` 只记失败调用（默认，
+    日常运行不堆积文件又不丢排查线索）；`all` 成功失败都记。级别判断放在
+    调用方 `_trace()`（llm_adapters.py）而不是 `LLMTraceLog.record()`——
+    record 只管"写一行"，是否该写由上层按本次调用有没有 error 决定。
 
 记录内容不含 API key。messages 的 content 会截断，避免单条 trace 无限膨胀。
 """
@@ -16,14 +19,34 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import cfg
 
+logger = logging.getLogger(__name__)
+
 # 单条消息 content / 单次响应文本的截断上限（字符），超出打省略号
 _MAX_CONTENT_CHARS = 4_000
+
+TRACE_LEVELS = ("off", "on_error", "all")
+_WARNED_LEVELS: set[str] = set()
+
+
+def trace_level() -> str:
+    """规范化后的留档级别；非法值告警一次（同一错误值只告一次）并按 on_error 处理。"""
+    raw = str(cfg.LLM_TRACE_LEVEL or "").strip().lower()
+    if raw in TRACE_LEVELS:
+        return raw
+    if raw not in _WARNED_LEVELS:
+        _WARNED_LEVELS.add(raw)
+        logger.warning(
+            "LLM_TRACE_LEVEL=%r 不是合法级别（off/on_error/all），按 on_error 处理",
+            cfg.LLM_TRACE_LEVEL,
+        )
+    return "on_error"
 
 
 def _truncate(value: object, limit: int = _MAX_CONTENT_CHARS) -> object:
@@ -97,8 +120,13 @@ _instance_lock = threading.Lock()
 
 
 def get_llm_trace_log() -> LLMTraceLog | None:
-    """返回留档器；LLM_TRACE_ENABLED 为 False 时返回 None（调用方跳过留档）。"""
-    if not cfg.LLM_TRACE_ENABLED:
+    """返回留档器；级别为 off 时返回 None（调用方跳过留档）。
+
+    on_error/all 都要返回同一个单例——on_error 下"这次该不该写"由调用方
+    拿到的 error 决定，不是在这里就能判断的，所以级别只影响"要不要有这个
+    对象"，不影响"对象能不能写"（那是 record 的事，它始终无条件写）。
+    """
+    if trace_level() == "off":
         return None
     if _instance[0] is None:
         with _instance_lock:
