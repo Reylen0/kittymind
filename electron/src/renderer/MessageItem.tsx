@@ -100,35 +100,46 @@ export function ToolCard({ message }: { message: Message }) {
  * 一轮内的工具调用组：把同一批（相邻的 tool 消息）合并成一行摘要，
  * 默认只占一行（落在最终文本上方），点击展开为逐张工具卡。
  *
- * 展开状态：工具还在跑时自动展开（能实时看到调了什么），整组完成时自动收起；
- * 用户的点击优先于此默认值，直到下一次运行状态变化。
+ * 展开状态：第一批工具还在跑时自动展开（能实时看到调了什么），跑完自动收起
+ * 一次——此后无论用户点过还是任其自动收起，这个决定都定住不再变：模型在
+ * 同一轮里不说话、连续追加好几批工具调用很常见（相邻 tool 消息会合并进同
+ * 一个 items，组件不重新 mount），若每批都重新跟着 running 展开/收起，
+ * 已经收起的会随着新一批又跳开再收起、已经展开的会随着某一批结束被强行
+ * 收起——看起来就是一闪一闪。所以 running 只在「从未收起过」之前驱动 open，
+ * 第一次收起（或用户任意一次点击）之后就只认用户点击，不再跟 running 走。
  */
 export function ToolGroup({ items, forceOpen = false }: { items: Message[]; forceOpen?: boolean }) {
   const running = items.some(m => m.toolResult === undefined)
-  const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const prevRunning = useRef(running)
+  const [open, setOpen] = useState(running)
+  const settledRef = useRef(false)
 
   useEffect(() => {
-    if (prevRunning.current !== running) {
-      prevRunning.current = running
-      setUserOpen(null)   // 状态切换 → 回到「运行中展开 / 完成后收起」的默认语义
+    if (settledRef.current) return
+    if (running) {
+      setOpen(true)
+    } else {
+      setOpen(false)
+      settledRef.current = true
     }
   }, [running])
 
-  const open = forceOpen || (userOpen ?? running)
+  const effectiveOpen = forceOpen || open
   const names = [...new Set(items.map(m => m.toolName ?? 'tool'))]
   const errCount = items.filter(m => m.toolResult !== undefined && looksLikeError(m.toolResult ?? '')).length
   const doneCount = items.filter(m => m.toolResult !== undefined).length
 
   return (
     <div className={`msg msg-tool${animCls(items[0])}`}>
-      <div className={`tool-group${open ? ' tool-group-open' : ''}`}>
+      <div className={`tool-group${effectiveOpen ? ' tool-group-open' : ''}`}>
         <button
           type="button"
           className="tool-group-header"
-          onClick={() => setUserOpen(!open)}
-          aria-expanded={open}
-          title={open ? '收起工具调用' : '展开工具调用'}
+          onClick={() => {
+            settledRef.current = true
+            setOpen(!effectiveOpen)
+          }}
+          aria-expanded={effectiveOpen}
+          title={effectiveOpen ? '收起工具调用' : '展开工具调用'}
         >
           <span className="tool-icon">{running ? <IcoSpinner /> : <IcoCheck />}</span>
           <span className="tool-group-title">
@@ -140,9 +151,9 @@ export function ToolGroup({ items, forceOpen = false }: { items: Message[]; forc
               ? `${doneCount}/${items.length} 运行中`
               : (errCount ? `✕ ${errCount} 个失败` : '✓ 全部完成')}
           </span>
-          <IcoChevron open={open} />
+          <IcoChevron open={effectiveOpen} />
         </button>
-        {open && (
+        {effectiveOpen && (
           <div className="tool-group-body">
             {items.map(m => <ToolCard key={m.id} message={m} />)}
           </div>
