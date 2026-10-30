@@ -137,13 +137,13 @@ class OpenAIAdapter(BaseLLMAdapter):
             raise
         try:
             async for chunk in response:
+                if chunk.usage is not None:
+                    usage_snapshot = {
+                        "prompt_tokens": chunk.usage.prompt_tokens,
+                        "completion_tokens": chunk.usage.completion_tokens,
+                        "total_tokens": chunk.usage.total_tokens,
+                    }
                 if not chunk.choices:
-                    if chunk.usage is not None:
-                        usage_snapshot = {
-                            "prompt_tokens": chunk.usage.prompt_tokens,
-                            "completion_tokens": chunk.usage.completion_tokens,
-                            "total_tokens": chunk.usage.total_tokens,
-                        }
                     continue
 
                 delta = chunk.choices[0].delta
