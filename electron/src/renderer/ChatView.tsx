@@ -24,6 +24,8 @@ const INIT_TOOLS_OPEN = new URLSearchParams(window.location.search).has('tools')
 const PAGE_SIZE = 40
 /** 视口离顶部不超过这个像素，就当作「贴着顶部」——此时前插后停在顶部而不是保位置。 */
 const STICK_TOP_EPS = 8
+/** 视口离底部不超过这个像素，就当作「贴着底部」——只有这种状态下才继续跟着流式内容自动滚动。 */
+const STICK_BOTTOM_EPS = 80
 
 interface PermRequest {
   request_id: string
@@ -130,6 +132,9 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
   const prependRef = useRef<{ height: number; top: number } | null>(null)
   // 下一批内容要「瞬间」定位到底部（首屏加载历史时置位）：不能用平滑滚动
   const jumpRef = useRef(false)
+  // 是否「贴着底部」：只有贴底时，新 chunk/新消息才自动跟着滚动；用户主动往上滑
+  // 看历史后就不再打扰，直到他自己滑回底部附近（由滚动事件实时更新，初始贴底）。
+  const stickToBottomRef = useRef(true)
 
   const onSessionUpdateRef = useRef(onSessionUpdate)
   useEffect(() => { onSessionUpdateRef.current = onSessionUpdate })
@@ -154,18 +159,43 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
     if (jumpRef.current) {
       jumpRef.current = false
       el.scrollTop = el.scrollHeight
+      stickToBottomRef.current = true
       return
     }
     // 流式增量每秒触发十几次：用 smooth 会让上一次滚动动画被连续打断重新规划，
     // 叠加气泡高度随文字增长变化，视觉上就是来回拉扯的抖动——流式期间瞬时跟随到底。
     // 非流式的新消息到达（如用户刚发送）保留一次性的平滑过渡。
+    // 两种情况都只在用户仍贴着底部时才自动滚——往上翻看历史时，新 chunk/新消息
+    // 不该把视口强行拽回底部。
     const streaming = messages[messages.length - 1]?.isStreaming === true
     if (streaming) {
-      el.scrollTop = el.scrollHeight
+      if (stickToBottomRef.current) el.scrollTop = el.scrollHeight
       return
     }
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (stickToBottomRef.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // 实时跟踪是否贴底：前插历史会把 scrollTop 改得很大，但那是程序行为而非用户
+  // 主动上滑，prependRef 命中时跳过一次，避免被误判成「用户离开了底部」。
+  //
+  // 依赖不能是 []：挂载时 isHistoryLoading 还是 true，渲染的是没有 listRef 容器
+  // 的占位 div（见下面 `if (isHistoryLoading) return <div className="chat-view" />`），
+  // listRef.current 此时是 null，effect 直接 return、再也不会重跑——监听器根本
+  // 没挂上去，导致 stickToBottomRef 永远停在初始值 true，用户怎么上滑都「没被
+  // 记录到」，下一个 chunk 一来就又把视口拽回底部。isHistoryLoading 翻值、或
+  // messages.length 在 0（落地页分支，同样没有 listRef 容器）与非 0 之间切换时，
+  // 真正挂了 listRef 容器的节点才会出现/换掉，必须以此重新绑定监听器。
+  useEffect(() => {
+    const el = listRef.current
+    if (!el) return
+    const onScroll = () => {
+      if (prependRef.current) return
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickToBottomRef.current = distance <= STICK_BOTTOM_EPS
+    }
+    el.addEventListener('scroll', onScroll)
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [isHistoryLoading, messages.length === 0])
 
   useEffect(() => {
     setMessages([])
@@ -240,10 +270,20 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
 
     const onToolCall = (d: { name: string; args: string; session_id: string }) => {
       if (d.session_id !== sessionId) return
-      setMessages(prev => [
-        ...prev,
-        { id: `tc-${Date.now()}`, role: 'tool', content: '', toolName: d.name, toolArgs: formatToolArgs(d.args) },
-      ])
+      setMessages(prev => {
+        // 工具调用打断了上一段文字的流式输出：那段文字已经说完了，不会再收到
+        // 新 chunk 续写它，必须在这里把它的 isStreaming 关掉——否则只有
+        // onDone/onError 才会清，而本轮里它早就不是「最后一条」了，光标会
+        // 一直挂在那段已经说完的文字末尾，直到整轮结束才消失。
+        const last = prev[prev.length - 1]
+        const base = last?.isStreaming
+          ? [...prev.slice(0, -1), { ...last, isStreaming: false }]
+          : prev
+        return [
+          ...base,
+          { id: `tc-${Date.now()}`, role: 'tool', content: '', toolName: d.name, toolArgs: formatToolArgs(d.args) },
+        ]
+      })
     }
 
     const onToolResult = (d: { name: string; result: string; session_id: string }) => {
@@ -361,6 +401,7 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
     setInput('')
     if (inputRef.current) inputRef.current.style.height = 'auto'
     setIsLoading(true)
+    stickToBottomRef.current = true   // 自己发的消息必须滚到可见，不管之前翻到哪
     setMessages(prev => [...prev, { id: `u-${Date.now()}`, role: 'user', content: text }])
     // 首条消息携带 workspace_id（若已选择）
     const wsId = messages.length === 0 ? selectedWorkspaceId ?? undefined : undefined
