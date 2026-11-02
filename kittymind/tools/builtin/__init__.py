@@ -13,6 +13,7 @@ from .write_memory_tool import WriteMemoryTool
 from .task_tool import TaskTool
 from .verify_tool import VerifyTool
 from .web_search_tool import WebSearchTool
+from .web_extract_tool import WebExtractTool
 
 __all__ = [
     "BashTool",
@@ -28,6 +29,7 @@ __all__ = [
     "ScreenshotTool",
     "TaskTool",
     "VerifyTool",
+    "WebExtractTool",
     "WebSearchTool",
     "WriteMemoryTool",
 ]

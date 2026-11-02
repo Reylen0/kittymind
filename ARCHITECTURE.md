@@ -218,7 +218,8 @@ kittymind/                      # 项目根目录
 
 **Phase 21 — 核心工具补齐 + 工具集分组 🟡**
 `web_search` ✅：`kittymind/web_search/` 下 `TavilyBackend`/`BingBackend`/`SearxngBackend` 三选一，与 `embeddings/` 同构的工厂模式（`get_web_search_backend()`，构造失败不缓存，密钥只从 `WEB_SEARCH_API_KEY` 环境变量读，未配置时工具返回提示而不是报错中断主流程）；只读无副作用，`is_concurrency_safe=True` 且归入 `IDEMPOTENT_TOOLS`，未设审批规则。
-剩余思路：`web_extract`（抓取完整网页正文，与 `web_search` 的摘要列表是两个工具）、`process_manage`（后台进程）、`todo_list`；`TOOLSETS` 分组字典按场景动态过滤 schema 下发。
+`web_extract` ✅：`kittymind/web_extract.py`，与 `web_search` 的多后端抽象不同——单一实现（httpx 直连 GET）不需要 Protocol/工厂这层。标准库 `html.parser.HTMLParser` 剥标签取正文，不引入第三方 HTML 解析库；不是 readability，只剔 script/style/svg 等不可读内容，不做导航/广告等版式噪音的语义剔除。流式下载 + `WEB_EXTRACT_MAX_BYTES` 硬上限，超限中途断开而非拉完整页再截断。只读无副作用，同归 `IDEMPOTENT_TOOLS`，未设审批规则。
+剩余思路：`process_manage`（后台进程）、`todo_list`；`TOOLSETS` 分组字典按场景动态过滤 schema 下发。
 
 **Phase 22 — 浏览器自动化 ⬜（重型，可选）**
 思路：Playwright 驱动的浏览器工具组（导航/点击/填写/截图/提取）+ 持久 browser context 跨调用复用。
