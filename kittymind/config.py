@@ -33,6 +33,7 @@ TOOL_AUDIT_DB    = KITTYMIND_DIR / "tool_audit.db"      # 工具审计 SQLite
 TOOL_AUDIT_JSONL = KITTYMIND_DIR / "tool_audit.jsonl"   # 工具审计 JSONL（同内容双写）
 LLM_TRACE_JSONL  = KITTYMIND_DIR / "llm_trace.jsonl"    # LLM 调用留档 JSONL（排查用，默认关闭）
 MCP_CONFIG_FILE  = KITTYMIND_DIR / "mcp.json"           # 外部 MCP Server 配置
+SKILLS_DIR       = KITTYMIND_DIR / "skills"             # 技能文档目录（每技能一个 SKILL.md）
 DEFAULT_WORKSPACE_DIR = Path.home()   # 未选工作区时的默认 cwd
 
 # ── 超时（秒） ───────────────────────────────────────────────────
@@ -157,6 +158,12 @@ MCP_ENABLED         = True   # 总开关，False 则跳过发现、不连接任�
 MCP_CONNECT_TIMEOUT = 15     # 单个 server 建连（含 initialize + list_tools）超时秒数
 MCP_TOOL_TIMEOUT    = 60     # 单次工具调用超时秒数
 
+# ── 技能系统 ──────────────────────────────────────────────────────
+# 技能目录（名称+简介）每轮现算现注入，不缓存——内容只随技能集合变化，天然
+# 字节级稳定，用不上记忆召回那套「session 缓存 + 压缩后失效」的机制。
+SKILL_ENABLED                = True   # 总开关，False 则不装配 skill 工具、不注入目录
+SKILL_CATALOG_MAX_DESC_CHARS = 100    # 目录里单条 description 展示上限
+
 # ── 日志 ─────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
 
@@ -271,6 +278,7 @@ _OVERRIDABLE = {
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",
     "MCP_ENABLED", "MCP_CONNECT_TIMEOUT", "MCP_TOOL_TIMEOUT",
+    "SKILL_ENABLED", "SKILL_CATALOG_MAX_DESC_CHARS",
     "PERMISSION_ASK_TIMEOUT",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",

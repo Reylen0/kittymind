@@ -35,8 +35,11 @@ from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.tools.builtin.web_search_tool import WebSearchTool
 from kittymind.tools.builtin.web_extract_tool import WebExtractTool
+from kittymind.tools.builtin.load_skill_tool import LoadSkillTool
+from kittymind.tools.builtin.write_skill_tool import WriteSkillTool
 from kittymind.tools.mcp.loader import discover_mcp_tools
 from kittymind.memory.store import MemoryStore
+from kittymind.skills.store import SkillStore
 from kittymind.logging_setup import setup_logging
 from kittymind.config import cfg
 from server.permission_bridge import PermissionBridge
@@ -85,6 +88,12 @@ async def build_agent(bridge: PermissionBridge) -> tuple[KittyAgent, list]:
         WebSearchTool(),
         WebExtractTool(),
     ]
+    # 技能系统（~/.kittymind/skills/ 下的 SKILL.md，只有 name/description 两个
+    # 元信息字段，没有使用统计/归档——纯粹的文件扫描）。
+    skill_store = None
+    if cfg.SKILL_ENABLED:
+        skill_store = SkillStore()
+        base_tools += [LoadSkillTool(skill_store), WriteSkillTool(skill_store)]
     # 外部 MCP server（~/.kittymind/mcp.json 配置，未配置则为空列表）；
     # 单个 server 连不上只记日志跳过，不拖垮启动流程。
     mcp_tools, mcp_conns = await discover_mcp_tools()
@@ -108,6 +117,7 @@ async def build_agent(bridge: PermissionBridge) -> tuple[KittyAgent, list]:
         session_manager=SessionManager(),
         workspace_manager=WorkspaceManager(),
         memory=memory_store,
+        skill_store=skill_store,
         ask_fn=bridge.ask,
     )
     print(
@@ -117,6 +127,10 @@ async def build_agent(bridge: PermissionBridge) -> tuple[KittyAgent, list]:
     )
     if mcp_tools:
         print(f"[mcp] 已接入 {len(mcp_tools)} 个外部 MCP 工具", flush=True)
+    if skill_store is not None:
+        skill_count = len(skill_store.list_skills())
+        if skill_count:
+            print(f"[skill] 已加载 {skill_count} 个技能", flush=True)
     return agent, mcp_conns
 
 

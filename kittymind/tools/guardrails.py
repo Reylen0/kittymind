@@ -32,13 +32,14 @@ from ..config import cfg
 
 IDEMPOTENT_TOOLS: frozenset[str] = frozenset({
     "file_read", "glob", "grep", "ls", "get_current_time", "web_search", "web_extract",
+    "load_skill",
 })
 
 MUTATING_TOOLS: frozenset[str] = frozenset({
     "bash", "file_write", "file_edit", "git", "write_memory", "task", "clipboard",
     # screenshot 会写盘（_unique_path 存在 TOCTOU），verify 等价于执行任意命令——
     # 两者都不可视为只读（此前漏分类，已补）。
-    "screenshot", "verify",
+    "screenshot", "verify", "write_skill",
 })
 
 

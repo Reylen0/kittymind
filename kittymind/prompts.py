@@ -186,3 +186,13 @@ def build_memory_recall_select_prompt(catalog: str, user_input: str, max_relevan
         f"选出最相关的记忆序号（最多 {max_relevant} 个）。"
         "只返回 JSON 整数数组，如 [0, 2]。没有相关的返回 []。不要输出其他内容。"
     )
+
+
+# ── 技能目录 ─────────────────────────────────────────────────────
+# 与记忆召回不同：目录内容只取决于当前技能集合，与当轮输入无关，每轮现算
+# 即字节级稳定，不需要 LLM 筛选、不需要 session 缓存。
+
+SKILL_CATALOG_SECTION_HEADER = (
+    "\n\n## 可用技能\n\n"
+    "以下技能文档包含特定任务的流程/规范，需要时调用 load_skill(name) 加载完整内容。\n"
+)

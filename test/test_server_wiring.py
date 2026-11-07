@@ -15,11 +15,12 @@ BUILTIN_TOOL_NAMES = {
     "file_read", "file_write", "file_edit",
     "git", "bash", "screenshot", "clipboard",
     "write_memory", "verify", "web_search", "web_extract",
+    "load_skill", "write_skill",
 }
 
 
 def _build_isolated_agent(monkeypatch):
-    """隔离外部依赖（LLM / 会话库 / 工作区 / 记忆 / MCP 发现）后装配 agent。
+    """隔离外部依赖（LLM / 会话库 / 工作区 / 记忆 / 技能 / MCP 发现）后装配 agent。
 
     build_agent 现在是协程（MCP 发现是异步的）；MCP 发现额外打桩成空列表——
     这组测试要在任何机器上都稳定，不能依赖本机是否真的配了 ~/.kittymind/mcp.json。
@@ -28,6 +29,7 @@ def _build_isolated_agent(monkeypatch):
     monkeypatch.setattr(app_mod, "SessionManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(app_mod, "WorkspaceManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(app_mod, "MemoryStore", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(app_mod, "SkillStore", lambda *a, **k: MagicMock())
 
     async def _no_mcp_tools():
         return [], []

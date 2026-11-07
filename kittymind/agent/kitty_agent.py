@@ -35,6 +35,7 @@ from ..events.types import (
 from ..memory.extract import extract_memories
 from ..memory.recall import MemoryRecall
 from ..memory.store import MemoryStore
+from ..prompts import SKILL_CATALOG_SECTION_HEADER
 from ..session.manager import SessionManager
 from ..workspace.manager import WorkspaceManager
 from ..tools.base import BaseTool
@@ -127,6 +128,7 @@ class KittyAgent(Agent):
         session_manager: SessionManager | None = None,
         workspace_manager: WorkspaceManager | None = None,
         memory: MemoryStore | None = None,
+        skill_store=None,
         ask_fn=None,
         # 是否是交互式，决定是否启用工具守护栏block（非交互态或全局 HARD_STOP 配置时启用 block）
         interactive: bool = True,
@@ -162,6 +164,8 @@ class KittyAgent(Agent):
         )
         # 冻结的记忆召回段（session_id -> 文本 | _RECALL_STALE）
         self._recall_cache: OrderedDict[str, object] = OrderedDict()
+        # 技能目录（名称+简介）每轮现算现注入，不缓存——见 _inject_skill_catalog
+        self._skill_store = skill_store
 
     @property
     def aux_model(self) -> BaseAgentLLM:
@@ -270,6 +274,9 @@ class KittyAgent(Agent):
 
         # 记忆召回作为独立 system 消息插在主 system 之后。
         await self._inject_memory_recall(turn.messages, input_text, session_id)
+        # 技能目录同样作为独立 system 消息追加——排在记忆召回段之后，更接近
+        # "静态能力清单"而不是"本轮专属上下文"，先后顺序不影响正确性。
+        await self._inject_skill_catalog(turn.messages)
 
         try:
             for _ in range(self.max_iterations):
@@ -474,6 +481,25 @@ class KittyAgent(Agent):
         """压缩后调用：下一轮用当轮输入重算召回段。"""
         if session_id:
             self._recall_cache[session_id] = _RECALL_STALE
+
+    # ── 技能目录 ──────────────────────────────────────────────────
+
+    async def _inject_skill_catalog(self, messages: list[dict]) -> None:
+        """把技能目录作为独立 system 消息追加在已有 system 消息之后。
+
+        与记忆召回不同：目录内容只取决于当前技能集合，与当轮输入无关——不
+        需要 session 级缓存或压缩后失效标记，每轮现算即可（几十个小文件的
+        扫描开销可忽略；规模显著增长后再考虑按 mtime 加缓存，v1 不做）。
+        """
+        if self._skill_store is None:
+            return
+        catalog = await asyncio.to_thread(self._skill_store.catalog)
+        if not catalog:
+            return
+        insert_at = 0
+        while insert_at < len(messages) and messages[insert_at].get("role") == "system":
+            insert_at += 1
+        messages.insert(insert_at, {"role": "system", "content": SKILL_CATALOG_SECTION_HEADER + catalog})
 
     # ── 消息构建 ──────────────────────────────────────────────────
 
