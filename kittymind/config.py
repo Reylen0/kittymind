@@ -32,6 +32,7 @@ SCREENSHOTS_DIR  = KITTYMIND_DIR / "screenshots"
 TOOL_AUDIT_DB    = KITTYMIND_DIR / "tool_audit.db"      # 工具审计 SQLite
 TOOL_AUDIT_JSONL = KITTYMIND_DIR / "tool_audit.jsonl"   # 工具审计 JSONL（同内容双写）
 LLM_TRACE_JSONL  = KITTYMIND_DIR / "llm_trace.jsonl"    # LLM 调用留档 JSONL（排查用，默认关闭）
+MCP_CONFIG_FILE  = KITTYMIND_DIR / "mcp.json"           # 外部 MCP Server 配置
 DEFAULT_WORKSPACE_DIR = Path.home()   # 未选工作区时的默认 cwd
 
 # ── 超时（秒） ───────────────────────────────────────────────────
@@ -150,6 +151,12 @@ PORT_RETRY_COUNT = 20
 # 因此启动时默认拒绝非环回绑定；确有局域网使用需求（自担风险）才显式打开此项。
 WS_ALLOW_NON_LOOPBACK = False
 
+# ── 外部 MCP Server ──────────────────────────────────────────────
+# 配置文件路径见 MCP_CONFIG_FILE；不存在 = 未配置任何 server，不是错误。
+MCP_ENABLED         = True   # 总开关，False 则跳过发现、不连接任何 MCP server
+MCP_CONNECT_TIMEOUT = 15     # 单个 server 建连（含 initialize + list_tools）超时秒数
+MCP_TOOL_TIMEOUT    = 60     # 单次工具调用超时秒数
+
 # ── 日志 ─────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
 
@@ -263,6 +270,7 @@ _OVERRIDABLE = {
     "AGENT_MAX_ITERATIONS",
     "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",
+    "MCP_ENABLED", "MCP_CONNECT_TIMEOUT", "MCP_TOOL_TIMEOUT",
     "PERMISSION_ASK_TIMEOUT",
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",

@@ -35,6 +35,7 @@ from kittymind.tools.builtin.task_tool import TaskTool
 from kittymind.tools.builtin.verify_tool import VerifyTool
 from kittymind.tools.builtin.web_search_tool import WebSearchTool
 from kittymind.tools.builtin.web_extract_tool import WebExtractTool
+from kittymind.tools.mcp.loader import discover_mcp_tools
 from kittymind.memory.store import MemoryStore
 from kittymind.logging_setup import setup_logging
 from kittymind.config import cfg
@@ -63,7 +64,7 @@ from server.ws_server import start_server
 logger = logging.getLogger(__name__)
 
 
-def build_agent(bridge: PermissionBridge) -> KittyAgent:
+async def build_agent(bridge: PermissionBridge) -> tuple[KittyAgent, list]:
     llm = BaseAgentLLM()
     memory_store = MemoryStore()
     # 工具集与 CLI（chat_async.py）保持一致：15 个内置工具 + task 委派
@@ -84,15 +85,20 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         WebSearchTool(),
         WebExtractTool(),
     ]
+    # 外部 MCP server（~/.kittymind/mcp.json 配置，未配置则为空列表）；
+    # 单个 server 连不上只记日志跳过，不拖垮启动流程。
+    mcp_tools, mcp_conns = await discover_mcp_tools()
+    sub_tools = base_tools + mcp_tools
+
     # bus 必须先建，再同时传给 TaskTool 和 KittyAgent——子事件要发到同一个总线
     bus  = EventBus()
     task_tool = TaskTool(
         llm=llm,
-        sub_tools=base_tools,
+        sub_tools=sub_tools,
         ask_fn=bridge.ask,
         event_bus=bus,
     )
-    all_tools = base_tools + [task_tool]
+    all_tools = sub_tools + [task_tool]
     agent = KittyAgent(
         name="kitty",
         llm=llm,
@@ -109,7 +115,9 @@ def build_agent(bridge: PermissionBridge) -> KittyAgent:
         + (agent.aux_llm.model if agent.aux_llm else "未配置（回退主模型）"),
         flush=True,
     )
-    return agent
+    if mcp_tools:
+        print(f"[mcp] 已接入 {len(mcp_tools)} 个外部 MCP 工具", flush=True)
+    return agent, mcp_conns
 
 
 async def main() -> None:
@@ -117,7 +125,7 @@ async def main() -> None:
     host = os.getenv("WS_HOST", cfg.WS_HOST)
     base_port = int(os.getenv("WS_PORT", cfg.WS_PORT))
     bridge = PermissionBridge()
-    agent = build_agent(bridge)
+    agent, mcp_conns = await build_agent(bridge)
 
     try:
         port = base_port
@@ -135,6 +143,8 @@ async def main() -> None:
         logger.error("端口 %d-%d 全部不可用，退出", base_port, port - 1)
         sys.exit(1)
     finally:
+        # MCP server 子进程/连接逐个收尾，不能让孤儿进程挂着
+        await asyncio.gather(*(c.stop() for c in mcp_conns), return_exceptions=True)
         # 正常退出 / Ctrl-C / 端口耗尽，都把 SQLite 连接关干净（WAL checkpoint 随之完成）
         if agent.session_manager is not None:
             agent.session_manager.close()

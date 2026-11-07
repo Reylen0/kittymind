@@ -20,6 +20,7 @@ from collections.abc import Awaitable, Callable
 from .builtin._dangerous import find_dangerous
 from .builtin._paths import is_inside, resolve_path
 from .builtin.bash_tool import bash_cwd
+from .mcp.trust import is_auto_approved, is_mcp_tool
 
 
 # ── 闸门 1：硬拒绝（bash / verify 共用同一份黑名单） ──────────────
@@ -210,6 +211,18 @@ async def check_permission(
     reason = _hard_deny_reason(name, args)
     if reason is not None:
         return reason
+
+    # MCP 工具：名字是运行时动态生成的，不会命中下面任何一条 _RULES，
+    # 默认必须审批——执行的是不受本项目控制的第三方 server 代码，不能裸放行。
+    # 唯一的信任开关是 mcp.json 里按工具名声明的 autoApprove。
+    if is_mcp_tool(name):
+        if is_auto_approved(name):
+            return None
+        if ask_fn is None:
+            return None  # 与下面 _RULES 的约定一致：无审批入口场景直接放行
+        if not await ask_fn(name, args, "调用外部 MCP 工具（来自第三方 MCP Server，内容不受本项目控制）"):
+            return "用户拒绝执行"
+        return None
 
     # 闸门 2 + 3：规则 → 用户审批
     for tool_names, check_fn, reason in _RULES:

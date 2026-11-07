@@ -19,19 +19,25 @@ BUILTIN_TOOL_NAMES = {
 
 
 def _build_isolated_agent(monkeypatch):
-    """隔离外部依赖（LLM / 会话库 / 工作区 / 记忆）后装配 agent。
+    """隔离外部依赖（LLM / 会话库 / 工作区 / 记忆 / MCP 发现）后装配 agent。
 
-    必须在事件循环内调用——build_agent 会取 running loop 传给 TaskTool。
+    build_agent 现在是协程（MCP 发现是异步的）；MCP 发现额外打桩成空列表——
+    这组测试要在任何机器上都稳定，不能依赖本机是否真的配了 ~/.kittymind/mcp.json。
     """
     monkeypatch.setattr(app_mod, "BaseAgentLLM", lambda *a, **k: MagicMock(model="fake"))
     monkeypatch.setattr(app_mod, "SessionManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(app_mod, "WorkspaceManager", lambda *a, **k: MagicMock())
     monkeypatch.setattr(app_mod, "MemoryStore", lambda *a, **k: MagicMock())
+
+    async def _no_mcp_tools():
+        return [], []
+
+    monkeypatch.setattr(app_mod, "discover_mcp_tools", _no_mcp_tools)
     return app_mod.build_agent(MagicMock())
 
 
 async def test_build_agent_registers_all_builtin_tools(monkeypatch):
-    agent = _build_isolated_agent(monkeypatch)
+    agent, _ = await _build_isolated_agent(monkeypatch)
     names = {t.name for t in agent.tools}
     missing = BUILTIN_TOOL_NAMES - names
     assert not missing, f"server 端缺失工具：{sorted(missing)}"
@@ -40,7 +46,7 @@ async def test_build_agent_registers_all_builtin_tools(monkeypatch):
 
 async def test_task_tool_sub_tools_are_complete(monkeypatch):
     """子 Agent 的工具集同样不能缺——否则委派出去的子任务做不了文件编辑/搜索。"""
-    agent = _build_isolated_agent(monkeypatch)
+    agent, _ = await _build_isolated_agent(monkeypatch)
     task_tool = next(t for t in agent.tools if t.name == "task")
     sub_names = {t.name for t in task_tool._sub_tools}
     missing = BUILTIN_TOOL_NAMES - sub_names
@@ -49,5 +55,5 @@ async def test_task_tool_sub_tools_are_complete(monkeypatch):
 
 async def test_tool_schemas_match_registry(monkeypatch):
     """下发给模型的 schema 数量应与注册工具数一致（防止漏注册或 schema 生成失败）。"""
-    agent = _build_isolated_agent(monkeypatch)
+    agent, _ = await _build_isolated_agent(monkeypatch)
     assert len(agent.tool_registry.get_schemas()) == len(agent.tools)
