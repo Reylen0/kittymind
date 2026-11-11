@@ -6,7 +6,7 @@
 2. [整体架构](#2-整体架构)
 3. [技术选型](#3-技术选型)
 4. [模块与目录结构](#4-模块与目录结构)
-5. [开发路线与实现状态（Phase 1-33）](#5-开发路线与实现状态phase-1-33)
+5. [开发路线与实现状态（Phase 1-34）](#5-开发路线与实现状态phase-1-34)
 
 ---
 
@@ -107,7 +107,7 @@ kittymind/                      # 项目根目录
 
 ---
 
-## 5. 开发路线与实现状态（Phase 1-33）
+## 5. 开发路线与实现状态（Phase 1-34）
 
 > 依据**当前代码**（2026-10，712 测试全绿）梳理。状态图例：✅ 已实现 ｜ 🟡 部分实现 ｜ ⬜ 未实现。
 > 对标参照：Nous Research 的 hermes-agent（仅借鉴其 Agent 侧设计，服务端重型能力不在路线内）。
@@ -123,6 +123,7 @@ kittymind/                      # 项目根目录
 | **M-D** | 可观测与产品化交付 | 26-29 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 30-31 | ⬜ |
 | **M-F** | 网关预留与桌宠深化 | 32-33 | ⬜ |
+| **M-G** | 长任务稳定性与断点恢复 | 34 | ⬜ |
 
 ---
 
@@ -178,7 +179,7 @@ kittymind/                      # 项目根目录
 
 **Phase 14 — SQLite 会话存储 ✅**
 架构：单文件 `~/.kittymind/sessions.db`（WAL），`sessions` / `messages` / `session_state` 三表。压缩以 `archive_and_compact` 单事务落库：旧消息标 `active=0, compacted=1`（不删除），摘要与尾部作为新的活跃行写入——**压缩视图持久化，重启无需重压**。读取分双视图：模型视图 `WHERE active=1`（加载即已压缩状态），完整视图含 compacted 行（审计 / 全文检索用）。`session_state` 跨轮保存压缩冷却与 usage 校准基线。JSONL 后端已移除。关键文件：`session/`。
-剩余：会话切换 / 重启后前端 ctx-ring 的恢复（`agent.context_usage` 事件链路已具备，加载时回推未做）。
+剩余：会话切换 / 重启后前端 ctx-ring 的恢复（`agent.context_usage` 事件链路已具备，加载时回推未做）。**已知边界**：`_commit_turn` 是整轮才落库一次——进程在 ReAct 循环中途崩溃会丢失本轮全部消息（含已经真实发生的工具副作用的记录），设计见 Phase 34。
 
 **Phase 15 — FTS5 全文搜索 ✅**
 架构：库内 `messages_fts`（普通 FTS5 表，`rowid` 对齐 `messages.id`）承载跨会话内容检索。切词自研：CJK 段展开成重叠二元组、非 CJK 段交 `unicode61`，入库与查询共用同一份切词函数（`session/_search_text.py`）。用二元组而非 trigram 是因为 trigram 要求查询 ≥3 字符，「压缩」「阈值」这类 2 字词全部 0 命中，而 2 字词恰是中文检索主力。索引只覆盖 `role IN ('user','assistant')`（工具原始输出不进索引，否则结果被回显淹没），并覆盖 compacted 行（压缩掉的历史照样能搜到），摘要行不重复索引。写入侧 Python 显式维护（二元组要现算），删除侧用 `AFTER DELETE` 触发器借 `sessions` 级联自动清理。`session/search` 按会话分组返回，高亮片段由 manager 层基于原文计算。前端复用侧栏搜索框：标题过滤本地即时，内容搜索防抖。
@@ -256,10 +257,10 @@ kittymind/                      # 项目根目录
 ### 里程碑 M-E：定时与后台自动化（Phase 30-31）⬜
 
 **Phase 30 — Cron 定时任务 ⬜**
-思路：`jobs.json` + 60s ticker 调度器；Agent 经 `cron_tool` 自然语言创建/暂停/删除；结果投递到聊天窗/系统通知/文件；连续失败 N 次提示暂停。审批语义需明确：无人值守态 = `interactive=False`（守护栏硬停生效）。
+思路：`jobs.json` + 60s ticker 调度器；Agent 经 `cron_tool` 自然语言创建/暂停/删除；结果投递到聊天窗/系统通知/文件；连续失败 N 次提示暂停。审批语义需明确：无人值守态 = `interactive=False`（守护栏硬停生效）。定时任务本质是「不保证有人在前台盯着的 turn」，崩溃恢复应直接复用 Phase 34 的 `turn_in_progress` 标记与幂等分类恢复机制，不单独发明一套。
 
 **Phase 31 — 后台任务委派 ⬜**
-思路：task 委派不等待返回，完成事件通知 + 桌宠提示；前端后台任务列表。
+思路：task 委派不等待返回，完成事件通知 + 桌宠提示；前端后台任务列表。同 Phase 30，断点恢复复用 Phase 34。
 
 ---
 
@@ -274,10 +275,56 @@ kittymind/                      # 项目根目录
 
 ---
 
+### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）⬜
+
+**Phase 34 — 长任务稳定性与断点恢复 ⬜**
+
+**现状缺口**：当前一次流式 ReAct 循环（`async_stream_run`）从组装 `TurnContext` 到产出 `final_text` 全程只在内存里推进——`turn.messages`/`turn.turn_messages` 直到循环结束才由 `_commit_turn()` 一次性落库（Phase 14）。这意味着：
+
+- 进程在循环中途被杀（断电、Electron 强退、OOM、人工 kill）时，**不止本轮输出丢失，连用户刚发的那条消息、以及期间已经真实执行的工具副作用（已经跑过的 `bash` 命令、已经写入的文件、已经做的 `git commit`）都不会出现在 `sessions.db` 里**——重启后看到的是"消息从未发出"，但磁盘/仓库上发生的改动是真实且不可逆的。
+- 工具调用审计（`tool_audit.db`，Phase 5/18）其实是**每次调用落一条**，比会话消息（整轮才落一条）粒度细得多——同一套系统里两个数据面的持久化粒度不一致，审计库能查到"做过什么"，`sessions.db` 却没有对应消息，复盘时两者对不上。
+- `core/llm.py` 对 LLM 调用的网络抖动 / 429 / 5xx **零重试**，瞬时失败直接整轮作废；长任务工具调用步数越多，网络调用次数越多，被"一次性失败"拖垮的概率随步数线性上升。
+- `bash` 等同步工具体经 `asyncio.to_thread` 丢进线程池执行：`task.cancel()` 只是不再等待线程，**线程内部的 `subprocess` 不会被杀**，用户点"停止"后它可能继续在后台裸跑到自然结束。
+- `task` 子 Agent 委派只有步数上限（`SUBAGENT_MAX_ITERATIONS`），没有挂钟超时——子任务某次工具调用卡死，父 Agent 跟着整体挂起。
+
+设计围绕一条原则展开：**长任务崩溃后，已经发生的事绝不能从历史里凭空消失；框架无法安全自动判断的，交还给模型自己核实**。五块各自独立、可渐进落地：
+
+**① 消息面：轮内增量提交**
+把 `_commit_turn()` 的调用时机从"`final_text` 产出后一次"改成"每个 ReAct 步骤（一条 assistant 消息 + 对应一批 tool_result 回填完）结束后一次"，复用现有 `append_turn()` 原子写入（不新发明持久化机制）；用户消息在轮次一开始、第一次调用 LLM 之前就先行提交。写入频率从 O(1)/轮升到 O(步数)/轮，但单次写入量更小，量级与现有 `tool_audit.db`（本来就是每次工具调用一条）相当，不是新的负载数量级。压缩（`archive_and_compact`）本身已经是原子操作，触发时机不变，只是压缩后的消息随下一步的增量提交一起落盘，不再需要撑到轮结束才生效。
+
+**② 状态面：`turn_in_progress` 标记（崩溃检测）**
+`sessions` 表新增两列（schema v9，走 Phase 18 既有迁移链，允许跳号）：`turn_in_progress INTEGER NOT NULL DEFAULT 0`、`turn_started_at TEXT`。轮次开始（用户消息提交后）置位，正常结束或显式 `turn/cancel` 完成的 `finally` 分支清除。启动自检（挂在 Phase 18 现有的 `quick_check` 流程旁，不单独起一遍扫描）发现 `turn_in_progress=1` 的会话，即"进程上次被杀时正在跑的 turn"，经新事件推给前端在侧栏标"上次异常中断"——用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。
+
+**③ 执行面：悬空 tool_call 的幂等恢复（恢复逻辑的核心规则）**
+检测条件：最后一条 assistant 消息带 `tool_calls`，但对应 `tool_call_id` 在 `messages` 表里找不到匹配的 tool 结果行——说明进程恰好死在"执行这批工具调用"期间。恢复策略直接复用现成的 `guardrails.py::IDEMPOTENT_TOOLS` / `MUTATING_TOOLS` 分类，不新造一套判断：
+
+- 悬空调用落在 `IDEMPOTENT_TOOLS`（`file_read`/`glob`/`grep`/`ls`/`web_search`/`load_skill`…）：安全，直接重新执行一次拿确定结果。
+- 悬空调用落在 `MUTATING_TOOLS`（`bash`/`file_write`/`file_edit`/`git`/`write_memory`/`write_skill`…）：**绝不自动重放**——重放一个已经执行过的 `bash` 或 `git commit` 可能是实打实的重复副作用。改为合成一条模板化 `tool_result`："该工具调用的执行状态未知（进程在执行期间被中断），请用只读工具自行核实实际状态后再决定下一步"，把判断权交还模型本身（与本项目"不替模型做它该做的判断"的一贯风格一致，参见记忆整合 Phase 17 的同类取舍）。
+
+新增 RPC `turn/resume`（区别于 `turn/run`：不追加新 user 消息，只把已持久化的消息前缀连同上面生成的合成结果一起喂给 `async_stream_run` 续跑）。前端检测到会话带"异常中断"标记时提供「继续」按钮调用它；用户也可以不管它、直接发新消息（新一轮 `turn/run` 自然用新的 `turn_started_at` 覆盖旧标记）。
+
+**④ 工具取消的物理传导**
+`bash` 工具由当前 `subprocess.run`（阻塞，`to_thread` 包裹）改为 `asyncio.create_subprocess_exec`（原生协作式取消：`task.cancel()` 能真正触发 `proc.kill()`），解决"点停止但子进程还在后台裸跑"的问题。`task` 委派增加挂钟超时 `SUBAGENT_WALL_TIMEOUT`（`asyncio.wait_for` 包裹 `sub_agent.run()`），子任务超时即视为失败返回，而不是让父 Agent 无限期等待。
+
+**⑤ LLM 调用的瞬时错误重试**
+`core/llm.py` 的 `invoke`/`async_stream_with_tools` 外包一层重试：只重试网络层 / 429 / 5xx / 超时这类分类明确的瞬时错误（400/401 这类业务错误不重试），指数退避，次数与基础延迟可配置（`LLM_RETRY_MAX_ATTEMPTS`/`LLM_RETRY_BASE_DELAY`）。流式调用的重试边界卡在**第一个 `text_delta`/`tool_calls_done` 产出之前**——一旦已经有内容流给前端，失败就不再重试（避免输出重复/错乱），走现有"抛异常中断本轮"路径，由①的增量提交兜底，不会丢失已完成的步骤。
+
+**对 Phase 30 / 31 的复用**：Cron 定时任务与后台任务委派本质上都是"不保证有人在前台盯着的 turn"，设计时直接复用本 phase 的 `turn_in_progress` 标记与③的幂等分类恢复机制，不需要各自发明一套。
+
+**已知边界**（这次设计不解决什么）：
+- 不追求"分布式 exactly-once"语义——单机单进程场景下目标是"崩溃后可观测、可人工核实、不隐藏数据丢失"，不是"自动保证任意副作用工具恰好执行一次"（`bash` 这类工具的副作用本来就不可能被框架兜底，参见"安全模型"一节的同类立场）。
+- 增量提交的粒度是"一批工具调用"而非单个工具调用——批内工具仍按现有分区并行语义一起提交，没必要细到单工具级事务。
+- 流式重试仍有极小概率的"首字节已发出、客户端未确认"窗口，这是 HTTP 流式协议本身的限制，不特别处理，依赖①的可观测性兜底。
+
+**验证思路**（延续"特征测试"模式）：mock LLM 响应序列中途人为抛异常模拟进程死亡，断言用户消息与崩溃前已完成步骤已落库、`turn_in_progress` 已置位；构造"有 `tool_calls` 无对应 tool_result"的消息序列直接灌入 store，断言悬空 mutating 调用生成的是"状态未知"合成结果而非自动重放；`bash` 工具起长命令后 cancel，断言底层子进程确实被杀死。
+
+---
+
 ### 推进建议
 
 - **近期优先 Phase 14 收尾**：ctx-ring 恢复直接提升日常可用性，SQLite 底座已就绪。
 - **M-C 之前先做 21 的工具分组**：工具数即将扩张，先有 TOOLSETS 分组与能力面控制，再接 MCP（Phase 23），避免扁平列表失控。
 - **Phase 30 依赖 12/28 的语义**：无人值守 = 非交互态硬停 + 缓存纪律，这两块已就绪，Cron 可直接叠加。
+- **Phase 34 建议先于 Phase 30/31 做**：Cron 与后台任务委派都要依赖它的 `turn_in_progress` 标记与幂等恢复原语，先做 34 能让 30/31 直接复用而不是各自补一套断点恢复逻辑；34 本身的①（增量提交）也不依赖 30/31，可以独立先行。
 - **每个 Phase 配套测试**：当前 712 用例的「特征测试钉行为」模式（`test_react_loops.py` 等）应延续到新模块。
 
