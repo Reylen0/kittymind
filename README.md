@@ -9,6 +9,22 @@ Python Agent 核心 + Electron 桌面外壳，两者通过本地 WebSocket JSON-
 
 ---
 
+## 界面
+
+**主界面** —— 流式对话、工具调用卡片、会话/工作区侧栏、桌宠悬浮窗
+
+![主界面](assets/main.png)
+
+**跨会话全文检索** —— 输入关键词即时搜索历史对话，命中片段高亮，双击跳转到原会话
+
+![全文检索](assets/search.png)
+
+**用量与成本** —— 按模型 / 按天 / 按会话三维聚合 token 消耗与费用
+
+![用量与成本](assets/usage.png)
+
+---
+
 ## 功能
 
 **对话与交互**
@@ -40,7 +56,7 @@ OpenAI 兼容接口通用（DeepSeek / Qwen / Kimi / 智谱 / Ollama / 各类网
 
 ---
 
-## 内置工具（16 个）
+## 内置工具（18 个）
 
 | 分类 | 工具 | 说明 |
 |---|---|---|
@@ -52,8 +68,6 @@ OpenAI 兼容接口通用（DeepSeek / Qwen / Kimi / 智谱 / Ollama / 各类网
 | 联网 | `web_search` `web_extract` | 搜索（Tavily / Bing / SearXNG）/ 抓网页正文 |
 | Agent | `task` `verify` | 派发子 Agent / 自我验证 |
 | 其他 | `write_memory` `get_current_time` | 主动写入长期记忆 / 取当前时间 |
-
-> MCP 扩展、浏览器自动化、工具分组尚未实现，路线见 `ARCHITECTURE.md` 第 5 章 Phase 21-25。
 
 ---
 
