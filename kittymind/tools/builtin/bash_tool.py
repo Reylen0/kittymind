@@ -1,4 +1,3 @@
-import locale
 import subprocess
 import sys
 from contextvars import ContextVar
@@ -7,16 +6,11 @@ from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
 from ...config import cfg
+from ...encoding import decode_subprocess_output
 from ._dangerous import find_dangerous
 
 # 由 KittyAgent 在每次 run_conversation 开始前设置
 bash_cwd: ContextVar[str] = ContextVar("bash_cwd", default=str(cfg.DEFAULT_WORKSPACE_DIR))
-
-if sys.platform == "win32":
-    import ctypes
-    _SYS_ENCODING = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
-else:
-    _SYS_ENCODING = locale.getpreferredencoding(False) or "utf-8"
 
 
 class BashToolParam(BaseModel):
@@ -58,8 +52,7 @@ class BashTool(BaseTool):
         try:
             proc = subprocess.run(
                 shell_args, shell=use_shell, capture_output=True,
-                text=True, timeout=timeout,
-                encoding=_SYS_ENCODING, errors="replace",
+                timeout=timeout,
                 cwd=cwd,
                 check=False,  # 非零退出码是正常结果，由 ToolResult 表达
             )
@@ -68,9 +61,14 @@ class BashTool(BaseTool):
         except Exception as e:
             return ToolResult(False, f"错误: {e}")
 
+        # 子进程按字节捕获（不在 subprocess.run 里固定 text/encoding）：是否是
+        # UTF-8 输出取决于具体跑的命令，解码策略见 _encoding.decode_subprocess_output。
+        stdout = decode_subprocess_output(proc.stdout)
+        stderr = decode_subprocess_output(proc.stderr)
+
         parts = [f"[工作目录: {cwd}]"]
-        if proc.stdout: parts.append(proc.stdout[:cfg.TOOL_MAX_OUTPUT])
-        if proc.stderr: parts.append(f"[stderr]\n{proc.stderr[:cfg.TOOL_MAX_OUTPUT]}")
+        if stdout: parts.append(stdout[:cfg.TOOL_MAX_OUTPUT])
+        if stderr: parts.append(f"[stderr]\n{stderr[:cfg.TOOL_MAX_OUTPUT]}")
         if proc.returncode != 0: parts.append(f"[退出码: {proc.returncode}]")
         content = "\n".join(parts) if len(parts) > 1 else parts[0] + "\n(无输出)"
         return ToolResult(proc.returncode == 0, content)

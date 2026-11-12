@@ -87,6 +87,7 @@ class ToolExecutor:
                     tool_call_id,
                     f"工具 {name} 的参数不是合法 JSON，已拒绝执行：{args_error}。"
                     "请重新发起该调用，并确保 arguments 是合法的 JSON 对象。",
+                    ok=False,
                 ),
             )
 
@@ -96,14 +97,14 @@ class ToolExecutor:
             if decision.is_block:
                 self._record(session_id, name, args, "block", decision.message, False, t0)
                 return _Decision(tool_call_id, name, args, t0, tool=None,
-                                 blocked=_tool_result(tool_call_id, decision.message))
+                                 blocked=_tool_result(tool_call_id, decision.message, ok=False))
 
         # ── 2. 权限闸门（硬拒绝始终生效；ask_fn=None 跳过用户审批）──
         reason = await check_permission(name, args, self._ask_fn)
         if reason is not None:
             self._record(session_id, name, args, "denied", reason, False, t0)
             return _Decision(tool_call_id, name, args, t0, tool=None,
-                             blocked=_tool_result(tool_call_id, f"Permission denied: {reason}"))
+                             blocked=_tool_result(tool_call_id, f"Permission denied: {reason}", ok=False))
 
         # 工具对象在决策段解析（分区并行需要它的并发安全标记）；未命中留给执行段报错
         try:
@@ -150,7 +151,7 @@ class ToolExecutor:
                 content = content + f"\n\n[守护栏警告: {decision.message}]"
                 decision_str, audit_reason = "warn", decision.message
         self._record(session_id, d.name, d.args, decision_str, audit_reason, failed, d.t0)
-        return _tool_result(d.tool_call_id, content)
+        return _tool_result(d.tool_call_id, content, ok=ok)
 
     # ── 组合入口 ─────────────────────────────────────────────────
 
@@ -248,5 +249,7 @@ def _is_safe(tool: BaseTool | None) -> bool:
     return tool is not None and bool(getattr(tool, "is_concurrency_safe", False))
 
 
-def _tool_result(tool_call_id: str, content: str) -> dict:
-    return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+def _tool_result(tool_call_id: str, content: str, ok: bool = True) -> dict:
+    """`ok` 随行带上——前端据此判定成功/失败，不必再对 content 文本做关键词猜测
+    （`_strip_internal` 会在发给 LLM 前把这个内部键剥掉，模型侧不可见）。"""
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": content, "ok": ok}

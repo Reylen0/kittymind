@@ -226,6 +226,8 @@ class SessionManager:
                 record["tool_calls"] = msg["tool_calls"]
             if msg.get("tool_call_id"):
                 record["tool_call_id"] = msg["tool_call_id"]
+            if "ok" in msg:
+                record["ok"] = bool(msg["ok"])
             self.store.append(session_id, record)
             seqs.append(seq)
             seq += 1

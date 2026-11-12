@@ -83,6 +83,7 @@ function mapHistory(rows: SessionMessage[], tag: string): Message[] {
         toolName: m.tool_name ?? 'tool',
         toolArgs: formatToolArgs(m.tool_args),
         toolResult: m.content,
+        toolOk: m.ok,
       })
     }
   })
@@ -286,7 +287,7 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
       })
     }
 
-    const onToolResult = (d: { name: string; result: string; session_id: string }) => {
+    const onToolResult = (d: { name: string; result: string; ok?: boolean; session_id: string }) => {
       if (d.session_id !== sessionId) return
       setMessages(prev => {
         const idx = [...prev].reverse().findIndex(
@@ -294,7 +295,7 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
         )
         if (idx < 0) return prev
         const ri = prev.length - 1 - idx
-        return [...prev.slice(0, ri), { ...prev[ri], toolResult: d.result }, ...prev.slice(ri + 1)]
+        return [...prev.slice(0, ri), { ...prev[ri], toolResult: d.result, toolOk: d.ok }, ...prev.slice(ri + 1)]
       })
     }
 

@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import locale
 import socket
 import subprocess
 import sys
@@ -21,11 +20,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-if sys.platform == "win32":
-    import ctypes
-    _SYS_ENCODING = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
-else:
-    _SYS_ENCODING = locale.getpreferredencoding(False) or "utf-8"
+from ...encoding import decode_subprocess_output
 
 
 @dataclass(frozen=True)
@@ -57,8 +52,7 @@ class CommandVerifier(Verifier):
         try:
             proc = subprocess.run(
                 shell_args, shell=use_shell, capture_output=True,
-                text=True, timeout=self._timeout,
-                encoding=_SYS_ENCODING, errors="replace",
+                timeout=self._timeout,
                 cwd=str(workdir),
                 check=False,  # 非零退出码是验证结果本身，由 VerifyResult 表达
             )
@@ -67,11 +61,13 @@ class CommandVerifier(Verifier):
         except Exception as e:
             return VerifyResult(False, f"验证命令执行异常：{e}")
 
+        stdout = decode_subprocess_output(proc.stdout)
+        stderr = decode_subprocess_output(proc.stderr)
         parts = [f"[命令: {self._command}]", f"[工作目录: {workdir}]"]
-        if proc.stdout:
-            parts.append(proc.stdout[:self._max_output])
-        if proc.stderr:
-            parts.append(f"[stderr]\n{proc.stderr[:self._max_output]}")
+        if stdout:
+            parts.append(stdout[:self._max_output])
+        if stderr:
+            parts.append(f"[stderr]\n{stderr[:self._max_output]}")
         parts.append(f"[退出码: {proc.returncode}]")
         return VerifyResult(proc.returncode == 0, "\n".join(parts))
 

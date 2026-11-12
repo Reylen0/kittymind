@@ -85,6 +85,52 @@ def test_glob_still_finds_files_inside(ws):
     assert result.ok and "sub/a.py" in result.content
 
 
+def test_file_read_auto_falls_back_to_gbk_for_non_utf8_file(ws, monkeypatch):
+    """file_read 默认 utf-8 参数不该在非 UTF-8 源文件上硬解出乱码（见 kittymind.encoding）。"""
+    import kittymind.encoding as encoding_mod
+
+    monkeypatch.setattr(encoding_mod, "SYSTEM_ENCODING", "gbk")
+    target = Path(ws) / "legacy.txt"
+    target.write_bytes("你好世界".encode("gbk"))
+
+    result = FileReadTool().execute(FileReadToolParam(path="legacy.txt"))
+
+    assert result.ok, result.content
+    assert "你好世界" in result.content
+    assert "�" not in result.content
+
+
+def test_grep_finds_match_in_non_utf8_file(ws, monkeypatch):
+    import kittymind.encoding as encoding_mod
+
+    monkeypatch.setattr(encoding_mod, "SYSTEM_ENCODING", "gbk")
+    (Path(ws) / "legacy.txt").write_bytes("搜索目标行\n".encode("gbk"))
+
+    result = GrepTool().execute(GrepToolParam(pattern="目标", path="legacy.txt"))
+
+    assert result.ok, result.content
+    assert "搜索目标行" in result.content
+
+
+def test_file_read_line_numbers_do_not_split_on_form_feed(ws):
+    """文件里的分页符 \\f(FF) 不该被当成行尾——否则行号跟编辑器里看到的错位。
+
+    `str.splitlines()` 认 Unicode 分段符（FF/VT 等），文本模式 readlines() 不认；
+    file_read 必须对齐 readlines() 的语义（见 kittymind.encoding.split_lines）。
+    """
+    (Path(ws) / "paged.txt").write_bytes(b"a\x0cb\nc\nv\x0bf\n")
+
+    result = FileReadTool().execute(FileReadToolParam(path="paged.txt"))
+
+    assert result.ok, result.content
+    assert "3 行" in result.content
+    # 不用 result.content.splitlines() 来切分断言本身——它一样会把输出里内联的
+    # \x0c/\x0b 当成行尾切碎，直接找子串才是真正测的东西。
+    assert "1  a\x0cb\n" in result.content
+    assert "2  c\n" in result.content
+    assert result.content.rstrip("\n").endswith("3  v\x0bf")
+
+
 def test_ls_and_grep_resolve_relative_to_workspace(ws):
     (Path(ws) / "sub").mkdir()
     (Path(ws) / "sub" / "f.txt").write_text("needle\n", encoding="utf-8")

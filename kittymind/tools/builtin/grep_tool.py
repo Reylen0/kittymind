@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from ..base import BaseTool, ToolResult
 from ._paths import resolve_path
 from ...config import cfg
+from ...encoding import decode_bytes, split_lines
 
 # SKIP_DIRS / BINARY_EXTS 不在 _OVERRIDABLE 里，是常量而非可覆盖配置，故模块级捕获无害。
 _SKIP_DIRS     = cfg.SKIP_DIRS
@@ -74,8 +75,10 @@ class GrepTool(BaseTool):
     def _search_file(self, filepath: str, regex, base_dir: str, ctx: int) -> list[str]:
         if os.path.getsize(filepath) > cfg.GREP_MAX_FILE_SIZE: return []
         try:
-            with open(filepath, encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
+            with open(filepath, "rb") as f:
+                raw = f.read()
+            text, _ = decode_bytes(raw)
+            lines = split_lines(text)
         except Exception:
             return []
         rel = os.path.relpath(filepath, base_dir).replace("\\", "/")

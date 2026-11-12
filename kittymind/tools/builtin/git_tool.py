@@ -1,18 +1,11 @@
-import locale
 import os
 import subprocess
-import sys
 
 from pydantic import BaseModel, Field
 
 from ..base import BaseTool, ToolResult
 from ...config import cfg
-
-if sys.platform == "win32":
-    import ctypes
-    _SYS_ENCODING = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
-else:
-    _SYS_ENCODING = locale.getpreferredencoding(False) or "utf-8"
+from ...encoding import decode_subprocess_output
 
 _ALLOWED_ACTIONS = {"status", "diff", "add", "commit", "log", "branch", "show"}
 
@@ -43,8 +36,8 @@ class GitTool(BaseTool):
         timeout = cfg.GIT_TIMEOUT
         try:
             proc = subprocess.run(
-                cmd, cwd=workdir, capture_output=True, text=True,
-                timeout=timeout, encoding=_SYS_ENCODING, errors="replace",
+                cmd, cwd=workdir, capture_output=True,
+                timeout=timeout,
                 check=False,  # 非零退出码是正常结果（如 status 有改动），由返回值体现
             )
         except FileNotFoundError:
@@ -53,9 +46,11 @@ class GitTool(BaseTool):
             return ToolResult(False, f"错误: git 命令超时（{timeout}s）")
         except Exception as e:
             return ToolResult(False, f"错误: {e}")
+        stdout = decode_subprocess_output(proc.stdout)
+        stderr = decode_subprocess_output(proc.stderr)
         parts = []
-        if proc.stdout.strip(): parts.append(proc.stdout.rstrip())
-        if proc.stderr.strip(): parts.append(f"[stderr]\n{proc.stderr.rstrip()}")
+        if stdout.strip(): parts.append(stdout.rstrip())
+        if stderr.strip(): parts.append(f"[stderr]\n{stderr.rstrip()}")
         if proc.returncode != 0 and not parts: parts.append(f"[退出码: {proc.returncode}]")
         content = "\n".join(parts) if parts else "(无输出)"
         return ToolResult(proc.returncode == 0, content)

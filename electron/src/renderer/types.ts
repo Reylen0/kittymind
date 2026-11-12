@@ -10,6 +10,8 @@ export interface Message {
   toolName?: string
   toolArgs?: string
   toolResult?: string   // undefined = still running
+  /** 工具成功/失败：后端显式声明，undefined = 旧数据/未知，前端回退关键词猜测 */
+  toolOk?: boolean
   /** 历史消息（从库里读出来的整页）不播入场动画：打开会话时内容应「立刻就在那里」 */
   noAnim?: boolean
 }
@@ -32,6 +34,8 @@ export interface SessionMessage {
   tool_call_id?: string
   tool_name?: string
   tool_args?: string
+  /** role=tool 的成功/失败；缺失 = 旧数据/非 tool 行 */
+  ok?: boolean
 }
 
 export interface Workspace {

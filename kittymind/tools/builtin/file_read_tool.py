@@ -6,6 +6,7 @@ from ..base import BaseTool, ToolResult
 from ._fmt import human_size
 from ._paths import resolve_path
 from ...config import cfg
+from ...encoding import decode_bytes, split_lines
 
 
 class FileReadToolParam(BaseModel):
@@ -36,10 +37,12 @@ class FileReadTool(BaseTool):
                 f"{human_size(cfg.FILE_READ_MAX_BYTES)})，请用 start_line/end_line 分段读取",
             )
         try:
-            with open(path, encoding=parameters.encoding, errors="replace") as f:
-                all_lines = f.readlines()
+            with open(path, "rb") as f:
+                raw = f.read()
+            text, _ = decode_bytes(raw, parameters.encoding)
         except Exception as e:
             return ToolResult(False, f"错误: 读取失败 — {e}")
+        all_lines = split_lines(text)
         total = len(all_lines)
         start = max(1, parameters.start_line)
         end = total if parameters.end_line <= 0 else min(parameters.end_line, total)

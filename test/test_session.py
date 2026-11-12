@@ -78,6 +78,28 @@ def test_store_tool_calls_roundtrip(store):
     assert records[0]["tool_calls"] == tc
 
 
+def test_store_tool_ok_roundtrips_through_display_view(store):
+    """展示视图要把 ok 随 tool 行内联下发，前端据此判定成败（不再靠正则猜 content）。
+
+    非 tool 行、以及迁移前的旧数据没有这一列，视图里应该干脆不带 ok 键，
+    而不是硬塞一个 False——前端要能分清"明确失败"和"这条数据没有这个信息"。
+    """
+    tc = [{"id": "call_1", "function": {"name": "bash", "arguments": "{}"}}]
+    store.write_header("s1", {"version": 1, "id": "s1",
+                               "created_at": "2026-01-01T00:00:00+00:00"})
+    store.append("s1", {"seq": 0, "role": "assistant", "content": None, "tool_calls": tc})
+    store.append("s1", {"seq": 1, "role": "tool", "tool_call_id": "call_1",
+                         "content": "boom", "ok": False})
+    store.append("s1", {"seq": 2, "role": "user", "content": "继续"})
+
+    display = store.read_display("s1")
+
+    tool_row = next(m for m in display if m["role"] == "tool")
+    assert tool_row["ok"] is False
+    user_row = next(m for m in display if m["role"] == "user")
+    assert "ok" not in user_row
+
+
 # ── SessionManager ────────────────────────────────────────────────
 
 def test_manager_create_and_get(mgr):
@@ -153,6 +175,22 @@ def test_manager_append_turn_creates_session_if_missing(mgr):
     session = mgr.get_session("auto-sid")
     assert session is not None
     assert session["header"]["title"] == "hello"
+
+
+def test_manager_append_turn_carries_ok_for_tool_messages(mgr):
+    """`KittyAgent` 增量提交时 tool 消息带着内存里的 `ok` 键——append_turn
+    要把它原样落库，供前端展示视图读出来，而不是悄悄丢在落库这一步。"""
+    sid = mgr.create_session(title="test")
+    tc = [{"id": "call_1", "function": {"name": "bash", "arguments": "{}"}}]
+    turn = [
+        {"role": "assistant", "content": None, "tool_calls": tc},
+        {"role": "tool", "tool_call_id": "call_1", "content": "boom", "ok": False},
+    ]
+    mgr.append_turn(sid, turn, "跑个命令")
+
+    display = mgr.get_session(sid)["messages"]
+    tool_row = next(m for m in display if m["role"] == "tool")
+    assert tool_row["ok"] is False
 
 
 def test_manager_load_history(mgr):
@@ -276,6 +314,46 @@ def test_store_archive_and_compact_marks_mid(store):
     assert 0 in seqs
     assert 4 in seqs
     assert 5 in seqs
+
+
+def test_store_archive_and_compact_persists_ok_for_new_tool_messages(store):
+    """`new_active_msgs` 里的 tool 行也要带 ok 落库——这条参数设计上就是「本轮
+    新增消息」，一旦压缩路径真的传入非空列表（而不是现在 KittyAgent 固定传 []），
+    这批 tool 行的 ok 不该静默变成 NULL，否则前端又退回正则猜测。
+    """
+    store.write_header("s1", {"version": 1, "id": "s1",
+                               "created_at": "2026-01-01T00:00:00+00:00"})
+    store.append("s1", {"seq": 0, "role": "user", "content": "m0"})
+
+    store.archive_and_compact(
+        "s1",
+        compacted_seqs=set(),
+        summary_rows=[],
+        new_active_msgs=[
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "function": {"name": "bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "boom", "ok": False},
+        ],
+    )
+
+    display = store.read_display("s1")
+    tool_row = next(r for r in display if r["role"] == "tool")
+    assert tool_row["ok"] is False
+
+
+def test_store_read_full_contains_ok_for_tool_rows(store):
+    """审计视图（read_full）也要带 ok，不能只有展示视图（read_display）有。"""
+    store.write_header("s1", {"version": 1, "id": "s1",
+                               "created_at": "2026-01-01T00:00:00+00:00"})
+    tc = [{"id": "c1", "function": {"name": "bash", "arguments": "{}"}}]
+    store.append("s1", {"seq": 0, "role": "assistant", "content": None, "tool_calls": tc})
+    store.append("s1", {"seq": 1, "role": "tool", "tool_call_id": "c1",
+                         "content": "boom", "ok": False})
+
+    full = store.read_full("s1")
+
+    tool_row = next(r for r in full if r["role"] == "tool")
+    assert tool_row["ok"] is False
 
 
 def test_store_read_full_contains_compacted(store):

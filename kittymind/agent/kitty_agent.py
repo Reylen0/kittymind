@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
-_INTERNAL_KEYS = ("_seq", _SUMMARY_MARKER)
+_INTERNAL_KEYS = ("_seq", "ok", _SUMMARY_MARKER)
 
 # 辅助模型哨兵：默认「按配置自动解析」，显式传 None 表示强制回退主模型
 _AUX_AUTO = object()
@@ -363,6 +363,7 @@ class KittyAgent(Agent):
                     await self.event_bus.emit(AGENT_TOOL_RESULT, {
                         "name": name,
                         "result": result.get("content"),
+                        "ok": result.get("ok", True),
                         "session_id": session_id,
                     })
                     turn.messages.append(result)

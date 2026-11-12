@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 # 最新 schema 版本。**必须与 _migrations() 里最大的 version 相等**——
 # 测试 test_session_version_chain_matches_constant 会钉住这条，别只改一边。
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -93,7 +93,8 @@ CREATE TABLE IF NOT EXISTS messages (
     ts           INTEGER NOT NULL DEFAULT 0,
     active       INTEGER NOT NULL DEFAULT 1,
     compacted    INTEGER NOT NULL DEFAULT 0,
-    is_summary   INTEGER NOT NULL DEFAULT 0   -- 压缩摘要行，模型可见但前端不展示
+    is_summary   INTEGER NOT NULL DEFAULT 0,  -- 压缩摘要行，模型可见但前端不展示
+    ok           INTEGER                      -- role=tool 的成功/失败；NULL=非 tool 行或迁移前的旧数据
 );
 
 CREATE INDEX IF NOT EXISTS idx_msg_session_seq ON messages(session_id, seq);
@@ -147,7 +148,7 @@ _INDEXABLE_WHERE = (
 )
 
 # 展示视图的行/条件：原始消息（compacted=1）+ 活跃非摘要消息（active=1, is_summary=0）
-_DISPLAY_COLS = "seq, role, content, tool_calls, tool_call_id"
+_DISPLAY_COLS = "seq, role, content, tool_calls, tool_call_id, ok"
 _DISPLAY_WHERE = "session_id=? AND ((active=1 AND is_summary=0) OR compacted=1)"
 
 # 页首补齐的防呆上限：向前最多多取多少行（一批工具调用的行数不会接近这个量级）
@@ -330,6 +331,7 @@ class SqliteSessionStore:
             Migration(6, "fts_index", self._m_fts),
             Migration(7, "model_usage_table", self._m_usage),
             Migration(8, "add_archived_column", self._m_archived),
+            Migration(9, "add_tool_ok_column", self._m_tool_ok),
         ]
 
     def _m_drop_legacy_columns(self, conn: sqlite3.Connection) -> None:
@@ -364,6 +366,17 @@ class SqliteSessionStore:
             动作，不是状态锁，用户回来说话就说明它还在用。
         """
         self._ensure_column("sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
+
+    def _m_tool_ok(self, conn: sqlite3.Connection) -> None:
+        """v8 → v9：工具调用成功/失败标记列。
+
+        之前 `ToolResult.ok` 只在后端内部用来驱动守护栏/审计，从未写进消息行或
+        随事件下发给前端——前端只能靠对结果文本做关键词正则猜测"失败"，一旦
+        **成功**的工具输出里恰好出现 "error"/"失败" 等词（如 grep/bash 命中
+        这些词的正常内容）就会被误判。NULL 代表非 tool 行或迁移前的旧数据
+        （前端对 NULL 继续走旧的关键词兜底，新数据一律是显式 0/1）。
+        """
+        self._ensure_column("messages", "ok", "INTEGER")
 
     # ── 启动维护：备份 / 空间回收（重活丢后台）─────────────────────
 
@@ -653,8 +666,8 @@ class SqliteSessionStore:
         tc = record.get("tool_calls")
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO messages(session_id, seq, role, content, tool_calls, tool_call_id, ts)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages(session_id, seq, role, content, tool_calls, tool_call_id, ts, ok)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     session_id,
                     record["seq"],
@@ -663,6 +676,7 @@ class SqliteSessionStore:
                     json.dumps(tc, ensure_ascii=False) if tc else None,
                     record.get("tool_call_id"),
                     self._ts(),
+                    record.get("ok"),
                 ),
             )
             self._index_message(cur.lastrowid, record["role"], record.get("content"))
@@ -728,7 +742,7 @@ class SqliteSessionStore:
         """完整视图：active + compacted，按 seq 排序（审计 / 回溯用）。"""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT seq, role, content, tool_calls, tool_call_id, active, compacted"
+                "SELECT seq, role, content, tool_calls, tool_call_id, active, compacted, ok"
                 " FROM messages WHERE session_id=? AND (active=1 OR compacted=1)"
                 " ORDER BY seq",
                 (session_id,),
@@ -746,6 +760,8 @@ class SqliteSessionStore:
                 msg["tool_calls"] = json.loads(r[3])
             if r[4]:
                 msg["tool_call_id"] = r[4]
+                if r[7] is not None:
+                    msg["ok"] = bool(r[7])
             result.append(msg)
         return result
 
@@ -864,6 +880,8 @@ class SqliteSessionStore:
                     msg["tool_name"] = fn["name"]
                 if fn.get("arguments") is not None:
                     msg["tool_args"] = fn["arguments"]
+                if r[5] is not None:
+                    msg["ok"] = bool(r[5])
             records.append(msg)
         return records
 
@@ -970,8 +988,8 @@ class SqliteSessionStore:
                     tc = msg.get("tool_calls")
                     cur = self._conn.execute(
                         "INSERT INTO messages"
-                        "(session_id, seq, role, content, tool_calls, tool_call_id, ts, active, compacted)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)",
+                        "(session_id, seq, role, content, tool_calls, tool_call_id, ts, active, compacted, ok)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?)",
                         (
                             session_id, seq,
                             msg["role"],
@@ -979,6 +997,7 @@ class SqliteSessionStore:
                             json.dumps(tc, ensure_ascii=False) if tc else None,
                             msg.get("tool_call_id"),
                             ts,
+                            msg.get("ok"),
                         ),
                     )
                     self._index_message(cur.lastrowid, msg["role"], msg.get("content"))

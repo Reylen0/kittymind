@@ -45,9 +45,21 @@ function IcoChevron({ open }: { open: boolean }) {
   )
 }
 
-/** 启发式判断工具结果是否为失败 */
+/** 启发式判断工具结果是否为失败：仅在后端没给出明确 ok 时兜底用 */
 function looksLikeError(result: string): boolean {
   return /\b(error|Error|ERROR|Traceback|Exception|失败|错误)\b/.test(result)
+}
+
+/**
+ * 工具是否失败：后端 ToolResult.ok 显式随行/随事件下发，优先用它判定——
+ * 否则一个"成功"但输出里恰好含 "error"/"失败" 字样的工具（如 grep 命中了
+ * 代码里的 error 日志、bash 跑出退出码 0 但 stdout 里有 "0 errors"）会被
+ * 误判成失败。toolOk 为 undefined 只会出现在迁移前的旧历史数据上，这时才
+ * 退回关键词猜测。
+ */
+function isToolError(message: Message): boolean {
+  if (message.toolOk !== undefined) return !message.toolOk
+  return looksLikeError(message.toolResult ?? '')
 }
 
 /** 展开态入参压成单行，供折叠时的摘要显示 */
@@ -62,7 +74,7 @@ function oneLineArgs(args?: string): string {
 export function ToolCard({ message }: { message: Message }) {
   const [open, setOpen] = useState(true)
   const done = message.toolResult !== undefined
-  const isErr = done && !!message.toolResult && looksLikeError(message.toolResult)
+  const isErr = done && isToolError(message)
   const preview = oneLineArgs(message.toolArgs)
 
   return (
@@ -125,7 +137,7 @@ export function ToolGroup({ items, forceOpen = false }: { items: Message[]; forc
 
   const effectiveOpen = forceOpen || open
   const names = [...new Set(items.map(m => m.toolName ?? 'tool'))]
-  const errCount = items.filter(m => m.toolResult !== undefined && looksLikeError(m.toolResult ?? '')).length
+  const errCount = items.filter(m => m.toolResult !== undefined && isToolError(m)).length
   const doneCount = items.filter(m => m.toolResult !== undefined).length
 
   return (

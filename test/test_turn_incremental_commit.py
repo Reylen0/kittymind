@@ -209,3 +209,28 @@ async def test_commit_compaction_is_a_noop_without_anything_to_compact(tmp_path)
     agent._commit_compaction(turn, "s1")  # 不抛即通过
 
     assert sm.get_session_state("s1").get("compressed_once") is not True
+
+
+# ── ok 字段也走增量提交，不只是等轮次收尾才补 ───────────────────────
+
+async def test_tool_ok_flag_is_persisted_by_the_incremental_commit(tmp_path):
+    """工具失败（ok=False）时，这个标记要跟着同一步的增量提交落库——前端据此
+    判定成败（见 kittymind.encoding 的姊妹修复：ARCHITECTURE.md 同批 bug）。
+    """
+    class _FailingExecutor:
+        async def execute(self, tool_call, session_id=None, guardrail_state=None):
+            return {"role": "tool", "tool_call_id": tool_call.get("id"),
+                    "content": "boom", "ok": False}
+
+        async def execute_batch(self, tool_calls, session_id=None, guardrail_state=None):
+            return [await self.execute(tc, session_id, guardrail_state) for tc in tool_calls]
+
+    agent = _make_agent(tmp_path, steps=[("", [_tool_call("bash")]), ("done", [])])
+    agent.tool_executor = _FailingExecutor()
+
+    result = await agent.run("s1", "跑个会失败的命令")
+    assert result.text == "done"
+
+    display = agent.session_manager.get_session("s1")["messages"]
+    tool_row = next(m for m in display if m["role"] == "tool")
+    assert tool_row["ok"] is False

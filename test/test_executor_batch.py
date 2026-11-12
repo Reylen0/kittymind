@@ -134,6 +134,40 @@ async def test_unknown_tool_errors_without_killing_batch():
     assert results[1]["content"] == "fine"
 
 
+# ── ok 字段随行传递（前端据此判定成败，不再靠关键词猜测 content）──────
+
+async def test_tool_result_carries_explicit_ok_even_when_content_says_error():
+    """内容里出现 "error"/"失败" 字样，但工具自己声明 ok=True，结果字典里的
+    ok 必须忠实反映 ToolResult.ok，不能被 content 文本带偏——这正是前端过去
+    靠正则猜测会出错的场景（如 grep 命中了含 "error" 字样的正常代码行）。
+    """
+    reg = _MapRegistry({
+        "grep": _ProbeTool(name="grep", result="app.py:12: log.error('боот')", ok=True, safe=True),
+    })
+    executor = ToolExecutor(reg)
+    result = await executor.execute(_call("grep"))
+    assert result["ok"] is True
+    assert "error" in result["content"]
+
+
+async def test_tool_result_ok_false_on_genuine_failure():
+    reg = _MapRegistry({
+        "bash": _ProbeTool(name="bash", result="boom", ok=False, safe=True),
+    })
+    executor = ToolExecutor(reg)
+    result = await executor.execute(_call("bash"))
+    assert result["ok"] is False
+
+
+async def test_blocked_results_report_ok_false():
+    """决策段拦截（非法参数/权限拒绝）合成的结果也要带 ok=False，不能让前端
+    误以为"没有 content 报错字样就是成功"。"""
+    executor = ToolExecutor(_MapRegistry({}))
+    bad_args_call = {"id": "c1", "function": {"name": "x", "arguments": "{not json"}}
+    result = await executor.execute(bad_args_call)
+    assert result["ok"] is False
+
+
 # ── 守护栏记账顺序 ──────────────────────────────────────────────────
 
 async def test_sequential_barrier_preserves_guardrail_escalation():

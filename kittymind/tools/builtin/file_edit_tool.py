@@ -6,6 +6,7 @@ from ..base import BaseTool, ToolResult
 from ._fmt import human_size
 from ._paths import resolve_path
 from ...config import cfg
+from ...encoding import decode_bytes
 
 
 class FileEditToolParam(BaseModel):
@@ -30,8 +31,9 @@ class FileEditTool(BaseTool):
         if os.path.getsize(path) > cfg.FILE_EDIT_MAX_SIZE:
             return ToolResult(False, f"错误: 文件超过 {human_size(cfg.FILE_EDIT_MAX_SIZE)}，请使用 file_write 整体替换")
         try:
-            with open(path, encoding=parameters.encoding, errors="replace") as f:
-                content = f.read()
+            with open(path, "rb") as f:
+                raw = f.read()
+            content, used_encoding = decode_bytes(raw, parameters.encoding)
         except Exception as e:
             return ToolResult(False, f"错误: 读取失败 — {e}")
         count = content.count(parameters.old_string)
@@ -42,7 +44,9 @@ class FileEditTool(BaseTool):
             return ToolResult(False, f"错误: old_string 在文件中出现了 {count} 次，请添加更多上下文使其唯一")
         new_content = content.replace(parameters.old_string, parameters.new_string, 1)
         try:
-            with open(path, "w", encoding=parameters.encoding, errors="replace") as f:
+            # 写回时沿用读取时实际生效的编码（而非入参默认值），否则一份本来是
+            # GBK 的文件会被本次编辑悄悄转成 UTF-8——改的是内容，不该顺带改编码。
+            with open(path, "w", encoding=used_encoding) as f:
                 f.write(new_content)
         except Exception as e:
             return ToolResult(False, f"错误: 写入失败 — {e}")
