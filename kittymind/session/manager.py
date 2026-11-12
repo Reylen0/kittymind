@@ -209,11 +209,17 @@ class SessionManager:
 
     def append_turn(self, session_id: str, turn_messages: list[dict],
                     first_input: str | None = None,
-                    workspace_id: str | None = None) -> None:
+                    workspace_id: str | None = None) -> list[int]:
+        """追加消息，返回按 `turn_messages` 顺序分配到的真实 seq。
+
+        返回值供调用方（`KittyAgent` 的轮内增量提交）把 `_seq`
+        原地标回内存里的消息 dict，供后续压缩判断"这条是否已经持久化"。
+        """
         if not self.store.exists(session_id):
             self.create_session(title=self.generate_title(first_input or ""),
                                 session_id=session_id, workspace_id=workspace_id)
         seq = self.store.next_seq(session_id)
+        seqs: list[int] = []
         for msg in turn_messages:
             record: dict = {"seq": seq, "role": msg["role"], "content": msg.get("content")}
             if msg.get("tool_calls"):
@@ -221,7 +227,9 @@ class SessionManager:
             if msg.get("tool_call_id"):
                 record["tool_call_id"] = msg["tool_call_id"]
             self.store.append(session_id, record)
+            seqs.append(seq)
             seq += 1
+        return seqs
 
     def load_messages(self, session_id: str) -> list[dict]:
         """返回带 seq 的活跃消息列表（供 agent 打 _seq 标记）。"""

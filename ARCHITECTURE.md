@@ -123,7 +123,7 @@ kittymind/                      # 项目根目录
 | **M-D** | 可观测与产品化交付 | 26-29 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 30-31 | ⬜ |
 | **M-F** | 网关预留与桌宠深化 | 32-33 | ⬜ |
-| **M-G** | 长任务稳定性与断点恢复 | 34 | ⬜ |
+| **M-G** | 长任务稳定性与断点恢复 | 34 | 🟡 |
 
 ---
 
@@ -275,9 +275,9 @@ kittymind/                      # 项目根目录
 
 ---
 
-### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）⬜
+### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）🟡
 
-**Phase 34 — 长任务稳定性与断点恢复 ⬜**
+**Phase 34 — 长任务稳定性与断点恢复 🟡（①已实现）**
 
 **现状缺口**：当前一次流式 ReAct 循环（`async_stream_run`）从组装 `TurnContext` 到产出 `final_text` 全程只在内存里推进——`turn.messages`/`turn.turn_messages` 直到循环结束才由 `_commit_turn()` 一次性落库（Phase 14）。这意味着：
 
@@ -289,8 +289,10 @@ kittymind/                      # 项目根目录
 
 设计围绕一条原则展开：**长任务崩溃后，已经发生的事绝不能从历史里凭空消失；框架无法安全自动判断的，交还给模型自己核实**。五块各自独立、可渐进落地：
 
-**① 消息面：轮内增量提交**
+**① 消息面：轮内增量提交 ✅**
 把 `_commit_turn()` 的调用时机从"`final_text` 产出后一次"改成"每个 ReAct 步骤（一条 assistant 消息 + 对应一批 tool_result 回填完）结束后一次"，复用现有 `append_turn()` 原子写入（不新发明持久化机制）；用户消息在轮次一开始、第一次调用 LLM 之前就先行提交。写入频率从 O(1)/轮升到 O(步数)/轮，但单次写入量更小，量级与现有 `tool_audit.db`（本来就是每次工具调用一条）相当，不是新的负载数量级。压缩（`archive_and_compact`）本身已经是原子操作，触发时机不变，只是压缩后的消息随下一步的增量提交一起落盘，不再需要撑到轮结束才生效。
+架构：`KittyAgent._commit_new_messages()`（包 `append_turn`，把分配到的真实 seq 原地标回 `turn.messages`/`turn.turn_messages` 共享的同一批 dict 对象，`turn.loaded_seqs` 随之增长）在三处被调用——轮次开始提交用户消息、每步工具调用批次执行完立即提交、循环结束后提交尾部的最终 assistant 消息；`_commit_compaction()` 在 `did_compress` 为真的当下立即调用 `archive_and_compact`（`new_active_msgs` 固定传空列表，因为本轮新消息已由前者单独提交），同步把 `compressed_once` 写入 `session_state`。原 `_commit_turn()` 瘦身为"只补最后一条消息 + 落用量成本"，`compressed_this_turn` 字段连同分支判断整体删除（已无存在必要）。关键文件：`agent/kitty_agent.py`、`session/manager.py`（`append_turn` 现在返回分配到的 seq 列表）。测试：`test/test_turn_incremental_commit.py`（LLM 在循环中途抛异常模拟进程崩溃，断言已完成的步骤仍在 `sessions.db` 里；直接单测 `_commit_compaction` 的落库与 `loaded_seqs` 更新）。
+剩余：②③④⑤仍未实现，见下。
 
 **② 状态面：`turn_in_progress` 标记（崩溃检测）**
 `sessions` 表新增两列（schema v9，走 Phase 18 既有迁移链，允许跳号）：`turn_in_progress INTEGER NOT NULL DEFAULT 0`、`turn_started_at TEXT`。轮次开始（用户消息提交后）置位，正常结束或显式 `turn/cancel` 完成的 `finally` 分支清除。启动自检（挂在 Phase 18 现有的 `quick_check` 流程旁，不单独起一遍扫描）发现 `turn_in_progress=1` 的会话，即"进程上次被杀时正在跑的 turn"，经新事件推给前端在侧栏标"上次异常中断"——用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。
@@ -310,6 +312,16 @@ kittymind/                      # 项目根目录
 `core/llm.py` 的 `invoke`/`async_stream_with_tools` 外包一层重试：只重试网络层 / 429 / 5xx / 超时这类分类明确的瞬时错误（400/401 这类业务错误不重试），指数退避，次数与基础延迟可配置（`LLM_RETRY_MAX_ATTEMPTS`/`LLM_RETRY_BASE_DELAY`）。流式调用的重试边界卡在**第一个 `text_delta`/`tool_calls_done` 产出之前**——一旦已经有内容流给前端，失败就不再重试（避免输出重复/错乱），走现有"抛异常中断本轮"路径，由①的增量提交兜底，不会丢失已完成的步骤。
 
 **对 Phase 30 / 31 的复用**：Cron 定时任务与后台任务委派本质上都是"不保证有人在前台盯着的 turn"，设计时直接复用本 phase 的 `turn_in_progress` 标记与③的幂等分类恢复机制，不需要各自发明一套。
+
+**推进顺序**：五块耦合度不同，按"独立 / 低风险"先、"依赖 / 高风险"后分两条线推进，不要混在一个 PR 里：
+
+1. **⑤ LLM 调用重试**——改动面最小（`core/llm.py` 外包一层，零 schema 变更），不依赖其余四块，先做建立"瞬时错误分类 + 退避"这类测试模式的信心。
+2. **④ 工具取消的物理传导**——同样不碰持久化层，`bash` 换 `asyncio.create_subprocess_exec`、`task` 加挂钟超时，修的是"停止按钮是假的"这个当下就能感知到的体验问题，和①②③完全解耦，可以和⑤并行甚至调换顺序。
+3. **① 轮内增量提交 ✅（已实现）**——本阶段真正的地基，改动面最大（动的是 `async_stream_run`/`_commit_turn` 热路径），已单独落地并配套 `test/test_turn_incremental_commit.py`，全量 788 测试通过。
+4. **② `turn_in_progress` 标记**——只有①落地之后才有意义（没有增量提交，标记了也没有可恢复的数据可看），是①之上的轻量追加（一次 schema 迁移 + 置位/清除两行 + 启动扫描 + 一个新事件），风险低，①已就位，可以紧接着做。
+5. **③ 悬空 tool_call 恢复 + `turn/resume`**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"按钮三件套），放最后；这也是 Phase 30/31 真正要复用的部分，③完成之前 30/31 复用不了什么实质内容。
+
+也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①现已完成，下一步是②。
 
 **已知边界**（这次设计不解决什么）：
 - 不追求"分布式 exactly-once"语义——单机单进程场景下目标是"崩溃后可观测、可人工核实、不隐藏数据丢失"，不是"自动保证任意副作用工具恰好执行一次"（`bash` 这类工具的副作用本来就不可能被框架兜底，参见"安全模型"一节的同类立场）。

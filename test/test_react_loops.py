@@ -106,13 +106,15 @@ class _Recorder:
 
 class _FakeSessionManager:
     """只给出 `run_conversation`（工作目录解析 + 组装本轮运行态）/ `_build_messages` /
-    `_commit_turn` 需要的最小接口（不碰 SQLite；本文件的测试不落压缩分支，故
-    `session_exists` / `archive_and_compact` 均不需要实现）。
+    增量提交（`_commit_new_messages` / `_commit_turn`）需要的最小接口（不碰
+    SQLite；本文件的测试不触发压缩分支，故 `archive_and_compact` 不需要实现）。
     """
 
     def __init__(self, rows: list[dict]):
         self._rows = rows
         self.committed: list[tuple] = []
+        # 远离 rows 里的历史 seq 区间，避免跟测试数据的 seq 撞号
+        self._next_seq = 1000
 
     def get_session_header(self, session_id):
         return None  # 无存量 workspace_id 记录，回退默认工作目录
@@ -125,6 +127,9 @@ class _FakeSessionManager:
 
     def append_turn(self, session_id, turn_messages, input_text, workspace_id=None):
         self.committed.append((session_id, turn_messages, input_text))
+        seqs = list(range(self._next_seq, self._next_seq + len(turn_messages)))
+        self._next_seq += len(turn_messages)
+        return seqs
 
     def save_session_state(self, session_id, **state_fields):
         pass

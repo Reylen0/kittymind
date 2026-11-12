@@ -89,7 +89,6 @@ class TurnContext:
     effective_workspace_id: str | None
     turn_messages: list[dict]
     final_text: str | None = None
-    compressed_this_turn: bool = False
     cooldown_until: float = 0.0
     ineffective_count: int = 0
     guardrail_state: GuardrailTurnState = field(default_factory=GuardrailTurnState)
@@ -237,7 +236,10 @@ class KittyAgent(Agent):
             compressor=compressor,
             session_id=session_id,
             effective_workspace_id=effective_workspace_id,
-            turn_messages=[{"role": "user", "content": input_text}],
+            # 与 messages 末尾的用户消息共用同一个 dict 对象（不是内容相同的
+            # 两份拷贝）：增量提交给它打 `_seq` 时，两份视图原地同步可见，
+            # 跟循环里 assistant_msg / tool result 的共享写法一致。
+            turn_messages=[messages[-1]],
         )
 
         cwd_token = budget_token = session_token = usage_token = None
@@ -272,6 +274,11 @@ class KittyAgent(Agent):
         """
         await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
+        # 轮内增量提交：用户消息先行落库，不等整轮跑完——即使本轮随后崩溃，
+        # 这条消息也不会从历史里消失。
+        if session_id is not None and self.session_manager is not None:
+            self._commit_new_messages(turn, session_id, [turn.turn_messages[0]], input_text)
+
         # 记忆召回作为独立 system 消息插在主 system 之后。
         await self._inject_memory_recall(turn.messages, input_text, session_id)
         # 技能目录同样作为独立 system 消息追加——排在记忆召回段之后，更接近
@@ -284,9 +291,11 @@ class KittyAgent(Agent):
                     turn.messages, turn.tracker, turn.compressor, turn.cooldown_until
                 )
                 if did_compress:
-                    turn.compressed_this_turn = True
                     # 历史前缀已被重写，跨轮缓存反正失效 —— 顺势标记召回段待重算
                     self._mark_recall_stale(session_id)
+                    # 轮内增量提交：压缩结果立即落库，不等整轮跑完。
+                    if session_id is not None and self.session_manager is not None:
+                        self._commit_compaction(turn, session_id)
 
                 await self.event_bus.emit(AGENT_THINKING, {"session_id": session_id})
 
@@ -359,6 +368,13 @@ class KittyAgent(Agent):
                     turn.messages.append(result)
                     turn.turn_messages.append(result)
 
+                # 轮内增量提交：本步 assistant+tool_result 批次立即落库，
+                # 不等整轮跑完。
+                if session_id is not None and self.session_manager is not None:
+                    self._commit_new_messages(
+                        turn, session_id, [assistant_msg, *results], input_text,
+                    )
+
             turn.final_text = self._ensure_final_text(turn.final_text)
 
             if _result is not None:
@@ -368,11 +384,7 @@ class KittyAgent(Agent):
             turn.turn_messages.append({"role": "assistant", "content": turn.final_text})
 
             if session_id is not None:
-                self._commit_turn(
-                    session_id, turn.messages, turn.turn_messages,
-                    turn.compressor, turn.tracker, turn.effective_workspace_id, input_text,
-                    turn.compressed_this_turn, turn.loaded_seqs, turn.recorder,
-                )
+                self._commit_turn(session_id, turn, input_text)
 
             await self.event_bus.emit(AGENT_DONE, {"session_id": session_id, "text": turn.final_text})
 
@@ -615,82 +627,90 @@ class KittyAgent(Agent):
             ineffective_count = 0
         return cooldown_until, ineffective_count
 
-    # ── 结果落库 ──────────────────────────────────────────────────
+    # ── 结果落库：轮内增量提交 ──────────────────────
+    #
+    # 不再等整轮跑完才一次性落库：用户消息在轮次开始即提交，每步工具调用
+    # 批次执行完立即提交，压缩发生时立即提交——进程在循环中途被杀，已经
+    # 发生的消息与工具副作用仍会出现在 sessions.db 里，不会凭空消失。
+    # `_commit_turn` 现在只处理循环结束后才产出、尚未持久化的最后一条
+    # 消息，以及压缩状态/用量成本这类只需在轮尾收一次的状态。
 
-    def _commit_turn(
-        self,
-        session_id: str,
-        messages: list[dict],
-        turn_messages: list[dict],
-        compressor: ContextCompressor,
-        tracker: TokenTracker,
-        effective_workspace_id: str | None,
-        input_text: str,
-        compressed_this_turn: bool,
-        loaded_seqs: list,
-        recorder: UsageRecorder,
+    def _commit_new_messages(
+        self, turn: TurnContext, session_id: str, msgs: list[dict], input_text: str,
     ) -> None:
-        """将本轮结果原子落库。
+        """把 `msgs` 原子追加落库，并把分配到的真实 seq 原地标回这些 dict。
 
-        有压缩：archive_and_compact（中段标 compacted，摘要用小数 seq，新消息追加）。
-        无压缩：append_turn（普通追加）。
+        `msgs` 里的 dict 与 `turn.messages`/`turn.turn_messages` 中的是同一对象
+        引用（循环内 `turn.messages.append(x); turn.turn_messages.append(x)` 两处
+        append 的都是同一个 x）——原地打 `_seq` 后两份视图同时可见"这条已持久化"，
+        供后续压缩的 compacted_seqs 对账使用。`turn.loaded_seqs` 随之增长：它
+        不再只是"轮次开始时已加载的历史"，还包含本轮内已增量提交过的消息。
+        """
+        seqs = self.session_manager.append_turn(
+            session_id, msgs, input_text, workspace_id=turn.effective_workspace_id,
+        )
+        for msg, seq in zip(msgs, seqs, strict=True):
+            msg["_seq"] = seq
+        turn.loaded_seqs.extend(seqs)
+
+    def _commit_compaction(self, turn: TurnContext, session_id: str) -> None:
+        """压缩发生时立即落库（而非等整轮结束），逻辑与旧版 `_commit_turn` 的压缩
+        分支一致，只是提前触发：崩溃时已经完成的压缩不会连带丢失。
+
+        `turn.loaded_seqs` 此时已含跨轮历史与本轮此前所有增量提交过的消息 seq，
+        因此"被压缩掉的旧行"计算对二者一视同仁——不区分是上一轮的历史还是
+        这一轮刚提交的内容。
+        """
+        messages = turn.messages
+        kept_seqs = {m["_seq"] for m in messages if "_seq" in m}
+        compacted_seqs = set(turn.loaded_seqs) - kept_seqs
+        if not compacted_seqs:
+            return  # 压缩只动了尚未持久化的本轮内容，没有旧行需要标记
+
+        summary_rows: list[dict] = []
+        summary_msgs: list[dict] = []
+        for i, m in enumerate(messages):
+            if not m.get(_SUMMARY_MARKER) or "_seq" in m:
+                continue
+            prev_seq = self._find_prev_seq(messages, i)
+            next_seq = self._find_next_seq(messages, i)
+            seq = self._midpoint_seq(prev_seq, next_seq)
+            summary_rows.append({"seq": seq, "role": m["role"], "content": m.get("content")})
+            summary_msgs.append(m)
+
+        # 用户消息已在轮次开始时提交、session 必已存在，这里不需要像旧版那样
+        # 再判一次 session_exists / create_session。
+        self.session_manager.archive_and_compact(session_id, compacted_seqs, summary_rows, [])
+
+        for m, row in zip(summary_msgs, summary_rows, strict=True):
+            m["_seq"] = row["seq"]
+        turn.loaded_seqs = [s for s in turn.loaded_seqs if s not in compacted_seqs]
+        turn.loaded_seqs.extend(row["seq"] for row in summary_rows)
+        self.session_manager.save_session_state(session_id, compressed_once=True)
+
+    def _commit_turn(self, session_id: str, turn: TurnContext, input_text: str) -> None:
+        """轮次收尾：落库循环结束后才产出的最后一条消息 + 压缩状态 + 用量成本。
+
+        本轮其余消息已随 ReAct 循环逐步提交（`_commit_new_messages` /
+        `_commit_compaction`）；`compressed_once` 也已在压缩发生的当下随
+        `_commit_compaction` 落库，这里不重复处理。
         """
         if not self.session_manager:
             return
 
-        if compressed_this_turn:
-            # ── 压缩路径 ──────────────────────────────────────────
-            # 仍在工作集里的历史 seq
-            kept_seqs = {m["_seq"] for m in messages if "_seq" in m}
-            # 被压缩掉的历史 seq = 已加载 - 仍保留
-            compacted_seqs = set(loaded_seqs) - kept_seqs
+        self._commit_new_messages(turn, session_id, [turn.turn_messages[-1]], input_text)
 
-            # 找出摘要行（有 _SUMMARY_MARKER、无 _seq）并计算小数 seq
-            summary_rows: list[dict] = []
-            for i, m in enumerate(messages):
-                if not m.get(_SUMMARY_MARKER) or "_seq" in m:
-                    continue
-                # 找相邻的 _seq 来计算插入位置
-                prev_seq = self._find_prev_seq(messages, i)
-                next_seq = self._find_next_seq(messages, i)
-                summary_rows.append({
-                    "seq":  self._midpoint_seq(prev_seq, next_seq),
-                    "role": m["role"],
-                    "content": m.get("content"),
-                })
-
-            # 本轮新消息直接用 turn_messages（已含 final_text assistant 消息）
-            # 不能从 messages 派生——messages 的 ReAct 循环在 final_text 确定后 break，
-            # 不会把最终 assistant 消息 append 进去，从 messages 派生会丢这条。
-            new_active = [m for m in turn_messages if not m.get(_SUMMARY_MARKER)]
-
-            if not self.session_manager.session_exists(session_id):
-                self.session_manager.create_session(
-                    title=self.session_manager.generate_title(input_text),
-                    session_id=session_id, workspace_id=effective_workspace_id,
-                )
-            self.session_manager.archive_and_compact(
-                session_id, compacted_seqs, summary_rows, new_active
-            )
-        else:
-            # ── 普通追加路径 ──────────────────────────────────────
-            self.session_manager.append_turn(
-                session_id, turn_messages, input_text,
-                workspace_id=effective_workspace_id,
-            )
-
-        # 持久化压缩状态
         # last_prompt_tokens 只在有实际值时更新：Bedrock 代理可能返回 0，
         # 写入 0 会导致下轮误判上下文占用为 0，保留旧值更安全。
-        state_fields: dict = {"compressed_once": compressor._compressed_once}
-        if tracker._last_prompt_tokens:
-            state_fields["last_prompt_tokens"] = tracker._last_prompt_tokens
-        self.session_manager.save_session_state(session_id, **state_fields)
+        if turn.tracker._last_prompt_tokens:
+            self.session_manager.save_session_state(
+                session_id, last_prompt_tokens=turn.tracker._last_prompt_tokens,
+            )
 
         # 用量成本落库：一个 turn 内多次 LLM 调用已由 recorder 聚合，
         # 按模型展开写入。子 Agent 的用量也并进本 recorder（见 task_tool 回传）。
-        if not recorder.is_empty:
-            for row in recorder.rows():
+        if not turn.recorder.is_empty:
+            for row in turn.recorder.rows():
                 self.session_manager.record_usage(
                     session_id=session_id,
                     model_id=row["model_id"],
