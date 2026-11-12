@@ -86,6 +86,17 @@ function IcoArchive() {
   )
 }
 
+/** 上一轮异常中断（进程退出时来不及清除 turn_in_progress）的提示角标 */
+function IcoInterrupted() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 1.3l6 10.4H1z"/>
+      <line x1="7" y1="5.3" x2="7" y2="8.3"/>
+      <circle cx="7" cy="10.3" r="0.15" fill="currentColor"/>
+    </svg>
+  )
+}
+
 function IcoEdit() {
   return (
     <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
@@ -191,9 +202,16 @@ function SessionItem({ s, currentId, onSelect, onAskDelete, onToggleArchive, onR
           }}
         />
       ) : (
-        <span className="session-title" title={archived ? `${displayTitle}（已归档）` : undefined}>
-          {displayTitle}
-        </span>
+        <>
+          {s.turn_in_progress && (
+            <span className="session-interrupted-badge" title="上次异常中断：进程退出时这轮对话还没跑完，已发生的内容都已保存，可以点进去查看">
+              <IcoInterrupted />
+            </span>
+          )}
+          <span className="session-title" title={archived ? `${displayTitle}（已归档）` : undefined}>
+            {displayTitle}
+          </span>
+        </>
       )}
       {/* 悬浮才出现的三个按钮：重命名最靠视线中心，删除是破坏性操作放最右边，
           减少误点。归档只收起不删数据、重命名不丢数据，所以都不弹确认，只有删除弹。 */}

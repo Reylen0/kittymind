@@ -106,8 +106,9 @@ class _Recorder:
 
 class _FakeSessionManager:
     """只给出 `run_conversation`（工作目录解析 + 组装本轮运行态）/ `_build_messages` /
-    增量提交（`_commit_new_messages` / `_commit_turn`）需要的最小接口（不碰
-    SQLite；本文件的测试不触发压缩分支，故 `archive_and_compact` 不需要实现）。
+    增量提交（`_commit_new_messages` / `_commit_turn`）/ 崩溃检测标记
+    （`mark_turn_started` / `mark_turn_finished`，Phase 34 ②）需要的最小接口
+    （不碰 SQLite；本文件的测试不触发压缩分支，故 `archive_and_compact` 不需要实现）。
     """
 
     def __init__(self, rows: list[dict]):
@@ -132,6 +133,12 @@ class _FakeSessionManager:
         return seqs
 
     def save_session_state(self, session_id, **state_fields):
+        pass
+
+    def mark_turn_started(self, session_id):
+        pass
+
+    def mark_turn_finished(self, session_id):
         pass
 
 

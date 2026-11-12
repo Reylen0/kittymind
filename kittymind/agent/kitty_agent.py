@@ -259,6 +259,11 @@ class KittyAgent(Agent):
                 reset_root_budget(budget_token)
                 reset_root_session(session_token)
                 reset_root_usage_recorder(usage_token)
+            # 崩溃检测标记清除（Phase 34 ②）：无论正常结束、抛异常还是被
+            # `turn/cancel` 取消（CancelledError 经由这个 async for 传播到这里），
+            # 都会走到这个 finally——没有真正的 mark_turn_started 过也安全（幂等）。
+            if session_id is not None and self.session_manager is not None:
+                self.session_manager.mark_turn_finished(session_id)
 
     async def async_stream_run(
         self, turn: TurnContext, session_id: str | None, input_text: str,
@@ -278,6 +283,9 @@ class KittyAgent(Agent):
         # 这条消息也不会从历史里消失。
         if session_id is not None and self.session_manager is not None:
             self._commit_new_messages(turn, session_id, [turn.turn_messages[0]], input_text)
+            # 崩溃检测标记（Phase 34 ②）：本轮开始，清除/设置都在 run_conversation
+            # 的 finally 里完成——进程若在这之后被杀，标记原样留下，下次启动可查。
+            self.session_manager.mark_turn_started(session_id)
 
         # 记忆召回作为独立 system 消息插在主 system 之后。
         await self._inject_memory_recall(turn.messages, input_text, session_id)

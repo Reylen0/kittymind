@@ -68,6 +68,25 @@ def test_store_get_and_save_state(store):
     assert state2["last_prompt_tokens"] == 5000
 
 
+def test_store_turn_in_progress_roundtrip(store):
+    """崩溃检测标记（Phase 34 ②）：默认关闭，置位/清除都要忠实落库。"""
+    store.write_header("s1", {"version": 1, "id": "s1",
+                               "created_at": "2026-01-01T00:00:00+00:00"})
+    state = store.get_state("s1")
+    assert state["turn_in_progress"] is False
+    assert state["turn_started_at"] is None
+
+    store.save_state("s1", turn_in_progress=True, turn_started_at="2026-01-01T00:00:01+00:00")
+    state2 = store.get_state("s1")
+    assert state2["turn_in_progress"] is True
+    assert state2["turn_started_at"] == "2026-01-01T00:00:01+00:00"
+
+    store.save_state("s1", turn_in_progress=False, turn_started_at=None)
+    state3 = store.get_state("s1")
+    assert state3["turn_in_progress"] is False
+    assert state3["turn_started_at"] is None
+
+
 def test_store_tool_calls_roundtrip(store):
     tc = [{"id": "call_1", "function": {"name": "bash", "arguments": "{}"}}]
     store.write_header("s1", {"version": 1, "id": "s1",
@@ -114,6 +133,18 @@ def test_manager_list_sessions(mgr):
     mgr.create_session(title="A")
     mgr.create_session(title="B")
     assert len(mgr.list_sessions()) == 2
+
+
+def test_manager_list_sessions_reports_turn_in_progress(mgr):
+    """侧栏靠这个字段标"上次异常中断"——list_sessions 必须带上它。"""
+    sid = mgr.create_session(title="A")
+    assert mgr.list_sessions()[0]["turn_in_progress"] is False
+
+    mgr.mark_turn_started(sid)
+    assert mgr.list_sessions()[0]["turn_in_progress"] is True
+
+    mgr.mark_turn_finished(sid)
+    assert mgr.list_sessions()[0]["turn_in_progress"] is False
 
 
 # ── P0 回归：session/list 不得读取消息表 ──────────────────────────
@@ -241,6 +272,27 @@ def test_manager_session_state_roundtrip(mgr):
     state = mgr.get_session_state(sid)
     assert bool(state["compressed_once"]) is True
     assert state["last_prompt_tokens"] == 8192
+
+
+def test_manager_mark_turn_started_and_finished(mgr):
+    sid = mgr.create_session()
+
+    mgr.mark_turn_started(sid)
+    state = mgr.get_session_state(sid)
+    assert state["turn_in_progress"] is True
+    assert state["turn_started_at"]  # 非空时间戳
+
+    mgr.mark_turn_finished(sid)
+    state2 = mgr.get_session_state(sid)
+    assert state2["turn_in_progress"] is False
+    assert state2["turn_started_at"] is None
+
+
+def test_manager_mark_turn_finished_without_start_is_a_safe_noop(mgr):
+    """没有对应的 mark_turn_started 也能安全调用（如提交用户消息本身就失败的场景）。"""
+    sid = mgr.create_session()
+    mgr.mark_turn_finished(sid)
+    assert mgr.get_session_state(sid)["turn_in_progress"] is False
 
 
 def test_manager_get_session_derives_token_counts(mgr):
@@ -615,6 +667,7 @@ def test_legacy_db_migration_adds_new_columns(tmp_path, version):
     assert "is_summary" in msg_cols, f"v{version} 迁移后缺 is_summary 列"
     ses_cols = {r[1] for r in sqlite3.connect(str(db)).execute("PRAGMA table_info(sessions)")}
     assert "archived" in ses_cols, f"v{version} 迁移后缺 archived 列"
+    assert "turn_in_progress" in ses_cols, f"v{version} 迁移后缺 turn_in_progress 列"
     # 断言常量而非字面量：schema 每次升版都要改这行的话，迟早改漏
     ver = sqlite3.connect(str(db)).execute("PRAGMA user_version").fetchone()[0]
     assert ver == _SCHEMA_VERSION

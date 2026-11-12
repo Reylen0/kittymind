@@ -103,11 +103,12 @@ class SessionManager:
         """
         return [
             {
-                "id":           h["id"],
-                "title":        h.get("title", ""),
-                "created_at":   h.get("created_at", ""),
-                "workspace_id": h.get("workspace_id"),
-                "archived":     bool(h.get("archived")),
+                "id":               h["id"],
+                "title":            h.get("title", ""),
+                "created_at":       h.get("created_at", ""),
+                "workspace_id":     h.get("workspace_id"),
+                "archived":         bool(h.get("archived")),
+                "turn_in_progress": bool(h.get("turn_in_progress")),
             }
             for h in self.store.list_headers(include_archived=include_archived)
         ]
@@ -274,6 +275,26 @@ class SessionManager:
     def save_session_state(self, session_id: str, **fields) -> None:
         """持久化会话的压缩状态。"""
         self.store.save_state(session_id, **fields)
+
+    # ── 崩溃检测（Phase 34 ②）──────────────────────────────────
+
+    def mark_turn_started(self, session_id: str) -> None:
+        """标记本轮进行中。在用户消息提交落库后调用——`mark_turn_finished`
+        正常结束或 `turn/cancel` 时清除；进程被杀时这个标记原样留在库里，
+        就是"上次异常中断"的证据（下次启动经 `session/list` 的
+        `turn_in_progress` 字段暴露给前端）。
+        """
+        self.save_session_state(
+            session_id, turn_in_progress=True,
+            turn_started_at=datetime.now(UTC).isoformat(),
+        )
+
+    def mark_turn_finished(self, session_id: str) -> None:
+        """清除进行中标记。无条件调用也安全——即使没有对应的
+        `mark_turn_started`（如该函数之前就抛了异常），清一个本来就是 0
+        的标记是幂等操作。
+        """
+        self.save_session_state(session_id, turn_in_progress=False, turn_started_at=None)
 
     def generate_title(self, text: str) -> str:
         text = text.strip()

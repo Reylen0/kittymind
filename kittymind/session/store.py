@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 # 最新 schema 版本。**必须与 _migrations() 里最大的 version 相等**——
 # 测试 test_session_version_chain_matches_constant 会钉住这条，别只改一边。
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -79,7 +79,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at      TEXT    NOT NULL,
     compressed_once    INTEGER NOT NULL DEFAULT 0,
     last_prompt_tokens INTEGER,
-    archived           INTEGER NOT NULL DEFAULT 0   -- 归档：侧栏收起但数据完整保留
+    archived           INTEGER NOT NULL DEFAULT 0,  -- 归档：侧栏收起但数据完整保留
+    turn_in_progress   INTEGER NOT NULL DEFAULT 0,  -- 本轮是否仍在跑；崩溃检测用（Phase 34 ②）
+    turn_started_at    TEXT                         -- 本轮开始时间；配合上面那列定位"卡在哪一轮"
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -299,6 +301,25 @@ class SqliteSessionStore:
             raise
         self._log_migration(outcome)
         self._purge_orphans()
+        self._log_interrupted_sessions()
+
+    def _log_interrupted_sessions(self) -> None:
+        """启动时顺带数一遍 `turn_in_progress=1` 的会话（Phase 34 ②）。
+
+        刻意**不放进版本链**、也不单独起一遍扫描逻辑——这几行只是在现成的
+        schema 准备流程末尾补一次廉价查询：这些会话本身已经是可查询的真实
+        状态（`session/list` 每次都会带上 `turn_in_progress`），这里只是让
+        "上次有会话被异常中断"这件事在启动日志里可见，方便定位问题。
+        """
+        with contextlib.suppress(sqlite3.Error):
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE turn_in_progress=1"
+            ).fetchone()
+            if row and row[0]:
+                logger.warning(
+                    "发现 %d 个会话的上一轮标记为进行中（进程上次异常退出的痕迹，"
+                    "内容已通过增量提交保留，前端会标注「上次异常中断」）", row[0]
+                )
 
     def _purge_orphans(self) -> None:
         """清掉外键开启前遗落的孤儿消息（旧版本级联失效时留下的）。
@@ -332,6 +353,7 @@ class SqliteSessionStore:
             Migration(7, "model_usage_table", self._m_usage),
             Migration(8, "add_archived_column", self._m_archived),
             Migration(9, "add_tool_ok_column", self._m_tool_ok),
+            Migration(10, "add_turn_in_progress_columns", self._m_turn_in_progress),
         ]
 
     def _m_drop_legacy_columns(self, conn: sqlite3.Connection) -> None:
@@ -377,6 +399,17 @@ class SqliteSessionStore:
         （前端对 NULL 继续走旧的关键词兜底，新数据一律是显式 0/1）。
         """
         self._ensure_column("messages", "ok", "INTEGER")
+
+    def _m_turn_in_progress(self, conn: sqlite3.Connection) -> None:
+        """v9 → v10：轮次进行中标记（Phase 34 ②，崩溃检测）。
+
+        `turn_in_progress` 在轮次开始（用户消息提交后）置 1，正常结束或
+        `turn/cancel` 完成都会在 `finally` 里清回 0——但进程被杀时这个 `finally`
+        根本没机会跑，标记原样留在库里，就是"上次异常中断"的证据。`turn_started_at`
+        只是辅助信息（定位卡在哪一轮），不参与判断逻辑本身。
+        """
+        self._ensure_column("sessions", "turn_in_progress", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("sessions", "turn_started_at", "TEXT")
 
     # ── 启动维护：备份 / 空间回收（重活丢后台）─────────────────────
 
@@ -1068,7 +1101,7 @@ class SqliteSessionStore:
         where = "" if include_archived else " WHERE archived=0"
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, title, workspace_id, created_at, archived"
+                "SELECT id, title, workspace_id, created_at, archived, turn_in_progress"
                 f" FROM sessions{where} ORDER BY created_at DESC"
             ).fetchall()
         return [
@@ -1079,6 +1112,7 @@ class SqliteSessionStore:
                 "workspace_id":       r[2],
                 "created_at":         r[3],
                 "archived":           bool(r[4]),
+                "turn_in_progress":   bool(r[5]),
             }
             for r in rows
         ]
@@ -1098,7 +1132,8 @@ class SqliteSessionStore:
     def get_state(self, session_id: str) -> dict:
         with self._lock:
             row = self._conn.execute(
-                "SELECT compressed_once, last_prompt_tokens"
+                "SELECT compressed_once, last_prompt_tokens,"
+                " turn_in_progress, turn_started_at"
                 " FROM sessions WHERE id=?",
                 (session_id,),
             ).fetchone()
@@ -1107,15 +1142,20 @@ class SqliteSessionStore:
         return {
             "compressed_once":    bool(row[0]),
             "last_prompt_tokens": row[1],
+            "turn_in_progress":   bool(row[2]),
+            "turn_started_at":    row[3],
         }
 
     def save_state(self, session_id: str, **fields) -> None:
-        allowed = {"compressed_once", "last_prompt_tokens"}
+        allowed = {"compressed_once", "last_prompt_tokens",
+                   "turn_in_progress", "turn_started_at"}
         cols = {k: v for k, v in fields.items() if k in allowed}
         if not cols:
             return
         if "compressed_once" in cols:
             cols["compressed_once"] = int(bool(cols["compressed_once"]))
+        if "turn_in_progress" in cols:
+            cols["turn_in_progress"] = int(bool(cols["turn_in_progress"]))
         set_clause = ", ".join(f"{k}=?" for k in cols)
         with self._lock:
             self._conn.execute(

@@ -277,7 +277,7 @@ kittymind/                      # 项目根目录
 
 ### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）🟡
 
-**Phase 34 — 长任务稳定性与断点恢复 🟡（①已实现）**
+**Phase 34 — 长任务稳定性与断点恢复 🟡（①②已实现）**
 
 **现状缺口**：当前一次流式 ReAct 循环（`async_stream_run`）从组装 `TurnContext` 到产出 `final_text` 全程只在内存里推进——`turn.messages`/`turn.turn_messages` 直到循环结束才由 `_commit_turn()` 一次性落库（Phase 14）。这意味着：
 
@@ -292,10 +292,12 @@ kittymind/                      # 项目根目录
 **① 消息面：轮内增量提交 ✅**
 把 `_commit_turn()` 的调用时机从"`final_text` 产出后一次"改成"每个 ReAct 步骤（一条 assistant 消息 + 对应一批 tool_result 回填完）结束后一次"，复用现有 `append_turn()` 原子写入（不新发明持久化机制）；用户消息在轮次一开始、第一次调用 LLM 之前就先行提交。写入频率从 O(1)/轮升到 O(步数)/轮，但单次写入量更小，量级与现有 `tool_audit.db`（本来就是每次工具调用一条）相当，不是新的负载数量级。压缩（`archive_and_compact`）本身已经是原子操作，触发时机不变，只是压缩后的消息随下一步的增量提交一起落盘，不再需要撑到轮结束才生效。
 架构：`KittyAgent._commit_new_messages()`（包 `append_turn`，把分配到的真实 seq 原地标回 `turn.messages`/`turn.turn_messages` 共享的同一批 dict 对象，`turn.loaded_seqs` 随之增长）在三处被调用——轮次开始提交用户消息、每步工具调用批次执行完立即提交、循环结束后提交尾部的最终 assistant 消息；`_commit_compaction()` 在 `did_compress` 为真的当下立即调用 `archive_and_compact`（`new_active_msgs` 固定传空列表，因为本轮新消息已由前者单独提交），同步把 `compressed_once` 写入 `session_state`。原 `_commit_turn()` 瘦身为"只补最后一条消息 + 落用量成本"，`compressed_this_turn` 字段连同分支判断整体删除（已无存在必要）。关键文件：`agent/kitty_agent.py`、`session/manager.py`（`append_turn` 现在返回分配到的 seq 列表）。测试：`test/test_turn_incremental_commit.py`（LLM 在循环中途抛异常模拟进程崩溃，断言已完成的步骤仍在 `sessions.db` 里；直接单测 `_commit_compaction` 的落库与 `loaded_seqs` 更新）。
-剩余：②③④⑤仍未实现，见下。
+剩余：③④⑤仍未实现，见下。
 
-**② 状态面：`turn_in_progress` 标记（崩溃检测）**
-`sessions` 表新增两列（schema v9，走 Phase 18 既有迁移链，允许跳号）：`turn_in_progress INTEGER NOT NULL DEFAULT 0`、`turn_started_at TEXT`。轮次开始（用户消息提交后）置位，正常结束或显式 `turn/cancel` 完成的 `finally` 分支清除。启动自检（挂在 Phase 18 现有的 `quick_check` 流程旁，不单独起一遍扫描）发现 `turn_in_progress=1` 的会话，即"进程上次被杀时正在跑的 turn"，经新事件推给前端在侧栏标"上次异常中断"——用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。
+**② 状态面：`turn_in_progress` 标记（崩溃检测）✅**
+`sessions` 表新增两列（schema v9→v10，走既有迁移链）：`turn_in_progress INTEGER NOT NULL DEFAULT 0`、`turn_started_at TEXT`。轮次开始（①的用户消息增量提交落库之后）置位，`run_conversation` 的 `finally` 分支无条件清除——正常结束、抛异常（如 LLM 调用失败，这类错误已经有 `agent.error` 事件明确报告给用户，不是"进程神秘消失"）、显式 `turn/cancel`（`task.cancel()` 触发的 `CancelledError` 同样会沿 `async for` 传播到这个 `finally`）都会走到这里清除；**真正的进程被杀**（断电、强杀、OOM）时 Python 代码完全来不及跑，`finally` 没有机会执行，标记原样留在库里。
+`session/list`（`SessionManager.list_sessions()` → `store.list_headers()`）随每条会话 header 带上 `turn_in_progress` 布尔值——不走"启动时推一个新事件"的设计（那需要在还没有任何 WebSocket 连接存在的进程启动阶段就能推送，当前架构没有这个机制，也没必要为这一件事新建），而是复用前端本来就会在加载时调用的 `session/list`，侧栏在对应会话标题前标一个警示角标（`SessionList.tsx` 的 `IcoInterrupted`，悬浮提示"上次异常中断"）；用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。另外在 `SqliteSessionStore._prepare_schema()` 末尾（`_purge_orphans()` 之后，同一处既有的"启动时顺带做一次"的位置，不单独起一遍扫描）加了一次廉价计数查询，发现有会话卡在 `turn_in_progress=1` 时写一条 warning 日志，方便运维层面定位。关键文件：`session/store.py`（schema、迁移、`get_state`/`save_state`/`list_headers` 扩展、`_log_interrupted_sessions`）、`session/manager.py`（`mark_turn_started`/`mark_turn_finished`）、`agent/kitty_agent.py`（`async_stream_run` 里提交用户消息后调 `mark_turn_started`；`run_conversation` 的 `finally` 里调 `mark_turn_finished`）、`electron/src/renderer/{types.ts,SessionList.tsx,style.css}`。测试：`test/test_turn_in_progress_marker.py`——**踩坑记录**：不能用"让 LLM 抛异常"模拟真正的进程崩溃来断言标记留下来，异常会被 Python 正常捕获、正常解包栈帧、正常跑到 `finally`，标记一样会被清掉（这是正确行为，不是 bug）；测的是"工具执行期间回读状态，此刻库里已经是 True"这个真正可断言的不变式。
+剩余：③④⑤仍未实现，见下。
 
 **③ 执行面：悬空 tool_call 的幂等恢复（恢复逻辑的核心规则）**
 检测条件：最后一条 assistant 消息带 `tool_calls`，但对应 `tool_call_id` 在 `messages` 表里找不到匹配的 tool 结果行——说明进程恰好死在"执行这批工具调用"期间。恢复策略直接复用现成的 `guardrails.py::IDEMPOTENT_TOOLS` / `MUTATING_TOOLS` 分类，不新造一套判断：
@@ -318,10 +320,10 @@ kittymind/                      # 项目根目录
 1. **⑤ LLM 调用重试**——改动面最小（`core/llm.py` 外包一层，零 schema 变更），不依赖其余四块，先做建立"瞬时错误分类 + 退避"这类测试模式的信心。
 2. **④ 工具取消的物理传导**——同样不碰持久化层，`bash` 换 `asyncio.create_subprocess_exec`、`task` 加挂钟超时，修的是"停止按钮是假的"这个当下就能感知到的体验问题，和①②③完全解耦，可以和⑤并行甚至调换顺序。
 3. **① 轮内增量提交 ✅（已实现）**——本阶段真正的地基，改动面最大（动的是 `async_stream_run`/`_commit_turn` 热路径），已单独落地并配套 `test/test_turn_incremental_commit.py`，全量 788 测试通过。
-4. **② `turn_in_progress` 标记**——只有①落地之后才有意义（没有增量提交，标记了也没有可恢复的数据可看），是①之上的轻量追加（一次 schema 迁移 + 置位/清除两行 + 启动扫描 + 一个新事件），风险低，①已就位，可以紧接着做。
+4. **② `turn_in_progress` 标记 ✅（已实现）**——只有①落地之后才有意义（没有增量提交，标记了也没有可恢复的数据可看），是①之上的轻量追加（一次 schema 迁移 + 置位/清除两行 + 启动日志 + 侧栏角标），已落地并配套 `test/test_turn_in_progress_marker.py`，全量 816 测试通过。
 5. **③ 悬空 tool_call 恢复 + `turn/resume`**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"按钮三件套），放最后；这也是 Phase 30/31 真正要复用的部分，③完成之前 30/31 复用不了什么实质内容。
 
-也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①现已完成，下一步是②。
+也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①②现已完成，下一步是③。
 
 **已知边界**（这次设计不解决什么）：
 - 不追求"分布式 exactly-once"语义——单机单进程场景下目标是"崩溃后可观测、可人工核实、不隐藏数据丢失"，不是"自动保证任意副作用工具恰好执行一次"（`bash` 这类工具的副作用本来就不可能被框架兜底，参见"安全模型"一节的同类立场）。

@@ -23,6 +23,8 @@ export interface Session {
   workspace_id?: string | null
   /** 已归档：侧栏默认不列出，开关打开时灰显（归档不删数据） */
   archived?: boolean
+  /** 上一轮是否仍标记为"进行中"——进程异常退出时来不及清除，提示用户上次被中断过 */
+  turn_in_progress?: boolean
 }
 
 /** session/get 返回的一条历史消息（展示视图）。tool 行的名字/入参由后端随行下发。 */
