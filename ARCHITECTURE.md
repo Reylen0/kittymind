@@ -277,7 +277,7 @@ kittymind/                      # 项目根目录
 
 ### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）🟡
 
-**Phase 34 — 长任务稳定性与断点恢复 🟡（①②已实现）**
+**Phase 34 — 长任务稳定性与断点恢复 🟡（①②③已实现）**
 
 **现状缺口**：当前一次流式 ReAct 循环（`async_stream_run`）从组装 `TurnContext` 到产出 `final_text` 全程只在内存里推进——`turn.messages`/`turn.turn_messages` 直到循环结束才由 `_commit_turn()` 一次性落库（Phase 14）。这意味着：
 
@@ -299,13 +299,16 @@ kittymind/                      # 项目根目录
 `session/list`（`SessionManager.list_sessions()` → `store.list_headers()`）随每条会话 header 带上 `turn_in_progress` 布尔值——不走"启动时推一个新事件"的设计（那需要在还没有任何 WebSocket 连接存在的进程启动阶段就能推送，当前架构没有这个机制，也没必要为这一件事新建），而是复用前端本来就会在加载时调用的 `session/list`，侧栏在对应会话标题前标一个警示角标（`SessionList.tsx` 的 `IcoInterrupted`，悬浮提示"上次异常中断"）；用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。另外在 `SqliteSessionStore._prepare_schema()` 末尾（`_purge_orphans()` 之后，同一处既有的"启动时顺带做一次"的位置，不单独起一遍扫描）加了一次廉价计数查询，发现有会话卡在 `turn_in_progress=1` 时写一条 warning 日志，方便运维层面定位。关键文件：`session/store.py`（schema、迁移、`get_state`/`save_state`/`list_headers` 扩展、`_log_interrupted_sessions`）、`session/manager.py`（`mark_turn_started`/`mark_turn_finished`）、`agent/kitty_agent.py`（`async_stream_run` 里提交用户消息后调 `mark_turn_started`；`run_conversation` 的 `finally` 里调 `mark_turn_finished`）、`electron/src/renderer/{types.ts,SessionList.tsx,style.css}`。测试：`test/test_turn_in_progress_marker.py`——**踩坑记录**：不能用"让 LLM 抛异常"模拟真正的进程崩溃来断言标记留下来，异常会被 Python 正常捕获、正常解包栈帧、正常跑到 `finally`，标记一样会被清掉（这是正确行为，不是 bug）；测的是"工具执行期间回读状态，此刻库里已经是 True"这个真正可断言的不变式。
 剩余：③④⑤仍未实现，见下。
 
-**③ 执行面：悬空 tool_call 的幂等恢复（恢复逻辑的核心规则）**
+**③ 执行面：悬空 tool_call 的幂等恢复（恢复逻辑的核心规则）✅**
 检测条件：最后一条 assistant 消息带 `tool_calls`，但对应 `tool_call_id` 在 `messages` 表里找不到匹配的 tool 结果行——说明进程恰好死在"执行这批工具调用"期间。恢复策略直接复用现成的 `guardrails.py::IDEMPOTENT_TOOLS` / `MUTATING_TOOLS` 分类，不新造一套判断：
 
 - 悬空调用落在 `IDEMPOTENT_TOOLS`（`file_read`/`glob`/`grep`/`ls`/`web_search`/`load_skill`…）：安全，直接重新执行一次拿确定结果。
-- 悬空调用落在 `MUTATING_TOOLS`（`bash`/`file_write`/`file_edit`/`git`/`write_memory`/`write_skill`…）：**绝不自动重放**——重放一个已经执行过的 `bash` 或 `git commit` 可能是实打实的重复副作用。改为合成一条模板化 `tool_result`："该工具调用的执行状态未知（进程在执行期间被中断），请用只读工具自行核实实际状态后再决定下一步"，把判断权交还模型本身（与本项目"不替模型做它该做的判断"的一贯风格一致，参见记忆整合 Phase 17 的同类取舍）。
+- 悬空调用落在 `MUTATING_TOOLS`（`bash`/`file_write`/`file_edit`/`git`/`write_memory`/`write_skill`…）：**绝不自动重放**——重放一个已经执行过的 `bash` 或 `git commit` 可能是实打实的重复副作用。改为合成一条模板化 `tool_result`："该工具调用的执行状态未知（进程在执行期间被中断），请用只读工具自行核实实际状态后再决定下一步"，把判断权交还模型本身（与本项目"不替模型做它该做的判断"的一贯风格一致，参见记忆整合 Phase 17 的同类取舍）。未归类的工具名（如动态注册的 MCP 工具）按 fail-closed 原则一律走"合成"分支，不默认当成幂等。
 
-新增 RPC `turn/resume`（区别于 `turn/run`：不追加新 user 消息，只把已持久化的消息前缀连同上面生成的合成结果一起喂给 `async_stream_run` 续跑）。前端检测到会话带"异常中断"标记时提供「继续」按钮调用它；用户也可以不管它、直接发新消息（新一轮 `turn/run` 自然用新的 `turn_started_at` 覆盖旧标记）。
+新增 RPC `turn/resume`（区别于 `turn/run`：不追加新 user 消息，只把已持久化的消息前缀连同上面生成的合成结果一起喂给 `async_stream_run` 续跑）。前端检测到会话带"异常中断"标记（②的 `turn_in_progress`）时展示「继续」横幅（`ChatView.tsx` 的 `ResumeBanner`）调用它；用户也可以不管它、直接发新消息（新一轮 `turn/run` 自然用新的 `turn_started_at` 覆盖旧标记）。
+
+架构：`KittyAgent.run_conversation`/新增的 `resume_conversation` 共用两个抽出的私有方法——`_build_turn_context()`（组装 `TurnContext`，`append_user` 参数区分"新用户消息"与"续跑无新消息"）和 `_run_turn()`（根作用域生命周期管理 + 委派给 `async_stream_run`，②的 `mark_turn_finished` 就收在这里）；`async_stream_run` 的开场提交逻辑从"只提交 `turn_messages[0]`（用户消息）"泛化成"提交 `turn_messages` 整个列表"，这样续跑时一次性落库的悬空恢复结果（可能不止一条）也能走同一条路径。新增 `SessionManager.find_dangling_tool_calls()`（只看最后一条 assistant 消息，按 tool_call_id 核对后续 tool 行，支持"部分悬空"——同一批里只有某几个调用缺结果）与 `KittyAgent._resolve_dangling_tool_calls()`（幂等的丢给 `execute_batch` 真跑，变更类的直接合成，按声明序发 `agent.tool_call`/`agent.tool_result` 事件让前端把恢复结果渲染成普通工具卡片）。RPC 层把 `turn/run` 与 `turn/resume` 共用的"事件转发注册 + 任务登记/取消"逻辑抽成 `_start_turn()`，区别只是驱动 `run_conversation` 还是 `resume_conversation`。关键文件：`agent/kitty_agent.py`、`session/manager.py`、`server/rpc_handler.py`、`electron/{preload.js,src/renderer/{kitty.d.ts,ChatView.tsx,style.css}}`。测试：`test/test_dangling_tool_call_resume.py`（幂等重跑 / 变更类合成 / 混合批次按序处理 / 无悬空时单纯续写 / 续跑正常结束清崩溃标记）、`test/test_session.py`（`find_dangling_tool_calls` 的空会话/正常结束/全悬空/部分悬空/只看最后一条 assistant 五种边界）、`test/test_rpc_handler.py`（`turn/resume` 参数校验、驱动的是 `resume_conversation` 而非 `run_conversation`、登记的任务可被 `turn/cancel` 取消）。
+剩余：④⑤仍未实现，见下。
 
 **④ 工具取消的物理传导**
 `bash` 工具由当前 `subprocess.run`（阻塞，`to_thread` 包裹）改为 `asyncio.create_subprocess_exec`（原生协作式取消：`task.cancel()` 能真正触发 `proc.kill()`），解决"点停止但子进程还在后台裸跑"的问题。`task` 委派增加挂钟超时 `SUBAGENT_WALL_TIMEOUT`（`asyncio.wait_for` 包裹 `sub_agent.run()`），子任务超时即视为失败返回，而不是让父 Agent 无限期等待。
@@ -321,9 +324,9 @@ kittymind/                      # 项目根目录
 2. **④ 工具取消的物理传导**——同样不碰持久化层，`bash` 换 `asyncio.create_subprocess_exec`、`task` 加挂钟超时，修的是"停止按钮是假的"这个当下就能感知到的体验问题，和①②③完全解耦，可以和⑤并行甚至调换顺序。
 3. **① 轮内增量提交 ✅（已实现）**——本阶段真正的地基，改动面最大（动的是 `async_stream_run`/`_commit_turn` 热路径），已单独落地并配套 `test/test_turn_incremental_commit.py`，全量 788 测试通过。
 4. **② `turn_in_progress` 标记 ✅（已实现）**——只有①落地之后才有意义（没有增量提交，标记了也没有可恢复的数据可看），是①之上的轻量追加（一次 schema 迁移 + 置位/清除两行 + 启动日志 + 侧栏角标），已落地并配套 `test/test_turn_in_progress_marker.py`，全量 816 测试通过。
-5. **③ 悬空 tool_call 恢复 + `turn/resume`**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"按钮三件套），放最后；这也是 Phase 30/31 真正要复用的部分，③完成之前 30/31 复用不了什么实质内容。
+5. **③ 悬空 tool_call 恢复 + `turn/resume` ✅（已实现）**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"横幅三件套），已落地并配套 `test/test_dangling_tool_call_resume.py`，全量 829 测试通过；这也是 Phase 30/31 真正要复用的部分，三者齐备后 30/31 可以直接复用 `turn_in_progress` 标记与幂等分类恢复机制。
 
-也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①②现已完成，下一步是③。
+也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①②③现已全部完成，断点恢复这条依赖链已经跑通；剩下 ④（工具取消物理传导）⑤（LLM 调用重试）仍可随时开始，互不依赖。
 
 **已知边界**（这次设计不解决什么）：
 - 不追求"分布式 exactly-once"语义——单机单进程场景下目标是"崩溃后可观测、可人工核实、不隐藏数据丢失"，不是"自动保证任意副作用工具恰好执行一次"（`bash` 这类工具的副作用本来就不可能被框架兜底，参见"安全模型"一节的同类立场）。

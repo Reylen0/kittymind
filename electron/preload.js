@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('kitty', {
     }),
   cancelTurn: (sessionId) =>
     ipcRenderer.invoke('ws:call', { method: 'turn/cancel', params: { session_id: sessionId } }),
+  // 续跑一个带"上次异常中断"标记的会话：不追加新用户消息（Phase 34 ③）
+  resumeTurn: (sessionId, workspaceId) =>
+    ipcRenderer.invoke('ws:call', {
+      method: 'turn/resume',
+      params: { session_id: sessionId, ...(workspaceId ? { workspace_id: workspaceId } : {}) },
+    }),
 
   // Session management
   createSession: (title, workspaceId) =>

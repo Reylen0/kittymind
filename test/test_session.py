@@ -473,6 +473,66 @@ def test_manager_load_messages_contains_seq(mgr):
     assert msgs[1]["seq"] == 1
 
 
+# ── 悬空 tool_call 检测（Phase 34 ③）─────────────────────────────
+
+def _tc(call_id: str, name: str = "bash") -> dict:
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}
+
+
+def test_find_dangling_tool_calls_on_empty_session(mgr):
+    sid = mgr.create_session()
+    assert mgr.find_dangling_tool_calls(sid) == []
+
+
+def test_find_dangling_tool_calls_normal_completion_is_not_dangling(mgr):
+    """最后一条消息是收尾文本（无 tool_calls）：正常结束，不是悬空。"""
+    sid = mgr.create_session()
+    mgr.append_turn(sid, [
+        {"role": "user", "content": "跑个命令"},
+        {"role": "assistant", "content": None, "tool_calls": [_tc("c1")]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ran"},
+        {"role": "assistant", "content": "done"},
+    ])
+    assert mgr.find_dangling_tool_calls(sid) == []
+
+
+def test_find_dangling_tool_calls_fully_dangling(mgr):
+    """最后一条是 assistant+tool_calls，一条 tool 结果都没有——全部悬空。"""
+    sid = mgr.create_session()
+    mgr.append_turn(sid, [
+        {"role": "user", "content": "跑个命令"},
+        {"role": "assistant", "content": None, "tool_calls": [_tc("c1"), _tc("c2", "file_read")]},
+    ])
+    dangling = mgr.find_dangling_tool_calls(sid)
+    assert {tc["id"] for tc in dangling} == {"c1", "c2"}
+
+
+def test_find_dangling_tool_calls_partially_answered(mgr):
+    """两个 tool_calls 里只有一个已有对应结果——只有另一个算悬空。"""
+    sid = mgr.create_session()
+    mgr.append_turn(sid, [
+        {"role": "user", "content": "跑两个命令"},
+        {"role": "assistant", "content": None, "tool_calls": [_tc("c1"), _tc("c2")]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ran c1"},
+        # c2 没有对应结果——进程恰好死在第二个工具调用执行期间
+    ])
+    dangling = mgr.find_dangling_tool_calls(sid)
+    assert [tc["id"] for tc in dangling] == ["c2"]
+
+
+def test_find_dangling_tool_calls_only_looks_at_the_last_assistant_message(mgr):
+    """更早一条 assistant 消息即使缺 tool_result 也不算——只看最后一条。"""
+    sid = mgr.create_session()
+    mgr.append_turn(sid, [
+        {"role": "user", "content": "第一轮"},
+        {"role": "assistant", "content": "没有调工具"},
+        {"role": "user", "content": "第二轮"},
+        {"role": "assistant", "content": None, "tool_calls": [_tc("c1")]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ran"},
+    ])
+    assert mgr.find_dangling_tool_calls(sid) == []
+
+
 def test_manager_load_full_history(mgr):
     """load_full_history 在压缩后仍能返回被压缩行。"""
     sid = mgr.create_session()

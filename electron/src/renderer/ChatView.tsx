@@ -11,6 +11,8 @@ interface Props {
    */
   active:             boolean
   workspaces:         Workspace[]
+  /** 上一轮是否仍标记为"进行中"——驱动"继续"续跑横幅（Phase 34 ③） */
+  turnInProgress?:    boolean
   onSessionUpdate:    () => void
   onWorkspaceCreated: (ws: Workspace) => void
 }
@@ -108,7 +110,7 @@ function toRenderUnits(messages: Message[]): RenderUnit[] {
   return units
 }
 
-export default function ChatView({ sessionId, active, workspaces, onSessionUpdate, onWorkspaceCreated }: Props) {
+export default function ChatView({ sessionId, active, workspaces, turnInProgress, onSessionUpdate, onWorkspaceCreated }: Props) {
   const [messages,            setMessages]            = useState<Message[]>([])
   const [input,               setInput]               = useState('')
   const [isLoading,           setIsLoading]           = useState(INIT_LOADING)
@@ -409,6 +411,16 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
     await window.kitty?.sendMessage(text, sessionId, wsId)
   }, [input, isLoading, sessionId, messages.length, selectedWorkspaceId])
 
+  // 续跑一个带"上次异常中断"标记的会话：不追加新用户消息（Phase 34 ③）。
+  // 没有新内容要显示——恢复结果（重跑的工具卡片 / 合成的"状态未知"结果）
+  // 随 agent.tool_call/tool_result 事件正常流进来，和普通一轮视觉上一致。
+  const resumeTurn = useCallback(async () => {
+    if (isLoading) return
+    setIsLoading(true)
+    stickToBottomRef.current = true
+    await window.kitty?.resumeTurn(sessionId)
+  }, [isLoading, sessionId])
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -617,6 +629,9 @@ export default function ChatView({ sessionId, active, workspaces, onSessionUpdat
       {permRequest && (
         <PermissionBanner req={permRequest} pendingCount={permQueue.length - 1} onRespond={handlePermission} />
       )}
+      {turnInProgress && !isLoading && (
+        <ResumeBanner onResume={resumeTurn} />
+      )}
       <div className="input-area">
         {inputBox}
       </div>
@@ -663,6 +678,19 @@ function PermissionBanner({
         <button className="perm-btn perm-btn-deny"  onClick={() => onRespond(false)}>拒绝</button>
         <button className="perm-btn perm-btn-allow" onClick={() => onRespond(true)}>允许</button>
       </div>
+    </div>
+  )
+}
+
+/** "上次异常中断"续跑横幅（Phase 34 ③）：进程退出时这轮对话还没跑完，
+ * 已经发生的内容都已经保存——点"继续"调 `turn/resume`，不追加新用户消息。
+ */
+function ResumeBanner({ onResume }: { onResume: () => void }) {
+  return (
+    <div className="resume-banner">
+      <span className="resume-banner-icon">⚠️</span>
+      <span className="resume-banner-text">上次对话异常中断，已发生的内容都已保存</span>
+      <button className="resume-banner-btn" onClick={onResume}>继续</button>
     </div>
   )
 }

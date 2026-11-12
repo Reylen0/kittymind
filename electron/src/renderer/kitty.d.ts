@@ -10,6 +10,8 @@ declare global {
 
       sendMessage(text: string, sessionId: string, workspaceId?: string): Promise<unknown>
       cancelTurn(sessionId: string): Promise<unknown>
+      /** 续跑一个带"上次异常中断"标记的会话：不追加新用户消息（Phase 34 ③） */
+      resumeTurn(sessionId: string, workspaceId?: string): Promise<unknown>
 
       createSession(title?: string, workspaceId?: string): Promise<{ session_id: string; title: string }>
       /** includeArchived → 连已归档会话一起返回（默认 false：归档的语义就是"收起"） */
@@ -18,6 +20,8 @@ declare global {
         workspace_id?: string | null
         /** 已归档：侧栏默认不显示，开关打开时灰显列出 */
         archived?: boolean
+        /** 上一轮是否仍标记为"进行中"——进程异常退出来不及清除（Phase 34 ②） */
+        turn_in_progress?: boolean
       }>>
       // 不带 opts → 全量消息；带 opts.limit → 只取 seq 比 opts.beforeSeq 更早的一页
       getSession(sessionId: string, opts?: { limit?: number; beforeSeq?: number }): Promise<{
@@ -38,6 +42,8 @@ declare global {
           /** tool 行随行下发的发起信息（分页切到哪都不会丢） */
           tool_name?: string
           tool_args?: string
+          /** role=tool 的成功/失败；缺失 = 旧数据/非 tool 行（Phase 34） */
+          ok?: boolean
         }>
         /** 分页模式下：更早是否还有消息 */
         has_more?: boolean

@@ -38,6 +38,7 @@ class RpcHandler:
         self._handlers: dict[str, Any] = {
             "turn/run":                 self._turn_run,
             "turn/cancel":              self._turn_cancel,
+            "turn/resume":              self._turn_resume,
             "session/create":           self._session_create,
             "session/list":             self._session_list,
             "session/get":              self._session_get,
@@ -113,6 +114,37 @@ class RpcHandler:
             await self._error(req_id, "text is required")
             return
 
+        workspace_id = params.get("workspace_id")
+        await self._start_turn(
+            req_id, session_id,
+            lambda: self.agent.run_conversation(session_id, text, workspace_id=workspace_id),
+        )
+
+    async def _turn_resume(self, req_id: Any, params: dict) -> None:
+        """续跑一个带"异常中断"标记的会话（Phase 34 ③），不追加新用户消息。
+
+        与 `turn/run` 共用同一套事件转发/任务登记逻辑（见 `_start_turn`）——
+        区别只是驱动 `agent.resume_conversation` 而不是 `agent.run_conversation`。
+        不要求调用方先确认 `turn_in_progress`：前端只在该标记为真时才展示
+        「继续」按钮，但接口本身对任何会话都是"让 LLM 看着现有历史继续"，
+        没有悬空 tool_call 时等价于普通续写。
+        """
+        session_id = params.get("session_id")
+        if not session_id:
+            await self._error(req_id, "session_id is required")
+            return
+
+        workspace_id = params.get("workspace_id")
+        await self._start_turn(
+            req_id, session_id,
+            lambda: self.agent.resume_conversation(session_id, workspace_id=workspace_id),
+        )
+
+    async def _start_turn(self, req_id: Any, session_id: str, make_stream) -> None:
+        """起一个后台任务驱动 `make_stream()`（一个 agent 异步生成器），注册事件
+        转发、登记进 `self._tasks` 供 `turn/cancel` 取消——`turn/run`/`turn/resume`
+        共用，区别只在 `make_stream` 驱动哪个 agent 协程。
+        """
         # 取消当前 session 正在运行的任务（如有）
         if session_id in self._tasks:
             self._tasks[session_id].cancel()
@@ -169,8 +201,6 @@ class RpcHandler:
         # 立即 ack，事件通过 server push 异步推送
         await self._result(req_id, {"status": "started"})
 
-        workspace_id = params.get("workspace_id")
-
         async def _run() -> None:
             # 标记本 turn 归属的连接：整条调用链（工具执行 → 权限审批）都在这个
             # task 内部 await，contextvar 天然沿调用栈传播，PermissionBridge.ask()
@@ -181,9 +211,7 @@ class RpcHandler:
                 else None
             )
             try:
-                async for _ in self.agent.run_conversation(
-                    session_id, text, workspace_id=workspace_id
-                ):
+                async for _ in make_stream():
                     pass  # 文字 delta 已由 fwd_chunk 推给客户端
             except asyncio.CancelledError:
                 await self._push("agent.done", {

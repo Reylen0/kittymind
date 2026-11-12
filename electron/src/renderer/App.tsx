@@ -133,6 +133,7 @@ export default function App() {
                 sessionId={id}
                 active={id === currentId}
                 workspaces={workspaces}
+                turnInProgress={sessions.find(s => s.id === id)?.turn_in_progress}
                 onSessionUpdate={loadSessions}
                 onWorkspaceCreated={handleWorkspaceCreated}
               />

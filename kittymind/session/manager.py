@@ -256,6 +256,33 @@ class SessionManager:
         """完整视图（active + compacted），审计/回溯用。"""
         return self.store.read_full(session_id)
 
+    def find_dangling_tool_calls(self, session_id: str) -> list[dict]:
+        """检测"悬空" tool_call（Phase 34 ③）：最后一条 assistant 消息带
+        `tool_calls`，但其中有 id 在后续消息里找不到对应的 tool 结果行——
+        说明进程恰好死在"执行这批工具调用"期间。返回悬空的 tool_call 列表，
+        没有则为空列表。
+
+        只看**最后一条** assistant 消息：更早的 assistant 消息后面即使缺
+        tool_result，也不是"进程死在执行期间"这个场景该处理的（正常运行时
+        每一步的 assistant+tool_result 是同批增量提交的，见 Phase 34 ①），
+        轮次正常结束时最后一条消息是不带 tool_calls 的收尾文本，天然不触发。
+        """
+        messages = self.load_messages(session_id)
+        last_assistant_idx = None
+        for i, m in enumerate(messages):
+            if m["role"] == "assistant":
+                last_assistant_idx = i
+        if last_assistant_idx is None:
+            return []
+        tool_calls = messages[last_assistant_idx].get("tool_calls") or []
+        if not tool_calls:
+            return []
+        answered_ids = {
+            m.get("tool_call_id") for m in messages[last_assistant_idx + 1:]
+            if m["role"] == "tool"
+        }
+        return [tc for tc in tool_calls if tc.get("id") not in answered_ids]
+
     def archive_and_compact(
         self,
         session_id: str,

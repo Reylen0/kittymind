@@ -43,7 +43,7 @@ from ..usage import UsageRecorder
 from ..tools.builtin.bash_tool import bash_cwd
 from ..tools.executor import ToolExecutor
 from ..tools.audit import get_tool_audit_log
-from ..tools.guardrails import GuardrailController, GuardrailTurnState
+from ..tools.guardrails import GuardrailController, GuardrailTurnState, IDEMPOTENT_TOOLS
 from ..tools.registry import ToolRegistry
 from .base import Agent
 from .delegation import (
@@ -58,6 +58,13 @@ logger = logging.getLogger(__name__)
 
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
 _INTERNAL_KEYS = ("_seq", "ok", _SUMMARY_MARKER)
+
+# 悬空 tool_call 恢复（Phase 34 ③）：变更类工具绝不自动重放，合成这条结果
+# 把判断权交还模型——措辞刻意不说"失败"（它很可能其实成功了，只是没法确定）。
+_DANGLING_TOOL_CALL_MESSAGE = (
+    "该工具调用的执行状态未知（进程在执行期间被中断），"
+    "请用只读工具自行核实实际状态后再决定下一步。"
+)
 
 # 辅助模型哨兵：默认「按配置自动解析」，显式传 None 表示强制回退主模型
 _AUX_AUTO = object()
@@ -204,6 +211,51 @@ class KittyAgent(Agent):
         `_result`：仅供 `run()` 内部传入，用于回填本轮 messages / usage_recorder——
         这俩是一轮内的瞬时状态，不挂在 agent 实例上，外部调用方不需要关心此参数。
         """
+        turn, cwd_path = self._build_turn_context(
+            session_id, input_text, workspace_id, append_user=True
+        )
+        async for chunk in self._run_turn(
+            turn, session_id, input_text, cwd_path, root, _result=_result, **kwargs
+        ):
+            yield chunk
+
+    async def resume_conversation(
+        self, session_id: str, workspace_id: str | None = None, root: bool = True,
+    ) -> AsyncIterator[str]:
+        """续跑一个带"异常中断"标记的会话（Phase 34 ③），给 RPC `turn/resume` 用。
+
+        与 `run_conversation` 的核心区别：没有新的用户输入——`turn_messages`
+        不含用户消息；循环开始前先处理悬空 tool_call（最后一条 assistant 消息
+        带 `tool_calls` 但缺对应 tool_result，说明进程恰好死在执行这批工具
+        调用期间，见 `_resolve_dangling_tool_calls`），把恢复结果当成"本轮已
+        产出的内容"喂给 `async_stream_run` 续跑。没有悬空调用时就是单纯地让
+        LLM 看着现有历史继续说话——例如进程恰好死在流式产出最终文本期间，
+        那部分文本从未落库（①只在整批工具结果或收尾时提交），历史里就是
+        "卡在上一条消息"，续跑等于重新请求一次续写。
+        """
+        turn, cwd_path = self._build_turn_context(
+            session_id, "", workspace_id, append_user=False
+        )
+        if self.session_manager is not None:
+            dangling = self.session_manager.find_dangling_tool_calls(session_id)
+            if dangling:
+                resolved = await self._resolve_dangling_tool_calls(dangling, session_id, turn)
+                turn.messages.extend(resolved)
+                turn.turn_messages.extend(resolved)
+        async for chunk in self._run_turn(turn, session_id, "", cwd_path, root):
+            yield chunk
+
+    def _build_turn_context(
+        self, session_id: str | None, input_text: str,
+        workspace_id: str | None, *, append_user: bool,
+    ) -> tuple[TurnContext, str]:
+        """组装本轮运行态，返回 `(turn, cwd_path)`。
+
+        `run_conversation`（新用户消息）与 `resume_conversation`（续跑，无新
+        消息）共用——区别只是 `append_user`。记忆召回由 `async_stream_run`
+        在拿到 messages 之后另行注入；tracker/compressor 从持久化状态种入
+        （若有），guardrail 状态全新。
+        """
         # ── 解析本轮工作目录：显式 workspace_id > 会话记录里的 workspace_id > 默认目录 ──
         effective_workspace_id = workspace_id
         if not effective_workspace_id and self.session_manager and session_id:
@@ -216,10 +268,10 @@ class KittyAgent(Agent):
             if ws and ws.get("path"):
                 cwd_path = ws["path"]
 
-        # ── 组装本轮运行态：session_id 为空（子 Agent）时历史为空、loaded_seqs=[]；
-        # 记忆召回由 async_stream_run 在拿到 messages 之后另行注入。
-        # tracker/compressor 从持久化状态种入（若有），guardrail 状态全新。
-        messages, loaded_seqs = self._build_messages(session_id, input_text)
+        # session_id 为空（子 Agent）时历史为空、loaded_seqs=[]。
+        messages, loaded_seqs = self._build_messages(
+            session_id, input_text, append_user=append_user
+        )
         tracker = _fresh_tracker()
         compressor = ContextCompressor(self.aux_model)
         if session_id and self.session_manager:
@@ -238,10 +290,21 @@ class KittyAgent(Agent):
             effective_workspace_id=effective_workspace_id,
             # 与 messages 末尾的用户消息共用同一个 dict 对象（不是内容相同的
             # 两份拷贝）：增量提交给它打 `_seq` 时，两份视图原地同步可见，
-            # 跟循环里 assistant_msg / tool result 的共享写法一致。
-            turn_messages=[messages[-1]],
+            # 跟循环里 assistant_msg / tool result 的共享写法一致。续跑没有
+            # 新用户消息，turn_messages 从空列表开始。
+            turn_messages=[messages[-1]] if append_user else [],
         )
+        return turn, cwd_path
 
+    async def _run_turn(
+        self, turn: TurnContext, session_id: str | None, input_text: str,
+        cwd_path: str, root: bool,
+        _result: RunResult | None = None, **kwargs,
+    ) -> AsyncIterator[str]:
+        """管理根作用域生命周期（cwd / 委派预算 / 根 session 标签 / 用量聚合器）
+        并把循环体委派给 `async_stream_run`；`run_conversation`/`resume_conversation`
+        共用。
+        """
         cwd_token = budget_token = session_token = usage_token = None
         if root:
             cwd_token     = bash_cwd.set(cwd_path)
@@ -265,25 +328,75 @@ class KittyAgent(Agent):
             if session_id is not None and self.session_manager is not None:
                 self.session_manager.mark_turn_finished(session_id)
 
+    async def _resolve_dangling_tool_calls(
+        self, tool_calls: list[dict], session_id: str | None, turn: TurnContext,
+    ) -> list[dict]:
+        """恢复悬空 tool_call（Phase 34 ③）：幂等工具直接重跑拿确定结果；
+        变更类工具绝不自动重放，合成"状态未知"结果，把判断权交还模型本身。
+
+        按声明序逐个判断：幂等的一次性丢给 `execute_batch`（复用决策/执行/
+        收尾三段管线，权限审批与守护栏记账都和正常调用一致）；变更类的直接
+        合成，不进 executor——没有东西要真的执行。事件按声明序发 `agent.tool_call`/
+        `agent.tool_result`，让前端把续跑的恢复结果渲染成普通的工具卡片，
+        和正常执行视觉上一致。
+        """
+        idempotent_calls = [
+            tc for tc in tool_calls
+            if tc.get("function", {}).get("name") in IDEMPOTENT_TOOLS
+        ]
+        for tc in tool_calls:
+            await self.event_bus.emit(AGENT_TOOL_CALL, {
+                "name": tc["function"]["name"],
+                "args": tc["function"].get("arguments"),
+                "session_id": session_id,
+            })
+
+        results_by_id: dict[str, dict] = {}
+        if idempotent_calls:
+            outs = await self.tool_executor.execute_batch(
+                idempotent_calls, session_id, turn.guardrail_state
+            )
+            for tc, out in zip(idempotent_calls, outs, strict=True):
+                results_by_id[tc["id"]] = out
+
+        resolved = []
+        for tc in tool_calls:
+            result = results_by_id.get(tc["id"]) or {
+                "role": "tool", "tool_call_id": tc.get("id"),
+                "content": _DANGLING_TOOL_CALL_MESSAGE,
+                "ok": False,
+            }
+            await self.event_bus.emit(AGENT_TOOL_RESULT, {
+                "name": tc["function"]["name"],
+                "result": result.get("content"),
+                "ok": result.get("ok", True),
+                "session_id": session_id,
+            })
+            resolved.append(result)
+        return resolved
+
     async def async_stream_run(
         self, turn: TurnContext, session_id: str | None, input_text: str,
         _result: RunResult | None = None, **kwargs,
     ) -> AsyncIterator[str]:
         """给定已组装好的本轮运行态 `turn`，驱动 ReAct 循环直到收尾。
 
-        由 `run_conversation` 负责解析工作目录、组装 `turn`、管理根作用域生命周期后
-        调用，不单独对外暴露。
+        由 `run_conversation`/`resume_conversation` 负责解析工作目录、组装
+        `turn`、管理根作用域生命周期后调用，不单独对外暴露。
 
         `_result`：仅供 `run()` 内部传入，用于回填本轮 messages / usage_recorder——
         这俩是一轮内的瞬时状态，不挂在 agent 实例上，外部调用方不需要关心此参数。
         """
         await self.event_bus.emit(AGENT_START, {"session_id": session_id, "input": input_text})
 
-        # 轮内增量提交：用户消息先行落库，不等整轮跑完——即使本轮随后崩溃，
-        # 这条消息也不会从历史里消失。
+        # 轮内增量提交：本轮已经确定要落库的开场内容（正常路径是用户消息；
+        # `resume_conversation` 续跑时是悬空 tool_call 的恢复结果，可能不止一条，
+        # 也可能是空——没有新用户消息、也没有悬空调用要恢复时为空列表）先行提交，
+        # 不等整轮跑完——即使本轮随后崩溃，这些内容也不会从历史里消失。
         if session_id is not None and self.session_manager is not None:
-            self._commit_new_messages(turn, session_id, [turn.turn_messages[0]], input_text)
-            # 崩溃检测标记（Phase 34 ②）：本轮开始，清除/设置都在 run_conversation
+            if turn.turn_messages:
+                self._commit_new_messages(turn, session_id, list(turn.turn_messages), input_text)
+            # 崩溃检测标记（Phase 34 ②）：本轮开始，清除/设置都在 _run_turn
             # 的 finally 里完成——进程若在这之后被杀，标记原样留下，下次启动可查。
             self.session_manager.mark_turn_started(session_id)
 
@@ -525,12 +638,14 @@ class KittyAgent(Agent):
     # ── 消息构建 ──────────────────────────────────────────────────
 
     def _build_messages(
-        self, session_id: str | None, input_text: str
+        self, session_id: str | None, input_text: str, *, append_user: bool = True,
     ) -> tuple[list[dict], list]:
         """返回 (messages, loaded_seqs)。
 
         历史消息上打瞬态 _seq 标记，供 _commit_turn 对账压缩范围。
         session_id=None（子 Agent）时历史为空，loaded_seqs=[]。
+        append_user=False（`resume_conversation` 用）：不追加新用户消息，
+        续跑没有新的用户输入。
         """
         messages: list[dict] = []
         if self.system_prompt:
@@ -548,7 +663,8 @@ class KittyAgent(Agent):
                 messages.append(msg)
                 loaded_seqs.append(seq)
 
-        messages.append({"role": "user", "content": input_text})
+        if append_user:
+            messages.append({"role": "user", "content": input_text})
         return messages, loaded_seqs
 
     @staticmethod

@@ -357,6 +357,69 @@ async def test_turn_run_finished_task_removes_registration(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────
+# turn/resume（Phase 34 ③）
+# ──────────────────────────────────────────────────────────────
+
+async def test_turn_resume_missing_session_id(tmp_path):
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    handler = RpcHandler(agent, ws)
+
+    await handler.dispatch({"id": 1, "method": "turn/resume", "params": {}})
+    assert "error" in ws.sent[0]
+
+
+async def test_turn_resume_drives_resume_conversation_not_run(tmp_path):
+    """turn/resume 必须调 `agent.resume_conversation`，不是 `run_conversation`
+    ——没有新用户文本这件事本身就是它和 turn/run 的核心区别。
+    """
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    calls: list[tuple] = []
+
+    async def _resume_stream(session_id, **kwargs):
+        calls.append((session_id, kwargs))
+        return
+        yield  # pragma: no cover
+
+    agent.resume_conversation = _resume_stream
+    handler = RpcHandler(agent, ws)
+
+    await handler.dispatch({"id": 1, "method": "turn/resume",
+                            "params": {"session_id": "s1", "workspace_id": "w1"}})
+    assert ws.sent[0]["result"] == {"status": "started"}
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert calls == [("s1", {"workspace_id": "w1"})]
+
+
+async def test_turn_resume_registers_a_cancellable_task(tmp_path):
+    """turn/resume 起的任务和 turn/run 共用同一套登记/取消机制。"""
+    ws = FakeWs()
+    agent = make_mock_agent(tmp_path)
+    entered = asyncio.Event()
+
+    async def _slow_resume(session_id, **kwargs):
+        entered.set()
+        await asyncio.sleep(30)
+        yield "never"
+
+    agent.resume_conversation = _slow_resume
+    handler = RpcHandler(agent, ws)
+
+    await handler.dispatch({"id": 1, "method": "turn/resume",
+                            "params": {"session_id": "s1"}})
+    await entered.wait()
+    await asyncio.sleep(0)
+    assert "s1" in handler._tasks
+
+    ws.sent.clear()
+    await handler.dispatch({"id": 2, "method": "turn/cancel", "params": {"session_id": "s1"}})
+    assert ws.sent[-1]["result"]["cancelled"] is True
+
+
+# ──────────────────────────────────────────────────────────────
 # workspace/delete
 # ──────────────────────────────────────────────────────────────
 
