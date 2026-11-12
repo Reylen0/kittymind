@@ -14,6 +14,7 @@
 （否则递归防爆栏归零）、不覆盖根 session 标签，详见 `KittyAgent.run_conversation`。
 """
 
+import asyncio
 import time
 
 from pydantic import BaseModel, Field
@@ -155,13 +156,23 @@ class TaskTool(BaseTool):
                 result = ""
                 run_result = None
                 try:
-                    run_result = await sub_agent.run(
-                        session_id=None, input_text=parameters.prompt, root=False,
+                    run_result = await asyncio.wait_for(
+                        sub_agent.run(
+                            session_id=None, input_text=parameters.prompt, root=False,
+                        ),
+                        timeout=cfg.SUBAGENT_WALL_TIMEOUT,
                     )
                     result = run_result.text
                     if not result.strip():
                         ok = False
                         result = "子任务无输出"
+                except asyncio.TimeoutError:
+                    # 只有步数上限（SUBAGENT_MAX_ITERATIONS）管不住"某次工具调用
+                    # 卡死"——那一步本身不计入迭代次数的推进，会让父 Agent 跟着
+                    # 无限期挂起。挂钟超时直接判子任务失败返回，
+                    # wait_for 已经把子任务的 Task 取消，不需要再手动 cancel。
+                    ok = False
+                    result = f"子任务执行超时（>{cfg.SUBAGENT_WALL_TIMEOUT}s），已终止"
                 except Exception as e:
                     ok = False
                     result = f"子任务执行失败: {e}"

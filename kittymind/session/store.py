@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compressed_once    INTEGER NOT NULL DEFAULT 0,
     last_prompt_tokens INTEGER,
     archived           INTEGER NOT NULL DEFAULT 0,  -- 归档：侧栏收起但数据完整保留
-    turn_in_progress   INTEGER NOT NULL DEFAULT 0,  -- 本轮是否仍在跑；崩溃检测用（Phase 34 ②）
+    turn_in_progress   INTEGER NOT NULL DEFAULT 0,  -- 本轮是否仍在跑；崩溃检测用
     turn_started_at    TEXT                         -- 本轮开始时间；配合上面那列定位"卡在哪一轮"
 );
 
@@ -304,7 +304,7 @@ class SqliteSessionStore:
         self._log_interrupted_sessions()
 
     def _log_interrupted_sessions(self) -> None:
-        """启动时顺带数一遍 `turn_in_progress=1` 的会话（Phase 34 ②）。
+        """启动时顺带数一遍 `turn_in_progress=1` 的会话。
 
         刻意**不放进版本链**、也不单独起一遍扫描逻辑——这几行只是在现成的
         schema 准备流程末尾补一次廉价查询：这些会话本身已经是可查询的真实
@@ -401,7 +401,7 @@ class SqliteSessionStore:
         self._ensure_column("messages", "ok", "INTEGER")
 
     def _m_turn_in_progress(self, conn: sqlite3.Connection) -> None:
-        """v9 → v10：轮次进行中标记（Phase 34 ②，崩溃检测）。
+        """v9 → v10：轮次进行中标记（崩溃检测）。
 
         `turn_in_progress` 在轮次开始（用户消息提交后）置 1，正常结束或
         `turn/cancel` 完成都会在 `finally` 里清回 0——但进程被杀时这个 `finally`

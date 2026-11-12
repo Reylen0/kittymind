@@ -123,7 +123,7 @@ kittymind/                      # 项目根目录
 | **M-D** | 可观测与产品化交付 | 26-29 | 🟡 缓存 ✅ / 打包 🟡 |
 | **M-E** | 定时与后台自动化 | 30-31 | ⬜ |
 | **M-F** | 网关预留与桌宠深化 | 32-33 | ⬜ |
-| **M-G** | 长任务稳定性与断点恢复 | 34 | 🟡 |
+| **M-G** | 长任务稳定性与断点恢复 | 34 | ✅ |
 
 ---
 
@@ -277,7 +277,7 @@ kittymind/                      # 项目根目录
 
 ### 里程碑 M-G：长任务稳定性与断点恢复（Phase 34）🟡
 
-**Phase 34 — 长任务稳定性与断点恢复 🟡（①②③已实现）**
+**Phase 34 — 长任务稳定性与断点恢复 ✅（①②③④⑤全部已实现）**
 
 **现状缺口**：当前一次流式 ReAct 循环（`async_stream_run`）从组装 `TurnContext` 到产出 `final_text` 全程只在内存里推进——`turn.messages`/`turn.turn_messages` 直到循环结束才由 `_commit_turn()` 一次性落库（Phase 14）。这意味着：
 
@@ -292,12 +292,10 @@ kittymind/                      # 项目根目录
 **① 消息面：轮内增量提交 ✅**
 把 `_commit_turn()` 的调用时机从"`final_text` 产出后一次"改成"每个 ReAct 步骤（一条 assistant 消息 + 对应一批 tool_result 回填完）结束后一次"，复用现有 `append_turn()` 原子写入（不新发明持久化机制）；用户消息在轮次一开始、第一次调用 LLM 之前就先行提交。写入频率从 O(1)/轮升到 O(步数)/轮，但单次写入量更小，量级与现有 `tool_audit.db`（本来就是每次工具调用一条）相当，不是新的负载数量级。压缩（`archive_and_compact`）本身已经是原子操作，触发时机不变，只是压缩后的消息随下一步的增量提交一起落盘，不再需要撑到轮结束才生效。
 架构：`KittyAgent._commit_new_messages()`（包 `append_turn`，把分配到的真实 seq 原地标回 `turn.messages`/`turn.turn_messages` 共享的同一批 dict 对象，`turn.loaded_seqs` 随之增长）在三处被调用——轮次开始提交用户消息、每步工具调用批次执行完立即提交、循环结束后提交尾部的最终 assistant 消息；`_commit_compaction()` 在 `did_compress` 为真的当下立即调用 `archive_and_compact`（`new_active_msgs` 固定传空列表，因为本轮新消息已由前者单独提交），同步把 `compressed_once` 写入 `session_state`。原 `_commit_turn()` 瘦身为"只补最后一条消息 + 落用量成本"，`compressed_this_turn` 字段连同分支判断整体删除（已无存在必要）。关键文件：`agent/kitty_agent.py`、`session/manager.py`（`append_turn` 现在返回分配到的 seq 列表）。测试：`test/test_turn_incremental_commit.py`（LLM 在循环中途抛异常模拟进程崩溃，断言已完成的步骤仍在 `sessions.db` 里；直接单测 `_commit_compaction` 的落库与 `loaded_seqs` 更新）。
-剩余：③④⑤仍未实现，见下。
 
 **② 状态面：`turn_in_progress` 标记（崩溃检测）✅**
 `sessions` 表新增两列（schema v9→v10，走既有迁移链）：`turn_in_progress INTEGER NOT NULL DEFAULT 0`、`turn_started_at TEXT`。轮次开始（①的用户消息增量提交落库之后）置位，`run_conversation` 的 `finally` 分支无条件清除——正常结束、抛异常（如 LLM 调用失败，这类错误已经有 `agent.error` 事件明确报告给用户，不是"进程神秘消失"）、显式 `turn/cancel`（`task.cancel()` 触发的 `CancelledError` 同样会沿 `async for` 传播到这个 `finally`）都会走到这里清除；**真正的进程被杀**（断电、强杀、OOM）时 Python 代码完全来不及跑，`finally` 没有机会执行，标记原样留在库里。
 `session/list`（`SessionManager.list_sessions()` → `store.list_headers()`）随每条会话 header 带上 `turn_in_progress` 布尔值——不走"启动时推一个新事件"的设计（那需要在还没有任何 WebSocket 连接存在的进程启动阶段就能推送，当前架构没有这个机制，也没必要为这一件事新建），而是复用前端本来就会在加载时调用的 `session/list`，侧栏在对应会话标题前标一个警示角标（`SessionList.tsx` 的 `IcoInterrupted`，悬浮提示"上次异常中断"）；用户点进去就能看到实际已经发生了什么（①已保证这些内容已落库）。另外在 `SqliteSessionStore._prepare_schema()` 末尾（`_purge_orphans()` 之后，同一处既有的"启动时顺带做一次"的位置，不单独起一遍扫描）加了一次廉价计数查询，发现有会话卡在 `turn_in_progress=1` 时写一条 warning 日志，方便运维层面定位。关键文件：`session/store.py`（schema、迁移、`get_state`/`save_state`/`list_headers` 扩展、`_log_interrupted_sessions`）、`session/manager.py`（`mark_turn_started`/`mark_turn_finished`）、`agent/kitty_agent.py`（`async_stream_run` 里提交用户消息后调 `mark_turn_started`；`run_conversation` 的 `finally` 里调 `mark_turn_finished`）、`electron/src/renderer/{types.ts,SessionList.tsx,style.css}`。测试：`test/test_turn_in_progress_marker.py`——**踩坑记录**：不能用"让 LLM 抛异常"模拟真正的进程崩溃来断言标记留下来，异常会被 Python 正常捕获、正常解包栈帧、正常跑到 `finally`，标记一样会被清掉（这是正确行为，不是 bug）；测的是"工具执行期间回读状态，此刻库里已经是 True"这个真正可断言的不变式。
-剩余：③④⑤仍未实现，见下。
 
 **③ 执行面：悬空 tool_call 的幂等恢复（恢复逻辑的核心规则）✅**
 检测条件：最后一条 assistant 消息带 `tool_calls`，但对应 `tool_call_id` 在 `messages` 表里找不到匹配的 tool 结果行——说明进程恰好死在"执行这批工具调用"期间。恢复策略直接复用现成的 `guardrails.py::IDEMPOTENT_TOOLS` / `MUTATING_TOOLS` 分类，不新造一套判断：
@@ -308,32 +306,36 @@ kittymind/                      # 项目根目录
 新增 RPC `turn/resume`（区别于 `turn/run`：不追加新 user 消息，只把已持久化的消息前缀连同上面生成的合成结果一起喂给 `async_stream_run` 续跑）。前端检测到会话带"异常中断"标记（②的 `turn_in_progress`）时展示「继续」横幅（`ChatView.tsx` 的 `ResumeBanner`）调用它；用户也可以不管它、直接发新消息（新一轮 `turn/run` 自然用新的 `turn_started_at` 覆盖旧标记）。
 
 架构：`KittyAgent.run_conversation`/新增的 `resume_conversation` 共用两个抽出的私有方法——`_build_turn_context()`（组装 `TurnContext`，`append_user` 参数区分"新用户消息"与"续跑无新消息"）和 `_run_turn()`（根作用域生命周期管理 + 委派给 `async_stream_run`，②的 `mark_turn_finished` 就收在这里）；`async_stream_run` 的开场提交逻辑从"只提交 `turn_messages[0]`（用户消息）"泛化成"提交 `turn_messages` 整个列表"，这样续跑时一次性落库的悬空恢复结果（可能不止一条）也能走同一条路径。新增 `SessionManager.find_dangling_tool_calls()`（只看最后一条 assistant 消息，按 tool_call_id 核对后续 tool 行，支持"部分悬空"——同一批里只有某几个调用缺结果）与 `KittyAgent._resolve_dangling_tool_calls()`（幂等的丢给 `execute_batch` 真跑，变更类的直接合成，按声明序发 `agent.tool_call`/`agent.tool_result` 事件让前端把恢复结果渲染成普通工具卡片）。RPC 层把 `turn/run` 与 `turn/resume` 共用的"事件转发注册 + 任务登记/取消"逻辑抽成 `_start_turn()`，区别只是驱动 `run_conversation` 还是 `resume_conversation`。关键文件：`agent/kitty_agent.py`、`session/manager.py`、`server/rpc_handler.py`、`electron/{preload.js,src/renderer/{kitty.d.ts,ChatView.tsx,style.css}}`。测试：`test/test_dangling_tool_call_resume.py`（幂等重跑 / 变更类合成 / 混合批次按序处理 / 无悬空时单纯续写 / 续跑正常结束清崩溃标记）、`test/test_session.py`（`find_dangling_tool_calls` 的空会话/正常结束/全悬空/部分悬空/只看最后一条 assistant 五种边界）、`test/test_rpc_handler.py`（`turn/resume` 参数校验、驱动的是 `resume_conversation` 而非 `run_conversation`、登记的任务可被 `turn/cancel` 取消）。
-剩余：④⑤仍未实现，见下。
 
-**④ 工具取消的物理传导**
-`bash` 工具由当前 `subprocess.run`（阻塞，`to_thread` 包裹）改为 `asyncio.create_subprocess_exec`（原生协作式取消：`task.cancel()` 能真正触发 `proc.kill()`），解决"点停止但子进程还在后台裸跑"的问题。`task` 委派增加挂钟超时 `SUBAGENT_WALL_TIMEOUT`（`asyncio.wait_for` 包裹 `sub_agent.run()`），子任务超时即视为失败返回，而不是让父 Agent 无限期等待。
+**④ 工具取消的物理传导 ✅**
+`bash` 工具由 `subprocess.run`（阻塞，`to_thread` 包裹）改为原生 `asyncio.create_subprocess_shell`（Windows）/`asyncio.create_subprocess_exec`（POSIX），`is_async=True` 走 `tool.arun()` 而不是扔进线程池——取消点由此落在协程自己的 `await` 上，`task.cancel()` 能在 `CancelledError` 分支里真正拿到子进程对象去杀。单纯 `proc.kill()` 还不够：Windows 上真正执行命令的是 shell（`cmd.exe`）另起的子进程，`TerminateProcess` 不会连带杀子进程（Windows 没有 POSIX 的进程组语义），所以 Windows 分支改用 `taskkill /F /T /PID` 按整条进程树杀；POSIX 分支创建时传 `start_new_session=True`（新进程组，pgid=pid），杀的时候 `os.killpg(pid, SIGKILL)` 一并带走 shell fork 出的子进程（管道场景）。超时（`asyncio.wait_for` 命中）与被取消（`CancelledError`）都走同一个 `_kill()` 收尾，区别只是前者返回"超时"结果、后者原样重新抛出 `CancelledError`（取消语义不能被这里吞掉）。
+`task` 子 Agent 委派原来只有步数上限（`SUBAGENT_MAX_ITERATIONS`），挡不住"某一步工具调用本身卡死"——那一步不计入迭代次数的推进，父 Agent 会跟着无限期挂起。新增挂钟超时 `SUBAGENT_WALL_TIMEOUT`（默认 600s，`asyncio.wait_for` 包裹 `sub_agent.run()`），超时即判子任务失败返回一条模板文案，`wait_for` 本身已经负责把子任务的 Task 取消，不需要额外处理。
+关键文件：`tools/builtin/bash_tool.py`（`aexecute`/`_kill`）、`tools/builtin/task_tool.py`（`asyncio.wait_for` 包裹 + `asyncio.TimeoutError` 分支）、`config.py`（`SUBAGENT_WALL_TIMEOUT`）。测试：`test/test_tool_cancellation.py`——起一个持续向文件写入的真实子进程，`task.cancel()`/超时后断言文件不再增长（子进程确实被杀，不是"不再等待但还在裸跑"）；`task` 工具用一个永久挂起的假 LLM 验证挂钟超时能让委派按时失败返回。`test/test_dangerous_commands.py` 原先直接调用同步 `execute()` 的自查用例改成走 `aexecute()`。
 
-**⑤ LLM 调用的瞬时错误重试**
-`core/llm.py` 的 `invoke`/`async_stream_with_tools` 外包一层重试：只重试网络层 / 429 / 5xx / 超时这类分类明确的瞬时错误（400/401 这类业务错误不重试），指数退避，次数与基础延迟可配置（`LLM_RETRY_MAX_ATTEMPTS`/`LLM_RETRY_BASE_DELAY`）。流式调用的重试边界卡在**第一个 `text_delta`/`tool_calls_done` 产出之前**——一旦已经有内容流给前端，失败就不再重试（避免输出重复/错乱），走现有"抛异常中断本轮"路径，由①的增量提交兜底，不会丢失已完成的步骤。
+**⑤ LLM 调用的瞬时错误重试 ✅**
+`core/llm.py` 的 `BaseAgentLLM.invoke`/`async_stream_with_tools` 外包一层重试。瞬时错误分类直接复用 openai/anthropic 两个 SDK 几乎一致的异常层级（同源于 httpx）：`APIConnectionError`/`APITimeoutError`（网络层）、`RateLimitError`（429）、`InternalServerError`（5xx）——400/401 等业务错误（`BadRequestError` 等）故意不在列表里，重试它们只会原样失败 N 次、白白拖长响应时间。指数退避 + 抖动，次数与基础延迟可配置（`LLM_RETRY_MAX_ATTEMPTS`/`LLM_RETRY_BASE_DELAY`）。
+流式调用的重试边界用一个 `yielded` 标记卡在**第一个事件产出之前**：循环体内只要成功 `yield` 过一个事件，之后再失败就不再重试，直接包成 `LLMException` 抛出——一旦内容已经流给前端，重新跑一次会把已经展示的内容重复一遍；未产出任何事件时的失败，重试与"这次请求压根没打通"是等价的，可以放心重来。
+关键文件：`core/llm.py`（`_is_transient`/`_retry_delay` + `invoke`/`async_stream_with_tools` 的重试循环）、`config.py`（`LLM_RETRY_MAX_ATTEMPTS`/`LLM_RETRY_BASE_DELAY`）。测试：`test/test_llm_retry.py`（四类瞬时错误各自验证"重试后成功"与"耗尽后抛出"；业务错误验证"从不重试"；流式额外验证"已产出事件后失败不重试"）。
 
 **对 Phase 30 / 31 的复用**：Cron 定时任务与后台任务委派本质上都是"不保证有人在前台盯着的 turn"，设计时直接复用本 phase 的 `turn_in_progress` 标记与③的幂等分类恢复机制，不需要各自发明一套。
 
 **推进顺序**：五块耦合度不同，按"独立 / 低风险"先、"依赖 / 高风险"后分两条线推进，不要混在一个 PR 里：
 
-1. **⑤ LLM 调用重试**——改动面最小（`core/llm.py` 外包一层，零 schema 变更），不依赖其余四块，先做建立"瞬时错误分类 + 退避"这类测试模式的信心。
-2. **④ 工具取消的物理传导**——同样不碰持久化层，`bash` 换 `asyncio.create_subprocess_exec`、`task` 加挂钟超时，修的是"停止按钮是假的"这个当下就能感知到的体验问题，和①②③完全解耦，可以和⑤并行甚至调换顺序。
+1. **⑤ LLM 调用重试 ✅（已实现）**——改动面最小（`core/llm.py` 外包一层，零 schema 变更），不依赖其余四块，已落地并配套 `test/test_llm_retry.py`。
+2. **④ 工具取消的物理传导 ✅（已实现）**——同样不碰持久化层，`bash` 换原生 asyncio 子进程、`task` 加挂钟超时，修的是"停止按钮是假的"这个当下就能感知到的体验问题，和①②③完全解耦；已落地并配套 `test/test_tool_cancellation.py`。
 3. **① 轮内增量提交 ✅（已实现）**——本阶段真正的地基，改动面最大（动的是 `async_stream_run`/`_commit_turn` 热路径），已单独落地并配套 `test/test_turn_incremental_commit.py`，全量 788 测试通过。
 4. **② `turn_in_progress` 标记 ✅（已实现）**——只有①落地之后才有意义（没有增量提交，标记了也没有可恢复的数据可看），是①之上的轻量追加（一次 schema 迁移 + 置位/清除两行 + 启动日志 + 侧栏角标），已落地并配套 `test/test_turn_in_progress_marker.py`，全量 816 测试通过。
-5. **③ 悬空 tool_call 恢复 + `turn/resume` ✅（已实现）**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"横幅三件套），已落地并配套 `test/test_dangling_tool_call_resume.py`，全量 829 测试通过；这也是 Phase 30/31 真正要复用的部分，三者齐备后 30/31 可以直接复用 `turn_in_progress` 标记与幂等分类恢复机制。
+5. **③ 悬空 tool_call 恢复 + `turn/resume` ✅（已实现）**——依赖①②都跑稳，是最复杂的一块（幂等分类判断 + 新 RPC + 前端"继续"横幅三件套），已落地并配套 `test/test_dangling_tool_call_resume.py`，全量 829 测试通过；这也是 Phase 30/31 真正要复用的部分。
 
-也就是**⑤④可以立刻动手且顺序随意，①→②→③是一条严格的依赖链，必须按序**——①②③现已全部完成，断点恢复这条依赖链已经跑通；剩下 ④（工具取消物理传导）⑤（LLM 调用重试）仍可随时开始，互不依赖。
+至此**五块全部落地**：①→②→③这条严格依赖链已经跑通，④⑤两块独立改进也已完成，全量 843 测试通过。
 
 **已知边界**（这次设计不解决什么）：
 - 不追求"分布式 exactly-once"语义——单机单进程场景下目标是"崩溃后可观测、可人工核实、不隐藏数据丢失"，不是"自动保证任意副作用工具恰好执行一次"（`bash` 这类工具的副作用本来就不可能被框架兜底，参见"安全模型"一节的同类立场）。
 - 增量提交的粒度是"一批工具调用"而非单个工具调用——批内工具仍按现有分区并行语义一起提交，没必要细到单工具级事务。
 - 流式重试仍有极小概率的"首字节已发出、客户端未确认"窗口，这是 HTTP 流式协议本身的限制，不特别处理，依赖①的可观测性兜底。
+- `bash` 的进程树杀除（Windows `taskkill /T`、POSIX 进程组 `killpg`）覆盖的是"这条命令自己 fork/exec 出的子进程"，不覆盖它主动脱离进程组/会话另起的后台守护进程（如显式 `nohup ... &` 或 Windows 下用 `start` 另起新窗口）——这类进程本来就是命令自己选择"不想被父进程管"，不是框架能兜底的场景。
 
-**验证思路**（延续"特征测试"模式）：mock LLM 响应序列中途人为抛异常模拟进程死亡，断言用户消息与崩溃前已完成步骤已落库、`turn_in_progress` 已置位；构造"有 `tool_calls` 无对应 tool_result"的消息序列直接灌入 store，断言悬空 mutating 调用生成的是"状态未知"合成结果而非自动重放；`bash` 工具起长命令后 cancel，断言底层子进程确实被杀死。
+**验证思路**（延续"特征测试"模式）：mock LLM 响应序列中途人为抛异常模拟进程死亡，断言用户消息与崩溃前已完成步骤已落库、`turn_in_progress` 已置位；构造"有 `tool_calls` 无对应 tool_result"的消息序列直接灌入 store，断言悬空 mutating 调用生成的是"状态未知"合成结果而非自动重放；`bash` 工具起一个持续写文件的真实子进程后 cancel/超时，断言文件不再增长（子进程确实被杀）；假 LLM 适配器前 N 次抛分类明确的瞬时错误，断言重试后成功、业务错误从不重试、流式在已产出事件后不再重试。
 
 ---
 

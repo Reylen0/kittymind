@@ -107,7 +107,7 @@ class _Recorder:
 class _FakeSessionManager:
     """只给出 `run_conversation`（工作目录解析 + 组装本轮运行态）/ `_build_messages` /
     增量提交（`_commit_new_messages` / `_commit_turn`）/ 崩溃检测标记
-    （`mark_turn_started` / `mark_turn_finished`，Phase 34 ②）需要的最小接口
+    （`mark_turn_started` / `mark_turn_finished`）需要的最小接口
     （不碰 SQLite；本文件的测试不触发压缩分支，故 `archive_and_compact` 不需要实现）。
     """
 

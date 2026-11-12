@@ -1,4 +1,4 @@
-"""悬空 tool_call 幂等恢复 + `resume_conversation` 的特征测试（ARCHITECTURE.md Phase 34 ③）。
+"""悬空 tool_call 幂等恢复 + `resume_conversation` 的特征测试。
 
 核心主张：续跑一个"进程恰好死在执行工具调用期间"的会话时——
   - 幂等只读工具（`guardrails.IDEMPOTENT_TOOLS`）直接重新执行一次，拿确定结果；
@@ -172,7 +172,7 @@ async def test_resume_without_any_dangling_call_just_continues(tmp_path):
 
 
 async def test_resume_clears_turn_in_progress_on_completion(tmp_path):
-    """续跑本身也是一次"轮次"：正常结束要清掉崩溃检测标记（Phase 34 ②）。"""
+    """续跑本身也是一次"轮次"：正常结束要清掉崩溃检测标记。"""
     tool = _FakeIdempotentTool()
     agent, sm = _make_agent(tmp_path, steps=[("done", [])], tools=[tool])
     sid = sm.create_session(title="t")

@@ -1,8 +1,8 @@
 """write_skill 工具 —— 让 Agent 把可复用的任务流程/规范保存为技能。
 
 四段式结构照抄 write_memory_tool.py：工具层只收参数、调一次 Store.write()，
-去重/校验/落盘全部下沉到 SkillStore——这是 ARCHITECTURE.md Phase 25
-"Agent 自创建技能"的落地。不走权限审批：与 write_memory 同一信任等级，
+去重/校验/落盘全部下沉到 SkillStore——这是"Agent 自创建技能"的落地。
+不走权限审批：与 write_memory 同一信任等级，
 写入的是本项目自己管理的受控存储，不是系统路径/shell 这类高风险操作。
 """
 

@@ -1,4 +1,4 @@
-"""技能系统（ARCHITECTURE.md Phase 25）。
+"""技能系统。
 
 技能是 YAML frontmatter + Markdown 正文的知识/流程文档，存在
 `~/.kittymind/skills/<slug>/SKILL.md`。目录（名称+简介）每轮作为独立 system

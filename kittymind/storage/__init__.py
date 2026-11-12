@@ -1,4 +1,4 @@
-"""SQLite 持久化的共用底座：版本链迁移 + 生命周期维护（Phase 17）。
+"""SQLite 持久化的共用底座：版本链迁移 + 生命周期维护。
 
 两个 SQLite 库（会话库 `sessions.db`、工具审计库 `tool_audit.db`）共用这一层：
 

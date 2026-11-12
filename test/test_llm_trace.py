@@ -198,7 +198,7 @@ def test_trace_request_excludes_api_key(monkeypatch, tmp_jsonl):
     assert "sk-SECRET-KEY" not in blob
 
 
-# ── 体积轮转（Phase 17：留档文件不能无限增长）─────────────────────
+# ── 体积轮转（留档文件不能无限增长）─────────────────────────────
 
 def _write_rows(log, n):
     for i in range(n):

@@ -1,4 +1,4 @@
-"""Phase 17 数据维护与健壮性测试。
+"""数据维护与健壮性测试。
 
 覆盖三块：
   1. 版本链迁移执行器（storage/migrations.py）：逐级应用、跳号、**失败不提升
@@ -547,7 +547,7 @@ def test_audit_db_corrupt_is_quarantined(tmp_path):
     assert list(tmp_path.glob("a.db.corrupt-*"))
 
 
-# ── 行数保留期（Phase 17 追加：两张表都只增不删）──────────────────
+# ── 行数保留期（两张表都只增不删）───────────────────────────────
 
 def _age_usage_rows(store, days: int, session_id: str) -> None:
     """把某个会话的用量行改成 days 天前（造过期数据用）。"""

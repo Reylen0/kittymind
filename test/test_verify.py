@@ -1,4 +1,4 @@
-"""Phase 13 — 自我验证（verify 工具）单元测试。"""
+"""自我验证（verify 工具）单元测试。"""
 
 import socket
 import sys

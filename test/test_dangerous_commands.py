@@ -186,9 +186,9 @@ async def test_non_recursive_delete_goes_to_approval_not_hard_deny(ask):
 # ── 工具层自查（execute() 可直接调用，绕过 ToolExecutor）───────────
 
 @pytest.mark.parametrize("command", ["mkfs.ext4 /dev/sda1", "shutdown -h now", "rm -rf build"])
-def test_bash_tool_still_self_checks_on_direct_execute(command):
-    """`BashTool.execute()` 可被直接调用而不过 ToolExecutor，工具层必须自查。"""
-    result = BashTool().execute(BashToolParam(command=command))
+async def test_bash_tool_still_self_checks_on_direct_execute(command):
+    """`BashTool.aexecute()` 可被直接调用而不过 ToolExecutor，工具层必须自查。"""
+    result = await BashTool().aexecute(BashToolParam(command=command))
     assert not result.ok
     assert "危险命令" in result.content
 

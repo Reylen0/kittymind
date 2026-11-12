@@ -1,4 +1,4 @@
-"""Phase 17M-1/2：embedding 客户端与记忆向量索引。
+"""embedding 客户端与记忆向量索引。
 
 三块：
   1. `OpenAICompatEmbedding` —— 批大小切分、dimensions 透传、**不支持 dimensions 时

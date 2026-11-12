@@ -121,7 +121,7 @@ class RpcHandler:
         )
 
     async def _turn_resume(self, req_id: Any, params: dict) -> None:
-        """续跑一个带"异常中断"标记的会话（Phase 34 ③），不追加新用户消息。
+        """续跑一个带"异常中断"标记的会话，不追加新用户消息。
 
         与 `turn/run` 共用同一套事件转发/任务登记逻辑（见 `_start_turn`）——
         区别只是驱动 `agent.resume_conversation` 而不是 `agent.run_conversation`。

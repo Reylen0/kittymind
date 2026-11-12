@@ -1,7 +1,7 @@
 """压缩器头部保护回归测试：_find_head_end 需跳过所有前导 system 消息。
 
-背景：Phase 25 引入了第二条前导 system 消息（记忆召回段，见
-kitty_agent._inject_memory_recall），旧实现 _find_head_end 只跳过
+背景：记忆召回段（见 kitty_agent._inject_memory_recall）是第二条前导
+system 消息，旧实现 _find_head_end 只跳过
 messages[0]，导致 protect_first_n 衰减为 0 后（跨轮持久化，见
 KittyAgent.run_conversation 里的本轮运行态组装），召回段会被当成"历史"落进
 mid 段参与摘要、被摘要替换掉。

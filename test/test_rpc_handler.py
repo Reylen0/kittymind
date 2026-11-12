@@ -357,7 +357,7 @@ async def test_turn_run_finished_task_removes_registration(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────
-# turn/resume（Phase 34 ③）
+# turn/resume
 # ──────────────────────────────────────────────────────────────
 
 async def test_turn_resume_missing_session_id(tmp_path):

@@ -142,6 +142,10 @@ AGENT_MAX_ITERATIONS = 50
 SUBAGENT_MAX_DEPTH      = 3   # 子 Agent 嵌套层数（不含 root）
 SUBAGENT_MAX_TOTAL      = 8   # 单个 root turn 全树委派总数上限
 SUBAGENT_MAX_ITERATIONS = 50  # 子 Agent ReAct 循环上限
+# 子 Agent 挂钟超时（秒）：只有步数上限时，某次工具调用卡死会让父 Agent 无限期
+# 等待；超时直接判子任务失败返回，而不是真的杀掉子任务内部的调用（那由 bash
+# 工具自己对 task.cancel() 响应）。
+SUBAGENT_WALL_TIMEOUT   = 600
 
 # ── WebSocket 服务器 ─────────────────────────────────────────────
 WS_HOST          = "127.0.0.1"
@@ -178,6 +182,11 @@ LLM_MAX_TOKENS   = 4096   # 单次响应最大 token 数（Anthropic 必填，Op
 # LLM 调用留档级别："off"（不记录）/ "on_error"（仅调用失败时记录，默认）/
 # "all"（成功失败都记录）。排查疑难问题时按需调高，默认只记错误避免日常堆积文件。
 LLM_TRACE_LEVEL = "on_error"
+
+# 瞬时错误重试（网络层 / 429 / 5xx / 超时；400/401 这类业务错误不重试）。
+# 流式调用的重试边界卡在第一个事件产出之前，一旦已经有内容流给前端就不再重试。
+LLM_RETRY_MAX_ATTEMPTS = 3     # 最大重试次数（不含首次尝试）
+LLM_RETRY_BASE_DELAY   = 1.0   # 指数退避基础秒数：第 n 次重试等待 base * 2**(n-1) 左右
 
 # ── 辅助小模型（压缩摘要 / 记忆提取 / 记忆召回筛选）──────────────
 # 留空 = 不启用，上述辅助任务回退主模型（与旧行为一致）。
@@ -275,7 +284,7 @@ _OVERRIDABLE = {
     "MEMORY_CONSOLIDATE_MIN_SIM", "MEMORY_CONSOLIDATE_FULL_MAX",
     "MEMORY_RECALL_LOG_RETENTION_DAYS", "MEMORY_TRASH_RETENTION_DAYS",
     "AGENT_MAX_ITERATIONS",
-    "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS",
+    "SUBAGENT_MAX_DEPTH", "SUBAGENT_MAX_TOTAL", "SUBAGENT_MAX_ITERATIONS", "SUBAGENT_WALL_TIMEOUT",
     "WS_HOST", "WS_PORT", "PORT_RETRY_COUNT", "WS_ALLOW_NON_LOOPBACK",
     "MCP_ENABLED", "MCP_CONNECT_TIMEOUT", "MCP_TOOL_TIMEOUT",
     "SKILL_ENABLED", "SKILL_CATALOG_MAX_DESC_CHARS",
@@ -283,6 +292,7 @@ _OVERRIDABLE = {
     "LOG_LEVEL",
     "LLM_TEMPERATURE", "LLM_MAX_TOKENS",
     "LLM_TRACE_LEVEL",
+    "LLM_RETRY_MAX_ATTEMPTS", "LLM_RETRY_BASE_DELAY",
     "LLM_AUX_MODEL_ID", "LLM_AUX_TEMPERATURE", "LLM_AUX_MAX_TOKENS",
     "LLM_CONTEXT_WINDOW", "LLM_RESERVED_OUTPUT_TOKENS",
     "COMPRESS_THRESHOLD_RATIO", "COMPRESS_TARGET_RATIO",

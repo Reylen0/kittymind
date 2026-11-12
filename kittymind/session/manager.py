@@ -257,14 +257,14 @@ class SessionManager:
         return self.store.read_full(session_id)
 
     def find_dangling_tool_calls(self, session_id: str) -> list[dict]:
-        """检测"悬空" tool_call（Phase 34 ③）：最后一条 assistant 消息带
+        """检测"悬空" tool_call：最后一条 assistant 消息带
         `tool_calls`，但其中有 id 在后续消息里找不到对应的 tool 结果行——
         说明进程恰好死在"执行这批工具调用"期间。返回悬空的 tool_call 列表，
         没有则为空列表。
 
         只看**最后一条** assistant 消息：更早的 assistant 消息后面即使缺
         tool_result，也不是"进程死在执行期间"这个场景该处理的（正常运行时
-        每一步的 assistant+tool_result 是同批增量提交的，见 Phase 34 ①），
+        每一步的 assistant+tool_result 是同批增量提交的），
         轮次正常结束时最后一条消息是不带 tool_calls 的收尾文本，天然不触发。
         """
         messages = self.load_messages(session_id)
@@ -303,7 +303,7 @@ class SessionManager:
         """持久化会话的压缩状态。"""
         self.store.save_state(session_id, **fields)
 
-    # ── 崩溃检测（Phase 34 ②）──────────────────────────────────
+    # ── 崩溃检测 ──────────────────────────────────────────────
 
     def mark_turn_started(self, session_id: str) -> None:
         """标记本轮进行中。在用户消息提交落库后调用——`mark_turn_finished`
@@ -327,7 +327,7 @@ class SessionManager:
         text = text.strip()
         return text[:20] + ("..." if len(text) > 20 else "")
 
-    # ── 用量成本追踪（Phase 16）─────────────────────────────────
+    # ── 用量成本追踪 ───────────────────────────────────────────
 
     def record_usage(self, session_id: str | None, model_id: str,
                      prompt_tokens: int, completion_tokens: int,

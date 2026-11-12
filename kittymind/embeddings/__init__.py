@@ -1,7 +1,7 @@
-"""Embedding 能力接入（Phase 17M）。
+"""Embedding 能力接入。
 
 只解决一个问题：**谁算向量**。它与「记忆存在哪、谁负责抽取与检索」是两件事
-——后者刻意不引入可插拔后端抽象（取舍见 ARCHITECTURE.md §5 Phase 17M）。
+——后者刻意不引入可插拔后端抽象（取舍见 ARCHITECTURE.md §5）。
 
 密钥只从环境变量 `EMBEDDING_API_KEY` 读，不进 `settings.json`（与
 `LLM_AUX_API_KEY` 一致）。未配置时 `get_embedding()` 返回 `None`，调用方按

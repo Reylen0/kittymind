@@ -1,4 +1,4 @@
-"""Phase 17M-3：融合召回与降级链。
+"""融合召回与降级链。
 
 最要紧的一条是 `test_auto_without_embedding_matches_legacy_path`：**没配 embedding
 的用户行为必须与改造前逐字节一致**。它用一个"改造前逻辑的独立复现"当基准（以

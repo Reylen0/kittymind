@@ -69,7 +69,7 @@ def test_store_get_and_save_state(store):
 
 
 def test_store_turn_in_progress_roundtrip(store):
-    """崩溃检测标记（Phase 34 ②）：默认关闭，置位/清除都要忠实落库。"""
+    """崩溃检测标记：默认关闭，置位/清除都要忠实落库。"""
     store.write_header("s1", {"version": 1, "id": "s1",
                                "created_at": "2026-01-01T00:00:00+00:00"})
     state = store.get_state("s1")
@@ -306,7 +306,7 @@ def test_manager_get_session_derives_token_counts(mgr):
         max(1, cfg.LLM_CONTEXT_WINDOW - cfg.LLM_RESERVED_OUTPUT_TOKENS)
 
 
-# ── Phase 14 阶段二：archive_and_compact / next_seq / read_full ──
+# ── archive_and_compact / next_seq / read_full ───────────────────
 
 def test_store_next_seq_empty(store):
     store.write_header("s1", {"version": 1, "id": "s1",
@@ -473,7 +473,7 @@ def test_manager_load_messages_contains_seq(mgr):
     assert msgs[1]["seq"] == 1
 
 
-# ── 悬空 tool_call 检测（Phase 34 ③）─────────────────────────────
+# ── 悬空 tool_call 检测 ───────────────────────────────────────────
 
 def _tc(call_id: str, name: str = "bash") -> dict:
     return {"id": call_id, "type": "function", "function": {"name": name, "arguments": "{}"}}

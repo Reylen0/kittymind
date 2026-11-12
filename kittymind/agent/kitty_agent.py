@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # 剥离时要移除的内部键（不得泄漏给 LLM API）
 _INTERNAL_KEYS = ("_seq", "ok", _SUMMARY_MARKER)
 
-# 悬空 tool_call 恢复（Phase 34 ③）：变更类工具绝不自动重放，合成这条结果
+# 悬空 tool_call 恢复：变更类工具绝不自动重放，合成这条结果
 # 把判断权交还模型——措辞刻意不说"失败"（它很可能其实成功了，只是没法确定）。
 _DANGLING_TOOL_CALL_MESSAGE = (
     "该工具调用的执行状态未知（进程在执行期间被中断），"
@@ -222,7 +222,7 @@ class KittyAgent(Agent):
     async def resume_conversation(
         self, session_id: str, workspace_id: str | None = None, root: bool = True,
     ) -> AsyncIterator[str]:
-        """续跑一个带"异常中断"标记的会话（Phase 34 ③），给 RPC `turn/resume` 用。
+        """续跑一个带"异常中断"标记的会话，给 RPC `turn/resume` 用。
 
         与 `run_conversation` 的核心区别：没有新的用户输入——`turn_messages`
         不含用户消息；循环开始前先处理悬空 tool_call（最后一条 assistant 消息
@@ -230,7 +230,7 @@ class KittyAgent(Agent):
         调用期间，见 `_resolve_dangling_tool_calls`），把恢复结果当成"本轮已
         产出的内容"喂给 `async_stream_run` 续跑。没有悬空调用时就是单纯地让
         LLM 看着现有历史继续说话——例如进程恰好死在流式产出最终文本期间，
-        那部分文本从未落库（①只在整批工具结果或收尾时提交），历史里就是
+        那部分文本从未落库（增量提交只在整批工具结果或收尾时提交），历史里就是
         "卡在上一条消息"，续跑等于重新请求一次续写。
         """
         turn, cwd_path = self._build_turn_context(
@@ -322,7 +322,7 @@ class KittyAgent(Agent):
                 reset_root_budget(budget_token)
                 reset_root_session(session_token)
                 reset_root_usage_recorder(usage_token)
-            # 崩溃检测标记清除（Phase 34 ②）：无论正常结束、抛异常还是被
+            # 崩溃检测标记清除：无论正常结束、抛异常还是被
             # `turn/cancel` 取消（CancelledError 经由这个 async for 传播到这里），
             # 都会走到这个 finally——没有真正的 mark_turn_started 过也安全（幂等）。
             if session_id is not None and self.session_manager is not None:
@@ -331,7 +331,7 @@ class KittyAgent(Agent):
     async def _resolve_dangling_tool_calls(
         self, tool_calls: list[dict], session_id: str | None, turn: TurnContext,
     ) -> list[dict]:
-        """恢复悬空 tool_call（Phase 34 ③）：幂等工具直接重跑拿确定结果；
+        """恢复悬空 tool_call：幂等工具直接重跑拿确定结果；
         变更类工具绝不自动重放，合成"状态未知"结果，把判断权交还模型本身。
 
         按声明序逐个判断：幂等的一次性丢给 `execute_batch`（复用决策/执行/
@@ -396,7 +396,7 @@ class KittyAgent(Agent):
         if session_id is not None and self.session_manager is not None:
             if turn.turn_messages:
                 self._commit_new_messages(turn, session_id, list(turn.turn_messages), input_text)
-            # 崩溃检测标记（Phase 34 ②）：本轮开始，清除/设置都在 _run_turn
+            # 崩溃检测标记：本轮开始，清除/设置都在 _run_turn
             # 的 finally 里完成——进程若在这之后被杀，标记原样留下，下次启动可查。
             self.session_manager.mark_turn_started(session_id)
 

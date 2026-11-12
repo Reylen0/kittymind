@@ -199,7 +199,7 @@ def test_anthropic_no_system_no_param():
     assert "system" not in params
 
 
-# ── Anthropic 提示词缓存断点（Phase 25.3）─────────────────────────
+# ── Anthropic 提示词缓存断点 ───────────────────────────────────────
 
 def test_anthropic_cache_breakpoint_on_last_message():
     """最后一条消息末尾打缓存断点，之前的完整历史可被下一轮复用。"""

@@ -1,6 +1,6 @@
 """记忆召回 —— 会话开始时选出与当前请求相关的记忆，注入 system prompt。
 
-Phase 17M 起有四条路径，由 `MEMORY_RECALL_MODE` 选择：
+现有四条路径，由 `MEMORY_RECALL_MODE` 选择：
 
 ```
 auto（默认）：向量 + 关键词融合 ──(无 key / 端点报错 / 超时 / 索引为空)──>

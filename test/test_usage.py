@@ -1,4 +1,4 @@
-"""Phase 16 用量成本追踪：recorder / store / pricing。
+"""用量成本追踪：recorder / store / pricing。
 
 覆盖三条关键决策：
   1. recorder 按 turn 聚合多次 usage 事件、按模型分组；

@@ -1,4 +1,4 @@
-"""崩溃检测标记的特征测试（ARCHITECTURE.md Phase 34 ②）。
+"""崩溃检测标记的特征测试。
 
 核心主张：`turn_in_progress` 在轮次开始（用户消息提交后）置位，正常结束/
 显式取消都在 `run_conversation` 的 `finally` 里清除。

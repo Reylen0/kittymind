@@ -1,4 +1,4 @@
-"""联网搜索能力接入（Phase 21）。
+"""联网搜索能力接入。
 
 与 `embeddings/__init__.py` 同构的三个细节：
   - 密钥只从环境变量 `WEB_SEARCH_API_KEY` 读，不进 `settings.json`；

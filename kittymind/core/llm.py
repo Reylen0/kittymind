@@ -1,11 +1,40 @@
 """BaseAgent统一LLM接口"""
 
+import asyncio
+import logging
 import os
+import random
+import time
+
+import anthropic
+import openai
 
 from .llm_adapters import create_adapter
 from .llm_response import LLMResponse
 from .exceptions import BaseAgentException, LLMException
 from ..config import cfg
+
+logger = logging.getLogger(__name__)
+
+# 瞬时错误：网络层 / 超时 / 429 / 5xx —— OpenAI、Anthropic 两个 SDK 的异常层级
+# 设计几乎一致（同源于 httpx），都能精确对上这几类。400/401/403/404 等业务错误
+# 故意不在其中，重试它们只会原样失败 N 次，白白拖长响应时间。
+_TRANSIENT_ERROR_TYPES = (
+    openai.APIConnectionError, openai.APITimeoutError,
+    openai.RateLimitError, openai.InternalServerError,
+    anthropic.APIConnectionError, anthropic.APITimeoutError,
+    anthropic.RateLimitError, anthropic.InternalServerError,
+)
+
+
+def _is_transient(e: Exception) -> bool:
+    return isinstance(e, _TRANSIENT_ERROR_TYPES)
+
+
+def _retry_delay(attempt: int) -> float:
+    """指数退避 + 抖动：第 n 次重试（attempt 从 0 计）等待 base*2**n ~ base*2**(n+1)。"""
+    base = cfg.LLM_RETRY_BASE_DELAY
+    return base * (2 ** attempt) + random.uniform(0, base)
 
 
 class BaseAgentLLM:
@@ -50,10 +79,21 @@ class BaseAgentLLM:
 
     def invoke(self, messages: list[dict], **kwargs) -> LLMResponse:
         call_kwargs = self._base_kwargs(kwargs)
-        try:
-            return self._client.invoke(messages=messages, **call_kwargs)
-        except Exception as e:
-            raise LLMException(f"LLM调用失败: {e}") from e
+        attempt = 0
+        while True:
+            try:
+                return self._client.invoke(messages=messages, **call_kwargs)
+            except Exception as e:
+                if _is_transient(e) and attempt < cfg.LLM_RETRY_MAX_ATTEMPTS:
+                    delay = _retry_delay(attempt)
+                    attempt += 1
+                    logger.warning(
+                        "LLM 调用遇到瞬时错误，%.1fs 后重试（第 %d/%d 次）：%s",
+                        delay, attempt, cfg.LLM_RETRY_MAX_ATTEMPTS, e,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise LLMException(f"LLM调用失败: {e}") from e
 
     async def async_stream_with_tools(
         self,
@@ -62,13 +102,31 @@ class BaseAgentLLM:
         **kwargs,
     ):
         call_kwargs = self._base_kwargs(kwargs)
-        try:
-            async for event in self._client.async_stream_with_tools(
-                messages=messages, tools=tools, **call_kwargs
-            ):
-                yield event
-        except Exception as e:
-            raise LLMException(f"LLM流式调用失败: {e}") from e
+        attempt = 0
+        while True:
+            yielded = False
+            try:
+                async for event in self._client.async_stream_with_tools(
+                    messages=messages, tools=tools, **call_kwargs
+                ):
+                    yielded = True
+                    yield event
+                return
+            except Exception as e:
+                # 重试边界：只要有一个事件已经流给调用方（前端据此渲染增量文本/
+                # 工具调用），失败就不能重试——重新跑一次会把已经展示的内容
+                # 重复一遍。未产出任何事件时的失败才是"这次请求压根没打通"，
+                # 重试与首次尝试对调用方是等价的。
+                if not yielded and _is_transient(e) and attempt < cfg.LLM_RETRY_MAX_ATTEMPTS:
+                    delay = _retry_delay(attempt)
+                    attempt += 1
+                    logger.warning(
+                        "LLM 流式调用遇到瞬时错误，%.1fs 后重试（第 %d/%d 次）：%s",
+                        delay, attempt, cfg.LLM_RETRY_MAX_ATTEMPTS, e,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                raise LLMException(f"LLM流式调用失败: {e}") from e
 
 
 # ── 辅助小模型 ────────────────────────────────────────────────────

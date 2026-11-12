@@ -1,4 +1,4 @@
-"""技能系统单元测试（ARCHITECTURE.md Phase 25）。
+"""技能系统单元测试。
 
 覆盖三块：
   1. schema.py 的 frontmatter round-trip + slugify 边界（只有 name/description

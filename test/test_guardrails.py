@@ -1,4 +1,4 @@
-"""Phase 12 — 工具守护栏单元测试（无需 LLM）"""
+"""工具守护栏单元测试（无需 LLM）"""
 
 import json
 import pytest
